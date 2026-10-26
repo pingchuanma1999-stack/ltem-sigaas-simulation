@@ -24,13 +24,16 @@ class PoissonOperator:
         rows = [f.c, f.nb, f.c, f.nb]
         cols = [f.c, f.nb, f.nb, f.c]
         vals = [-g, -g, g, g]
-        # Dirichlet electrode faces
-        for bf in (top.contact_semi, top.contact_air):
+        # Dirichlet electrode faces (+ optional back-surface Dirichlet faces)
+        bfaces = [top.contact_semi, top.contact_air] + ([top.bottom] if top.back_dirichlet else [])
+        for bf in bfaces:
             gb = bf.A * eps[bf.cell] / bf.dhalf
             rows.append(bf.cell); cols.append(bf.cell); vals.append(-gb)
         self.L = assemble(top.N_all, rows, cols, vals)
         self._gb_semi = top.contact_semi.A * eps[top.contact_semi.cell] / top.contact_semi.dhalf
         self._gb_air = top.contact_air.A * eps[top.contact_air.cell] / top.contact_air.dhalf
+        self._gb_bottom = top.bottom.A * eps[top.bottom.cell] / top.bottom.dhalf if top.back_dirichlet else None
+        self.V_back_scaled = 0.0
         self.vol = top.vol_all
         self._lu = None
 
@@ -41,6 +44,8 @@ class PoissonOperator:
         Ve = top.electrode_values(V_left, V_right)
         np.add.at(b, top.contact_semi.cell, self._gb_semi * Ve)
         np.add.at(b, top.contact_air.cell, self._gb_air * Ve)
+        if self._gb_bottom is not None:
+            np.add.at(b, top.bottom.cell, self._gb_bottom * self.V_back_scaled)
         return b
 
     def residual(self, psi, b, rho):

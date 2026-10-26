@@ -46,8 +46,12 @@ class Params:
     # -------------------------------------------------------------- geometry
     gap: float = 40.0               # um, electrode-to-electrode distance
     x_half: float = 60.0            # um, half width of the simulated box (electrodes from 20 to 60 um)
-    depth: float = 30.0             # um, GaAs thickness simulated (bottom: E_z = 0)
+    depth: float = 30.0             # um, GaAs thickness simulated
     air_height: float = 30.0        # um, air box above the surface
+    back_boundary: str = "neumann"  # "neumann": floating back surface (E_z = 0); "dirichlet": back surface
+                                    #   held at V_back (e.g. a grounded metal stage under the wafer)
+    V_back: float = 0.0             # V, back-surface potential when back_boundary == "dirichlet"
+                                    #   (0 = midpoint of the symmetric +-V/2 bias)
     # With this box the bare field at the gap centre is 4.04 kV/cm, within 2 % of the
     # semi-infinite-strip value V/(pi a) = 3.98 kV/cm (a 40x15 um box gives 4.8, 20 % high).
     # grid control

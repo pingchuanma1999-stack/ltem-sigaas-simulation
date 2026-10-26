@@ -79,7 +79,9 @@ class Simulation:
         self.top = Topology(self.grid, params.gap)
         self.mat = Material(params)
         self.top.set_eps(params.eps_r, 1.0)
+        self.top.back_dirichlet = (params.back_boundary == "dirichlet")
         self.pois = PoissonOperator(self.top, self.mat.sc.lam2)
+        self.pois.V_back_scaled = self.mat.psi_eq + params.V_back / self.mat.sc.VT
         self.cont = Continuity(self.top, self.mat)
         self.newton = CoupledNewton(self.top, self.mat, self.pois)
         self.Ns = self.top.N_semi

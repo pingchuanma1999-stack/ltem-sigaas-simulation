@@ -92,6 +92,10 @@ class Topology:
         fcols = np.where(self.free_surface_mask)[0]
         self.free_surface = BFaces(cell=(ks - 1) * Nx + fcols, A=g.dx[fcols],
                                    dhalf=np.full(fcols.size, g.dz[ks - 1] / 2), x=xc[fcols])
+        # bottom faces of the semiconductor (row 0): Dirichlet only when back_dirichlet is set
+        allc = np.arange(Nx)
+        self.bottom = BFaces(cell=allc, A=g.dx, dhalf=np.full(Nx, g.dz[0] / 2), x=xc)
+        self.back_dirichlet = False
         self.N_all = Nx * g.Nz
         self.N_semi = Nx * ks
         self.vol_all = g.volumes()

@@ -109,6 +109,16 @@ flank: E = J/(e p μ_p) is larger there), with the tip response peaking for the 
 on the cathode side, i.e. opposite to the measurement, and with 17–140 mA of
 dark double-injection current, which is unphysical for Au/SI-GaAs.
 
+**5. Field bending only (no carriers, no EL2; `scripts/field_bending.py`, `results/field_bending/`).**
+Wafer 350 or 500 µm, back surface floating or held at the bias midpoint: at the
+surface the four cases are identical to 3 digits (the back surface is ≥ 9 gap
+widths away). At x = 5 µm from the spot centre: E_x = 3.9 kV/cm, E_z = 5 V/cm at
+the surface, 49 V/cm at 1 µm, 0.33 kV/cm at 20 µm (tilt 0.7° / 6.9°); the
+exp(−αz)-weighted vertical polarisation is 0 / 0.5 / 1.0 / 1.6 % of the in-plane one
+at x = 0 / 2.5 / 5 / 7.5 µm. The tip response is antisymmetric in X (lobes at
+±1.5–2.5 µm, zero at X = 0, 0.13 at |X| = 5) with ~0 % vertical share, so field
+bending cannot give the one-sidedness, the nonzero X = 0 value, or the peak at 5 µm.
+
 **Reading.** Within this steady-state model, any plasma channel that connects the
 spot to an electrode screens the bias field in the gap, and the voltage then drops
 in a thin trap-charged layer at a blocking contact. The measured facts — strong
