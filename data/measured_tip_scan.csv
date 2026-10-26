@@ -1,0 +1,11 @@
+bias_V,X_um,rms,rms_err,note
+25,0,0.24,0.08,Oct 19 single scan
+25,2.5,0.59,0.07,Oct 21 16h30m35s single scan
+25,5,1.00,0.08,reference (Oct 19 11h15m48s; Oct 8 gives 1.09)
+25,7.5,0.15,0.04,Oct 21 mean of 3
+-25,-7.5,0.15,0.05,Oct 22 mean of 3
+-25,-5,0.45,0.04,Oct 22 mean of 3 runs
+-25,-2.5,0.52,0.10,Oct 19 single scan (error nominal)
+-25,0,0.33,0.10,Oct 19 single scan (error nominal)
+-25,2.5,0.20,0.10,Oct 19 single scan (error nominal)
+-25,5,0.32,0.10,Oct 19 two runs 0.42 / 0.22 (mean; error nominal)
