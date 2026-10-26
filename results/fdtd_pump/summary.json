@@ -1,0 +1,10 @@
+{
+ "absorbed_fraction_notip": 0.7304029350712502,
+ "absorbed_fraction_tip": 0.39032842676072976,
+ "fresnel_p": 0.7962036436998221,
+ "theta_deg": 45.0,
+ "w_um": 3.0,
+ "column_ratio_min": 0.008218198491313524,
+ "column_ratio_max": 4.20676158847973,
+ "surface_ratio_under_apex": 1.0482810924070365
+}

@@ -133,11 +133,56 @@ side the 2-D line spot overestimates how far the plasma reaches, the contacts
 are either fully blocking or fully injecting (a Schottky contact is neither),
 and the 80 MHz pulse train is replaced by its average.
 
+## Single-pulse emission chain (added 2026-10-26 evening; `docs/pulse_chain.md`)
+
+Requested scope: one pulse, bare field, no traps; Maxwell solver for the optical pump;
+Pizzuto-style self-consistent carrier dynamics; tip scattering demodulated at the
+68 kHz tapping. Three stages, all 2-D:
+
+1. **Pump FDTD** (`ltemsim/optics_fdtd.py`, `scripts/run_fdtd_pump.py`, `results/fdtd_pump/`):
+   820 nm, 100 fs, p-pol, 45° incidence, 15 nm Yee grid, CPML, lossy GaAs, Drude PtIr tip
+   (R = 40 nm, 15° cone, 20 nm gap). Validation without tip: absorbed fraction 0.73 vs
+   Fresnel 0.80. With the (2-D wedge) tip: apex enhancement ×1–4 in interference bands on
+   the illuminated side, full shadow on the far side (absorbed fraction 0.39) — an upper
+   bound for a real cone.
+2. **Carrier dynamics** (`ltemsim/pulse_dynamics.py`): hydrodynamic electrons/holes with
+   inertia (τ_n = τ_p = 0.1 ps), self-consistent Poisson every 0.5 fs, 4 ps; quasi-static
+   THz near field above the tip position vs height from the instantaneous charge.
+3. **Tip + demodulation** (`ltemsim/tip_demod.py`): finite-dipole tip (R 40 nm, L 300 nm),
+   Drude-GaAs β under the tip, tapping A = 60 nm, harmonics 1–3; detected waveform
+   ∝ d S_n/dt, 2.2 THz low-pass; RMS vs beam position X (`scripts/run_pulse_chain.py`,
+   `results/pulse_chain/`).
+
+Results (RMS of the detected 2nd-harmonic waveform, normalised; anode at −x; beam
+travels toward +x; `results/pulse_chain/summary_table.md`):
+
+| run | X = −7.5 | −5 | −2.5 | 0 | +2.5 | +5 | +7.5 |
+|---|---|---|---|---|---|---|---|
+| 2 mW, symmetric spot (no tip map) | 0.09 | 0.63 | 0.18 | 0.07 | 0.38 | **1.00** | 0.11 |
+| 2 mW, with 2-D tip shadow map | 0.08 | 0.44 | **1.00** | 0.70 | 0.58 | 0.07 | 0.08 |
+| 30 mW (saturated, 2×10¹⁹), tip map | 0.17 | **1.00** | 0.54 | 0.13 | 0.13 | 0.31 | 0.14 |
+| measured +25 V | – | (≈0) | – | 0.24 | 0.59 | 1.00 | 0.15 |
+| measured −25 V | 0.15 | 0.45 | 0.52 | 0.33 | 0.20 | 0.32 | – |
+
+With a symmetric spot the chain is **one-sided by itself**: the signal peaks with the
+tip 5 µm from the spot on the **anode side** (X = +5 for anode at −x), 1.6× the
+cathode side, and drops sharply at 7.5 µm — the same side and shape as the +25 V
+data. The mechanism is the electron front: the light electrons accelerate toward the
+anode-side flank and build the sharpest, fastest charge front there, which is what a
+tip sensing dE_z/dt picks up; the hole front on the cathode side is slower. This is
+also a polarity-flipping effect, unlike the illumination-direction asymmetry. The
+spot-centre value is too small (0.07 vs 0.24). The 2-D tip map over-shadows the +x
+side and rearranges the pattern (its 3-D counterpart is a ~1 µm stripe); the truth is
+between the two 2 mW rows. At 30 mW the per-pulse density is pinned at the saturation
+value and the flanks become flat-topped.
+
 ## Status / to do
 
 * [x] solver, validation tests
 * [x] emission proxy + tip scan vs X
 * [x] baseline + coarse scenario tests (power, lifetime, surface recombination, contacts)
+* [x] single-pulse chain: pump FDTD → hydrodynamic carriers + Poisson → FDM tip → tapping demodulation
+* [ ] 3-D (or body-of-revolution) pump FDTD for a realistic tip shadow; Monte Carlo carriers (intervalley) behind the same Poisson
 * [ ] Schottky (thermionic) contact model
 * [ ] pulsed (80 MHz) carrier dynamics instead of the time average
 * [ ] 3-D (finite spot length) estimate of the space-charge field
