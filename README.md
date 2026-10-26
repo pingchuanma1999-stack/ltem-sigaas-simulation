@@ -93,8 +93,10 @@ trap-charged, blocking-contact layer). Photocurrent 0.12 mA (gain 0.14; measured
 which are symmetric, so the predicted tip response is symmetric and peaked at
 X = 0 — it does not reproduce the one-sided measurement (peak at X = +5 µm).
 
-**2. Pump power 0.02–2 mW (coarse).** I ∝ P^0.6; the gap is shorted at every power
-(even 20 µW, n(0) ≈ 5×10¹⁵), and the response stays symmetric.
+**2. Pump power 0.02–2 mW (coarse) and 0.5 / 8 mW (production, `results/sweeps/power/`).**
+I ∝ P^0.6 (0.5 mW: 0.063 mA; 2 mW: 0.124 mA; 8 mW: 0.205 mA); the gap is
+shorted at every power (even 20 µW, n(0) ≈ 5×10¹⁵), and the response stays symmetric.
+Reaching the measured 0.6 mA by power alone would need tens of mW in this model.
 
 **3. Confined plasma (coarse): extra SRH lifetime 0.1–1 ns, or S = 10⁶ cm/s.** The
 electrons are confined to the spot, but the carrier that is in excess leaks into
