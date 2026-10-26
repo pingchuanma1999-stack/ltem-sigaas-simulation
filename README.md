@@ -74,15 +74,59 @@ Every `Params` field can be given on the command line as `name=value`.
 | P_avg | 2 mW | **assumed**; unity-gain current 0.44 mA/mW |
 | spot w (1/e²) | 3 µm | **assumed** (0 V step fit: 3.2 µm incl. tip) |
 
-## Results
+## Results so far (2026-10-26)
 
-See `results/baseline/` (figures + csv) and the "Results" section at the end of
-this file, which is updated as runs complete.
+Production grid: `results/baseline/` (maps, profiles, polarisation, tip scan, csv).
+Quick scenario tests on a coarse grid (0.5 µm cells, ~1 min each):
+`results/coarse_scenarios/` (figures, tables, and the saved solutions). Numbers
+below are from the production baseline unless marked "coarse".
+
+**1. Baseline (25 V, anode −x, 2 mW, w = 3 µm, literature EL2 parameters, blocking
+Au contacts).** The continuously pumped spot does not stay a local conductive
+island: with the radiative-limited lifetime (10–100 ns) the photo-plasma spreads
+over the whole 40 µm gap (n ≈ p ≈ 5×10¹⁷ cm⁻³ at the centre, 2–5×10¹⁶ at the
+electrodes), EL2 is fully neutral everywhere in the plasma, and the bias field
+collapses in the entire gap (|E_x| ≈ 0.05 kV/cm vs 4 kV/cm bare). The 25 V drops
+within ~1 µm of the **cathode**, in a layer where EL2⁺ ≈ 5×10¹⁵ cm⁻³ (a
+trap-charged, blocking-contact layer). Photocurrent 0.12 mA (gain 0.14; measured
+0.6 mA). The only fields left at the spot are the ambipolar (Dember-type) fields,
+which are symmetric, so the predicted tip response is symmetric and peaked at
+X = 0 — it does not reproduce the one-sided measurement (peak at X = +5 µm).
+
+**2. Pump power 0.02–2 mW (coarse).** I ∝ P^0.6; the gap is shorted at every power
+(even 20 µW, n(0) ≈ 5×10¹⁵), and the response stays symmetric.
+
+**3. Confined plasma (coarse): extra SRH lifetime 0.1–1 ns, or S = 10⁶ cm/s.** The
+electrons are confined to the spot, but the carrier that is in excess leaks into
+the dark gap (holes to ~10¹⁵ cm⁻³ out to the anode) and shorts it from the other
+side; |E_x(±5 µm)| ≤ 0.3 kV/cm, I ≈ 0, response symmetric (two lobes at ±2.5 µm).
+
+**4. Injecting contacts (coarse, n = p = 10¹⁶–10¹⁷ at the metal).** Restores a
+field in the gap and makes it one-sided — but on the **cathode** side (hole-rich
+flank: E = J/(e p μ_p) is larger there), with the tip response peaking for the tip
+on the cathode side, i.e. opposite to the measurement, and with 17–140 mA of
+dark double-injection current, which is unphysical for Au/SI-GaAs.
+
+**Reading.** Within this steady-state model, any plasma channel that connects the
+spot to an electrode screens the bias field in the gap, and the voltage then drops
+in a thin trap-charged layer at a blocking contact. The measured facts — strong
+emission with the spot 5 µm from the tip on the anode side, ~0.5–1 collected
+carrier per photon — require a bias field that survives near the spot while a
+substantial current flows. None of the explored variants does both. What decides
+between the regimes is not known yet: the pump power on the sample, the
+steady-state carrier density and lifetime (a 0 V reflectivity decay out to
+~1 ns; photocurrent vs chopping frequency), and the contact behaviour (dark I–V,
+linearity of photocurrent vs V, change under polarity reversal). On the model
+side the 2-D line spot overestimates how far the plasma reaches, the contacts
+are either fully blocking or fully injecting (a Schottky contact is neither),
+and the 80 MHz pulse train is replaced by its average.
 
 ## Status / to do
 
 * [x] solver, validation tests
 * [x] emission proxy + tip scan vs X
-* [ ] calibrate P_avg against the 0.6 mA photocurrent
-* [ ] sweeps: P_avg, N_EL2, σ_p, σ_n, spot size, anode side
+* [x] baseline + coarse scenario tests (power, lifetime, surface recombination, contacts)
+* [ ] Schottky (thermionic) contact model
+* [ ] pulsed (80 MHz) carrier dynamics instead of the time average
 * [ ] 3-D (finite spot length) estimate of the space-charge field
+* [ ] once P_avg, lifetime and contact I–V are measured: sweeps of N_EL2, σ_p, σ_n, spot size

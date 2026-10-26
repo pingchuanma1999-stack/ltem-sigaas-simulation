@@ -65,6 +65,7 @@ class Material:
         self.cn = p.c_n * sc.C0 * sc.t0
         self.cp = p.c_p * sc.C0 * sc.t0
         self.B = p.B_rad * sc.C0 * sc.t0
+        self.inv_tau_srh = (sc.t0 / (p.tau_srh_ns * 1e-9)) if p.tau_srh_ns > 0 else 0.0   # scaled 1/tau
         self.en_th = self.cn * self.n1
         self.ep_th = self.cp * self.p1
         self.mu_n = p.mu_n / sc.mu0
@@ -74,6 +75,11 @@ class Material:
         self.S = p.S_surface / (sc.mu0 * sc.E0)      # surface recombination velocity, same scaling as a velocity
         # equilibrium
         self.psi_eq, self.n_eq, self.p_eq = self._equilibrium()
+        # carrier densities imposed at the electrode faces (scaled)
+        if p.contact_density > 0:
+            self.n_contact = self.p_contact = p.contact_density / sc.C0
+        else:
+            self.n_contact, self.p_contact = self.n_eq, self.p_eq
 
     # ------------------------------------------------------------ equilibrium
     def _equilibrium(self):

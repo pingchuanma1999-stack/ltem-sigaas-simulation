@@ -55,7 +55,7 @@ class Continuity:
         bf, dpb, kb = self._contact_data(psi_semi, mat.mu_n, mat.vsat_n, Ve)
         diag_c = np.zeros(self.N)
         np.add.at(diag_c, bf.cell, -kb * bernoulli(-dpb))
-        np.add.at(rhs, bf.cell, -kb * mat.n_eq * bernoulli(dpb))
+        np.add.at(rhs, bf.cell, -kb * mat.n_contact * bernoulli(dpb))
         # surface recombination on the free surface
         if mat.S > 0:
             fs = self.top.free_surface
@@ -81,7 +81,7 @@ class Continuity:
         bf, dpb, kb = self._contact_data(psi_semi, mat.mu_p, mat.vsat_p, Ve)
         diag_c = np.zeros(self.N)
         np.add.at(diag_c, bf.cell, kb * bernoulli(dpb))
-        np.add.at(rhs, bf.cell, kb * mat.p_eq * bernoulli(-dpb))
+        np.add.at(rhs, bf.cell, kb * mat.p_contact * bernoulli(-dpb))
         if mat.S > 0:
             fs = self.top.free_surface
             np.add.at(diag_c, fs.cell, fs.A * mat.S)
@@ -107,8 +107,8 @@ class Continuity:
         mat = self.mat
         bf, dpb, kb_n = self._contact_data(psi_semi, mat.mu_n, mat.vsat_n, Ve)
         _, _, kb_p = self._contact_data(psi_semi, mat.mu_p, mat.vsat_p, Ve)
-        Jn = kb_n * (mat.n_eq * bernoulli(dpb) - n[bf.cell] * bernoulli(-dpb))   # already times A
-        Jp = -kb_p * (mat.p_eq * bernoulli(-dpb) - p[bf.cell] * bernoulli(dpb))
+        Jn = kb_n * (mat.n_contact * bernoulli(dpb) - n[bf.cell] * bernoulli(-dpb))   # already times A
+        Jp = -kb_p * (mat.p_contact * bernoulli(-dpb) - p[bf.cell] * bernoulli(dpb))
         left = bf.x < 0
         I_left = np.sum((Jn + Jp)[left])
         I_right = np.sum((Jn + Jp)[~left])

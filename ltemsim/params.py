@@ -71,6 +71,12 @@ class Params:
     field_dependent_mobility: bool = True
     B_rad: float = 1.0e-10          # cm^3/s, band-to-band (Stout & Kushner use 1e-10; literature 1-7e-10)
     S_surface: float = 0.0          # cm/s, surface recombination velocity at the free GaAs surface (0 = off)
+    contact_density: float = 0.0    # cm^-3; 0 = equilibrium (blocking) contacts n_eq, p_eq at the metal.
+                                    #   >0 = injecting ("doped-ohmic") contacts with n = p = this value at the
+                                    #   electrode faces, so the plasma can draw current from the electrodes.
+    tau_srh_ns: float = 0.0         # ns, extra bulk SRH lifetime from other defects (0 = off). The EL2 path
+                                    #   alone gives a radiative-limited plasma (10-100 ns); set ~0.1-1 ns to
+                                    #   test the confined-plasma regime.
 
     # --------------------------------------------------- shallow compensation
     # LEC SI-GaAs: carbon acceptors ~1e15-1e16, residual donors ~1e15.

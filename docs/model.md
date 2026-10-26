@@ -27,6 +27,10 @@ Semiconductor (z < 0), scaled units (De Mari, see `ltemsim/physics.py`):
 * Generation: G(x,z) = α Φ₀ exp(−2x²/w²) exp(−α|z|), Φ₀ = 2P(1−R)/(π w² hν) — the
   time-averaged rate of the 80 MHz pulse train.
 * Mobility: μ(E) = μ₀/(1 + μ₀|E|/v_sat), monotone (GaAs NDR is not modelled).
+* Optional extras: surface recombination velocity S at the free surface; an
+  extra bulk SRH lifetime τ_srh (defects other than EL2); injecting contacts
+  with n = p = `contact_density` at the metal (default: equilibrium values,
+  i.e. blocking contacts).
 
 Boundary conditions: thin Au electrodes on the surface for |x| ≥ 20 µm as ohmic
 contacts (ψ = ±V/2 + ψ_eq, n = n_eq, p = p_eq); free GaAs surface with zero

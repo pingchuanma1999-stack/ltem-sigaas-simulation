@@ -124,7 +124,7 @@ class Simulation:
         return State(np.full(self.top.N_all, mat.psi_eq), np.full(Ns, mat.n_eq), np.full(Ns, mat.p_eq), np.full(Ns, f_eq))
 
     def run(self, V_total=None, gen_factor=1.0, warm=None, dark_t_end=30.0, light_t_end=10.0,
-            dt0=1e-13, march_kwargs=None) -> Solution:
+            dt0=1e-13, march_kwargs=None, ckpt_path=None, resume=None) -> Solution:
         """Dark bias turn-on followed by light turn-on, each marched to the steady state."""
         p_ = self.p
         mat = self.mat
@@ -138,6 +138,16 @@ class Simulation:
         log = []
         t_start = time.time()
         Vl, Vr, Ve, b = self.scaled_contacts(V_left, V_right)
+        if resume is not None:
+            # resume the light stage from a checkpoint written by march(ckpt_path=...)
+            d = np.load(resume)
+            st = State(d["psi"], d["n"], d["p"], d["f"])
+            log.append({"stage": "resumed", "t_sim": float(d["t"]), "t_wall": 0.0, "converged": None})
+            G, phi = self.generation_arrays(gen_factor)
+            st, info = self.newton.march(st, G, phi, b, Ve, dt0=float(d["dt"]), t_end=light_t_end,
+                                         tag=f"light x{gen_factor:.2g}", ckpt_path=ckpt_path, **mk)
+            log.append({"stage": f"light x{gen_factor:.3g}", "t_wall": time.time() - t_start, **{k: v for k, v in info.items() if k != "info"}})
+            return self._finish(st, G, gen_factor, V_left, V_right, Ve, log)
         if warm is None:
             st = self.equilibrium_state()
             G0, phi0 = np.zeros(Ns), np.zeros(Ns)
@@ -151,8 +161,13 @@ class Simulation:
             st = State(warm.psi.copy(), warm.n.copy(), warm.p.copy(), warm.f.copy())
         # light on
         G, phi = self.generation_arrays(gen_factor)
-        st, info = self.newton.march(st, G, phi, b, Ve, dt0=dt0, t_end=light_t_end, tag=f"light x{gen_factor:.2g}", **mk)
+        st, info = self.newton.march(st, G, phi, b, Ve, dt0=dt0, t_end=light_t_end, tag=f"light x{gen_factor:.2g}",
+                                     ckpt_path=ckpt_path, **mk)
         log.append({"stage": f"light x{gen_factor:.3g}", "t_wall": time.time() - t_start, **{k: v for k, v in info.items() if k != "info"}})
+        return self._finish(st, G, gen_factor, V_left, V_right, Ve, log)
+
+    def _finish(self, st, G, gen_factor, V_left, V_right, Ve, log):
+        p_, mat, g, Ns = self.p, self.mat, self.grid, self.Ns
         NTp = mat.NT * (1 - st.f)
         I_l, I_r = self.cont.contact_currents(st.psi[:Ns], st.n, st.p, Ve)
         conv = mat.sc.J0 * mat.sc.L0 * p_.spot_length_y_cm * 1e3   # scaled current/length -> mA for the spot

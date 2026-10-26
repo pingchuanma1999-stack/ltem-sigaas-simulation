@@ -116,12 +116,19 @@ class CoupledNewton:
         mat = self.mat
         cn, cp, NT, B, ni = mat.cn, mat.cp, mat.NT, mat.B, mat.ni
         rad = B * (n * p - ni ** 2)
+        drad_dn, drad_dp = B * p, B * n
+        if mat.inv_tau_srh > 0:            # extra bulk SRH path (not through EL2)
+            den = n + p + 2 * ni
+            srh = mat.inv_tau_srh * (n * p - ni ** 2) / den
+            rad = rad + srh
+            drad_dn = drad_dn + mat.inv_tau_srh * (p + ni) ** 2 / den ** 2
+            drad_dp = drad_dp + mat.inv_tau_srh * (n + ni) ** 2 / den ** 2
         Rn = cn * n * NT * (1 - f) - en * NT * f + rad
         Rp = cp * p * NT * f - ep * NT * (1 - f) + rad
         d = dict(
             Rn=Rn, Rp=Rp,
-            dRn_dn=cn * NT * (1 - f) + B * p, dRn_dp=B * n, dRn_df=-NT * (cn * n + en),
-            dRp_dn=B * p, dRp_dp=cp * NT * f + B * n, dRp_df=NT * (cp * p + ep),
+            dRn_dn=cn * NT * (1 - f) + drad_dn, dRn_dp=drad_dp, dRn_df=-NT * (cn * n + en),
+            dRp_dn=drad_dn, dRp_dp=cp * NT * f + drad_dp, dRp_df=NT * (cp * p + ep),
         )
         return d
 
@@ -138,8 +145,8 @@ class CoupledNewton:
         rho[:Ns] = p - n + NT * (1 - f) + mat.ND - mat.NA
         F_psi = self.lam2 * (self.pois.L @ psi + b) + top.vol_all * rho
         rc = self._recomb(n, p, f, en, ep)
-        fn = self._carrier_flux(psi_s, n, mat.mu_n, mat.vsat_n, Ve, mat.n_eq, +1)
-        fp = self._carrier_flux(psi_s, p, mat.mu_p, mat.vsat_p, Ve, mat.p_eq, -1)
+        fn = self._carrier_flux(psi_s, n, mat.mu_n, mat.vsat_n, Ve, mat.n_contact, +1)
+        fp = self._carrier_flux(psi_s, p, mat.mu_p, mat.vsat_p, Ve, mat.p_contact, -1)
         F_n = np.zeros(Ns); F_p = np.zeros(Ns)
         np.add.at(F_n, f_.c, fn["J"]); np.add.at(F_n, f_.nb, -fn["J"])
         np.add.at(F_p, f_.c, fp["J"]); np.add.at(F_p, f_.nb, -fp["J"])
@@ -200,47 +207,55 @@ class CoupledNewton:
     # ------------------------------------------------------------ Newton for one (pseudo-)time step
     def newton_step(self, st: State, G, en, ep, b, Ve, old, inv_dt, max_iter=25, tol_psi=1e-5, tol_log=1e-5,
                     dpsi_max=20.0, dlog_max=3.0, df_max=0.3, verbose=False, tag=""):
+        """Clipped Newton without line search.
+
+        The residual 2-norm is not monotone along the Newton path for this
+        system (a full step can raise it by 10^2 before quadratic convergence
+        sets in), so a backtracking line search stalls.  Elementwise clipping
+        of the increments is used instead, with a divergence guard.
+        """
         mat = self.mat
         nfloor = mat.p.n_floor / mat.sc.C0
         Na, Ns = self.Na, self.Ns
         F, J = self.residual_jacobian(st, G, en, ep, b, Ve, old, inv_dt)
-        normF = np.linalg.norm(F)
+        normF0 = np.linalg.norm(F)
         hist = []
         converged = False
+        bad = 0
         for it in range(max_iter):
             delta = spla.spsolve(J, -F)
+            if not np.all(np.isfinite(delta)):
+                break
             dpsi, du, dv, df = delta[:Na], delta[Na:Na + Ns], delta[Na + Ns:Na + 2 * Ns], delta[Na + 2 * Ns:]
             s = 1.0
             for arr, lim in ((dpsi, dpsi_max), (du, dlog_max), (dv, dlog_max), (df, df_max)):
                 m = np.max(np.abs(arr))
                 if m > lim:
                     s = min(s, lim / m)
-            accepted = False
-            for _ in range(10):
-                trial = State(st.psi + s * dpsi, np.maximum(st.n * np.exp(s * du), nfloor),
-                              np.maximum(st.p * np.exp(s * dv), nfloor), np.clip(st.f + s * df, 0.0, 1.0))
-                F_t, _ = self.residual_jacobian(trial, G, en, ep, b, Ve, old, inv_dt, want_jac=False)
-                normF_t = np.linalg.norm(F_t)
-                if normF_t < (1.0 - 1e-4 * s) * normF or normF_t < 1e-300:
-                    accepted = True
-                    break
-                s *= 0.5
-            st = trial
+            st = State(st.psi + s * dpsi, np.maximum(st.n * np.exp(s * du), nfloor),
+                       np.maximum(st.p * np.exp(s * dv), nfloor), np.clip(st.f + s * df, 0.0, 1.0))
             F, J = self.residual_jacobian(st, G, en, ep, b, Ve, old, inv_dt)
             normF = np.linalg.norm(F)
-            step_psi, step_log, step_f = s * np.max(np.abs(dpsi)), s * max(np.max(np.abs(du)), np.max(np.abs(dv))), s * np.max(np.abs(df))
-            hist.append((it, float(step_psi), float(step_log), float(step_f), float(normF), float(s), bool(accepted)))
+            step_psi = s * np.max(np.abs(dpsi))
+            step_log = s * max(np.max(np.abs(du)), np.max(np.abs(dv)))
+            step_f = s * np.max(np.abs(df))
+            hist.append((it, float(step_psi), float(step_log), float(step_f), float(normF), float(s)))
             if verbose:
                 print(f"    [{tag}] newton {it:2d}: dpsi {step_psi:.1e} VT, dlog {step_log:.1e}, df {step_f:.1e}, "
-                      f"s={s:.3f}{'' if accepted else ' (no decrease)'}, |F|={normF:.2e}")
+                      f"s={s:.3f}, |F|={normF:.2e}")
             if step_psi < tol_psi and step_log < tol_log and step_f < tol_psi:
                 converged = True
+                break
+            # divergence guard: residual exploding for several consecutive clipped iterations
+            bad = bad + 1 if (normF > 1e6 * max(normF0, 1e-30) and s < 1.0) else 0
+            if bad >= 6 or not np.isfinite(normF):
                 break
         return st, converged, hist
 
     # ------------------------------------------------------------ pseudo-transient driver
     def march(self, st: State, G, phi, b, Ve, dt0=1e-13, dt_max=10.0, t_end=30.0, grow=2.5,
-              max_steps=600, step_tol=1e-4, polish_every=12, polish_after=1e-10, verbose=False, tag="", log=None):
+              max_steps=600, step_tol=1e-4, polish_every=20, polish_after=1e-10, polish_iter=12,
+              grow_below=12, shrink_above=18, verbose=False, tag="", log=None, ckpt_path=None):
         """Backward-Euler time stepping from state `st` towards the steady state.
 
         dt0, dt_max, t_end, polish_after in seconds.  Every `polish_every` steps
@@ -261,7 +276,7 @@ class CoupledNewton:
             old = st.copy()
             inv_dt = 1.0 / dt
             new, ok, hist = self.newton_step(st, G, en, ep, b, Ve, old, inv_dt, tol_psi=step_tol, tol_log=step_tol,
-                                             verbose=False, tag=tag)
+                                             max_iter=shrink_above + 6, verbose=False, tag=tag)
             nit = len(hist)
             if ok:
                 st = new
@@ -273,12 +288,14 @@ class CoupledNewton:
                 if verbose and (step % 10 == 0 or step < 3):
                     print(f"  [{tag}] step {step:3d} t={t*t0:.2e}s dt={dt*t0:.2e}s newton {nit:2d} "
                           f"ss-res psi {w[0]:.1e} n {w[1]:.1e} p {w[2]:.1e} f {w[3]:.1e} ({time.time()-t_wall:.0f}s)")
-                if nit <= 8:
+                if nit <= grow_below:
                     dt = min(dt * grow, dt_max / t0)
-                elif nit > 14:
+                elif nit > shrink_above:
                     dt = max(dt * 0.5, dt0 / t0)
+                if ckpt_path is not None and step % 10 == 0:
+                    np.savez_compressed(ckpt_path, psi=st.psi, n=st.n, p=st.p, f=st.f, t=t * t0, dt=dt * t0, step=step)
                 if step % polish_every == 0 and t * t0 > polish_after:
-                    st_try, ok_ss, hist_ss = self.newton_step(st, G, en, ep, b, Ve, None, 0.0, max_iter=25,
+                    st_try, ok_ss, hist_ss = self.newton_step(st, G, en, ep, b, Ve, None, 0.0, max_iter=polish_iter,
                                                               verbose=False, tag=tag + " ss")
                     if ok_ss:
                         st_ss = st_try
@@ -294,7 +311,8 @@ class CoupledNewton:
                 if dt * t0 < 1e-18:
                     raise RuntimeError("time step collapsed")
         if st_ss is None:
-            st_ss, ok_ss, hist_ss = self.newton_step(st, G, en, ep, b, Ve, None, 0.0, max_iter=40, verbose=False, tag=tag + " ss")
+            st_try, ok_ss, hist_ss = self.newton_step(st, G, en, ep, b, Ve, None, 0.0, max_iter=40, verbose=False, tag=tag + " ss")
+            st_ss = st_try if ok_ss else st       # keep the marched state if the polish went astray
         st = st_ss
         Fss, _ = self.residual_jacobian(st, G, en, ep, b, Ve, None, 0.0, want_jac=False)
         w = self.weighted_norm(Fss)
