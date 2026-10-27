@@ -195,7 +195,7 @@ def xscan_table(folder):
     return {nh: np.array(v) for nh, v in out.items()}, np.array(ff)
 
 
-from ltemsim.tip_demod import detected_waveform, lowpass_steep
+from ltemsim.tip_demod import detected_waveform, lowpass_steep, band_metric
 
 
 def fdm_route(folder, X, deriv=2, harmonics=(1, 2, 3, 4), f_cut=2.2):
@@ -207,8 +207,8 @@ def fdm_route(folder, X, deriv=2, harmonics=(1, 2, 3, 4), f_cut=2.2):
         Sn = d[f"S{n}"] if f"S{n}" in d.files else None
         if Sn is None:
             continue
-        out[n] = amplitude_metrics(t, detected_waveform(t, Sn, order=deriv, f_cut_thz=f_cut))[1]
-    out["far"] = amplitude_metrics(t, lowpass_steep(t, np.gradient(d["Jx"], t), f_cut_thz=f_cut))[1]
+        out[n] = band_metric(t, Sn, deriv=deriv)
+    out["far"] = band_metric(t, np.cumsum(d["Jx"]) * (t[1] - t[0]), deriv=2)
     return out
 
 
@@ -292,7 +292,7 @@ def fig_dember():
                 tab = {}
                 for X in X_LIST:
                     d = load_run(folder, X); dem = redemod(d, harmonics=(3,))
-                    tab.setdefault(3, []).append(amplitude_metrics(d["t"], detected_waveform(d["t"], dem[3], order=2))[1])
+                    tab.setdefault(3, []).append(band_metric(d["t"], dem[3], deriv=2))
                 r = np.array(tab[3])
             else:
                 r = fdm_table(folder, deriv=2)[3]

@@ -74,9 +74,13 @@ def lowpass(t, y, f_cut_thz=2.2):
     return np.convolve(y, w, mode="same")
 
 
-def amplitude_metrics(t, y):
-    """Peak |y| and RMS over the trace (after removing the pre-pulse baseline)."""
-    y = y - y[: max(3, len(y) // 20)].mean()
+def amplitude_metrics(t, y, baseline=False):
+    """Peak |y| and RMS over the trace. The simulated traces start from zero carriers, so no baseline is
+    removed by default (the earlier default subtracted the mean of the first 5 % of the window, which for a
+    pulse centred at 0.15 ps is the rising edge itself; corrected 2026-10-27)."""
+    y = np.asarray(y, dtype=float)
+    if baseline:
+        y = y - y[: max(3, len(y) // 20)].mean()
     return float(np.max(np.abs(y))), float(np.sqrt(np.mean(y ** 2)))
 
 
@@ -143,12 +147,14 @@ def demodulate_pizzuto(t, heights_nm, Ez_tip, n_surface_t, A_nm=200.0, h_min_nm=
 # lets the 20 THz plasma oscillations of the model leak into a second-derivative quantity.
 # ---------------------------------------------------------------------------
 def lowpass_steep(t, y, f_cut_thz=2.2, order=8):
-    """Zero-phase steep low-pass (|H| = 1/(1+(f/fc)^order)) on a uniformly sampled trace; baseline removed."""
-    y = np.asarray(y, dtype=float)
-    y0 = y - y[: max(3, len(y) // 20)].mean()
-    f = np.fft.rfftfreq(len(y0), t[1] - t[0])
-    H = 1.0 / (1.0 + (f / (f_cut_thz * 1e12)) ** order)
-    return np.fft.irfft(np.fft.rfft(y0) * H, n=len(y0))
+    """Causal Butterworth low-pass (order 8 by default) as a stand-in for the detector response; no baseline
+    removal (simulated traces start at zero). Causal, so the pulse keeps its arrival time; the RMS is the same as
+    for the zero-phase version (same |H|)."""
+    from scipy.signal import butter, sosfilt
+    y0 = np.asarray(y, dtype=float)
+    fs = 1.0 / (t[1] - t[0])
+    sos = butter(order, f_cut_thz * 1e12 / (fs / 2), btype="low", output="sos")
+    return sosfilt(sos, y0)
 
 
 def detected_waveform(t, S, order=2, f_cut_thz=2.2, filter_order=8):
@@ -177,3 +183,17 @@ def demodulate_positions(heights_nm, Q, A_nm=180.0, h_min_nm=10.0, harmonics=(1,
         out[n] = (2.0 / n_theta) * np.sum(Qt * np.cos(n * theta)[:, None], axis=0)
     out[0] = Qt.mean(axis=0)
     return out
+
+
+def band_metric(t, S, deriv=2, band_thz=(0.3, 2.0)):
+    """Band-limited amplitude of the detected waveform: sqrt of the spectral power of d^deriv S/dt^deriv inside
+    band_thz. This is what the RMS of a detector-band-limited waveform measures, and it is insensitive to the
+    exact detector roll-off (unlike the RMS of a filtered time trace, which for a second-derivative quantity
+    is dominated by leakage of the 5-15 THz surge). The trace is extended with its final value and the plateau
+    removed before the FFT, so the periodic extension has no step."""
+    S = np.asarray(S, dtype=float)
+    S = np.concatenate([S, np.full(len(S), S[-1])]) - S[-1]
+    f = np.fft.rfftfreq(len(S), t[1] - t[0])
+    Y = np.fft.rfft(S) * (2j * np.pi * f) ** deriv
+    m = (f >= band_thz[0] * 1e12) & (f <= band_thz[1] * 1e12)
+    return float(np.sqrt(np.sum(np.abs(Y[m]) ** 2)))

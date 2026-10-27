@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import RegularGridInterpolator
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from ltemsim.pulse_dynamics import PulseConfig, PulseSim
-from ltemsim.tip_demod import demodulate_positions, detected_waveform, amplitude_metrics, lowpass_steep
+from ltemsim.tip_demod import demodulate_positions, detected_waveform, amplitude_metrics, lowpass_steep, band_metric
 from run_baseline import load_measured
 
 HEIGHTS_NM = (10, 15, 25, 45, 80, 130, 200, 270, 330, 370)
@@ -62,7 +62,7 @@ def simulate(out, fdtd="none", P_avg_mW=2.0, degenerate=1.0, T=300.0, V_bias=25.
                   f"|E_gap| max {np.abs(rec['E_gap']).max()/1e3:.1f} kV/cm, {time.time()-t0:.0f}s", flush=True)
 
 
-def demod(out, A_nm=180.0, h_min_nm=10.0, harmonics=(1, 2, 3, 4), f_cut_thz=2.2, deriv=2):
+def demod(out, A_nm=180.0, h_min_nm=10.0, harmonics=(1, 2, 3, 4), f_cut_thz=2.2, deriv=2, band=(0.3, 2.0)):
     meta = json.load(open(os.path.join(out, "meta.json")))
     heights = [h for h in meta["heights_nm"]]
     measured = load_measured(os.path.join(os.path.dirname(__file__), "..", "data", "measured_tip_scan.csv"))
@@ -80,11 +80,17 @@ def demod(out, A_nm=180.0, h_min_nm=10.0, harmonics=(1, 2, 3, 4), f_cut_thz=2.2,
             traces[f"det{n}"] = detected_waveform(t, dem[n], order=deriv, f_cut_thz=f_cut_thz)
             traces[f"det{n}_d1"] = detected_waveform(t, dem[n], order=1, f_cut_thz=f_cut_thz)
         traces["far"] = lowpass_steep(t, np.gradient(Jx, t), f_cut_thz=f_cut_thz)
-        metrics = {k: amplitude_metrics(t, v)[1] for k, v in traces.items()}
+        # metrics: band-limited (0.3-2 THz) spectral amplitude of d^deriv S_n/dt^deriv (robust to the detector roll-off)
+        metrics = {}
+        for n in harmonics:
+            metrics[f"det{n}"] = band_metric(t, dem[n], deriv=deriv, band_thz=band)
+            metrics[f"det{n}_d1"] = band_metric(t, dem[n], deriv=1, band_thz=band)
+            metrics[f"S{n}"] = amplitude_metrics(t, dem[n])[0]
+        metrics["far"] = band_metric(t, np.cumsum(Jx) * (t[1] - t[0]), deriv=2, band_thz=band)     # dJ/dt = d^2(∫J dt)/dt^2
         res[X] = dict(t=t, traces=traces, metrics=metrics, Q=Q)
     Xs = np.array(meta["X"])
     table = {k: np.array([res[X]["metrics"][k] for X in meta["X"]]) for k in res[meta["X"][0]]["metrics"]}
-    summ = dict(meta, A_nm=A_nm, h_min_nm=h_min_nm, f_cut_thz=f_cut_thz, deriv=deriv, rms={k: v.tolist() for k, v in table.items()},
+    summ = dict(meta, A_nm=A_nm, h_min_nm=h_min_nm, f_cut_thz=f_cut_thz, deriv=deriv, band_thz=list(band), rms={k: v.tolist() for k, v in table.items()},
                 rms_norm={k: (v / v.max()).tolist() for k, v in table.items()})
     json.dump(summ, open(os.path.join(out, f"demod_A{A_nm:g}_h{h_min_nm:g}.json"), "w"), indent=1)
     for k in ("det1", "det2", "det3", "det4", "det3_d1", "far"):
@@ -105,12 +111,12 @@ def demod(out, A_nm=180.0, h_min_nm=10.0, harmonics=(1, 2, 3, 4), f_cut_thz=2.2,
     for n, c in ((1, "C1"), (2, "C0"), (3, "C2"), (4, "C8")):
         ax.plot(Xs, table[f"det{n}"] / table[f"det{n}"].max(), "o-", color=c, label=f"n = {n}")
     ax.plot(Xs, table["far"] / table["far"].max(), "x:", color="0.5", label="far field dJ/dt")
-    ax.plot(Xs, table["det3_d1"] / table["det3_d1"].max(), "^--", color="0.3", label="n = 3, old dS/dt convention")
+    ax.plot(Xs, table["det3_d1"] / table["det3_d1"].max(), "^--", color="0.3", label="n = 3, first-derivative convention")
     for Vb, col, mk in ((25, "k", "o"), (-25, "0.5", "s")):
         m = measured[measured["bias_V"] == Vb]
         xm = m["X_um"] if Vb == 25 else -np.asarray(m["X_um"])
         ax.errorbar(xm, m["rms"], yerr=m["rms_err"], fmt=mk, color=col, capsize=3, label=f"measured {Vb:+d} V" + ("" if Vb == 25 else " (X→−X)"))
-    ax.set_xlabel("X (µm)"); ax.set_ylabel("RMS, normalised"); ax.set_title("(c) amplitude vs X"); ax.legend(fontsize=7)
+    ax.set_xlabel("X (µm)"); ax.set_ylabel("band-limited amplitude (0.3-2 THz), normalised"); ax.set_title("(c) amplitude vs X"); ax.legend(fontsize=7)
     fig.suptitle(f"per-tip-position chain: {meta['P_avg_mW']:g} mW, {meta['V_bias']:g} V, V_tip = {meta['V_tip']:g} V, "
                  f"{'FDTD tip map' if meta['fdtd'] not in (None, 'none') else 'symmetric pump'}, A = {A_nm:g} nm, h_min = {h_min_nm:g} nm")
     fig.savefig(os.path.join(out, f"tip_positions_A{A_nm:g}.png"), dpi=130)

@@ -6,3 +6,4 @@ results/**/solution.npz
 results/tip_positions/logs/
 results/tip_positions/**/*.npz
 results/fdtd_pump/heights/*.npz
+results/pulse_chain/power/*.npz
