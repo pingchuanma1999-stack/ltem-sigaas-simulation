@@ -1,0 +1,42 @@
+{
+ "10": {
+  "absorbed_fraction": 0.4497902365414636,
+  "surface_ratio_under_apex": 0.9282730694082166
+ },
+ "15": {
+  "absorbed_fraction": 0.45183401552665103,
+  "surface_ratio_under_apex": 1.0753895490172922
+ },
+ "25": {
+  "absorbed_fraction": 0.4493241760501521,
+  "surface_ratio_under_apex": 0.8850872778891794
+ },
+ "45": {
+  "absorbed_fraction": 0.45274568152585265,
+  "surface_ratio_under_apex": 0.9184568086863575
+ },
+ "80": {
+  "absorbed_fraction": 0.4538140851486897,
+  "surface_ratio_under_apex": 0.815950684151223
+ },
+ "130": {
+  "absorbed_fraction": 0.46075742987995344,
+  "surface_ratio_under_apex": 0.7682879401660666
+ },
+ "200": {
+  "absorbed_fraction": 0.475543877452043,
+  "surface_ratio_under_apex": 0.7314545908689017
+ },
+ "270": {
+  "absorbed_fraction": 0.49506031763585717,
+  "surface_ratio_under_apex": 0.7328814045801111
+ },
+ "330": {
+  "absorbed_fraction": 0.5123328449500945,
+  "surface_ratio_under_apex": 0.7413805869851718
+ },
+ "370": {
+  "absorbed_fraction": 0.5213822210514445,
+  "surface_ratio_under_apex": 0.734028748592179
+ }
+}
