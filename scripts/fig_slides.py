@@ -239,15 +239,20 @@ def fig_xscan():
     t1 = fdm_table("P2mW_notipmap_degen", deriv=1); t2 = fdm_table("P2mW_notipmap_degen", deriv=2)
     tables["fdm_2mW_deriv1"] = {str(k): v.tolist() for k, v in t1.items()}; tables["fdm_2mW_deriv2"] = {str(k): v.tolist() for k, v in t2.items()}
     ax.plot(Xs, t2["far"] / t2["far"].max(), color=C["grey"], lw=1.6, ls=":", marker="x", ms=7, label="far-field reference dJ_x/dt")
-    ax.plot(Xs, t1[3] / t1[3].max(), color=C["amber"], lw=2, ls="--", marker="^", ms=7, mfc="white", label="FDM route, detected ∝ ṗ (resonant-antenna limit), n = 3")
     for nh in (1, 2, 3, 4):
-        ax.plot(Xs, t2[nh] / t2[nh].max(), color=HARM[nh], lw=2, marker=MARK[nh], ms=7, mfc="white", label=f"FDM route, detected ∝ p̈ (short-dipole limit), n = {nh}")
+        ax.plot(Xs, t2[nh] / t2[nh].max(), color=HARM[nh], lw=2, marker=MARK[nh], ms=7, mfc="white", label=f"local field + finite-dipole tip, 2 mW, n = {nh}")
+    try:
+        t30 = fdm_table("P30mW_notipmap_degen", deriv=2)
+        ax.plot(Xs, t30[3] / t30[3].max(), color=C["ink"], lw=1.8, ls=":", marker="x", ms=7, label="local field + finite-dipole tip, 30 mW, n = 3")
+    except FileNotFoundError:
+        pass
     plot_measured(ax)
-    ax.set_title("(a) tip-free near field + finite-dipole tip, 2 mW: the detection convention decides the side")
+    ax.set_title("(a) route 1: tip-free local field × finite-dipole model (tip absent from the physics)")
     # (b) per-tip-position chain
     ax = axs[1]
-    for folder, col, ls, mk, lab, allh in (("P2mW_sym", None, "-", None, "tip in Poisson, symmetric pump, 2 mW", True),
-                                           ("P2mW_tipmap", C["ink"], "--", "v", "tip in Poisson + FDTD tip pump maps, 2 mW, n = 3", False),
+    for folder, col, ls, mk, lab, allh in (("P2mW_sym", None, "-", None, "grounded tip, symmetric pump, 2 mW", True),
+                                           ("P2mW_tipmap", C["ink"], "--", "v", "grounded tip + FDTD pump map per height (2-D shadow), 2 mW, n = 3", False),
+                                           ("P30mW_sym", C["ink"], ":", "x", "grounded tip, symmetric pump, 30 mW, n = 3", False),
                                            ("P2mW_sym_Vtip12", C["grey"], "-.", "P", "tip at +12.5 V (one electrode grounded), 2 mW, n = 3", False)):
         try:
             Xp, tp = positions_table(folder)
@@ -261,11 +266,11 @@ def fig_xscan():
         else:
             ax.plot(Xp, tp["det3"] / tp["det3"].max(), color=col, lw=1.8, ls=ls, marker=mk, ms=7, mfc="white", label=lab)
     plot_measured(ax)
-    ax.set_title("(b) per-tip-position chain: tip as an equipotential in Poisson, detected ∝ p̈")
+    ax.set_title("(b) route 2: per-tip-position chain, tip as an equipotential in the Poisson solve")
     for ax in axs:
         ax.axvline(0, color=C["grey"], lw=0.6); ax.set_xlim(-8.5, 8.5); ax.set_ylim(0, 1.15)
         ax.set_xlabel("X = beam position relative to the tip (µm);  X > 0: tip on the anode side of the spot")
-    axs[0].set_ylabel("RMS of the detected waveform, normalised")
+    axs[0].set_ylabel("band-limited amplitude (0.3–2 THz) of the detected waveform, normalised")
     h0, l0 = axs[0].get_legend_handles_labels(); h1, l1 = axs[1].get_legend_handles_labels()
     keep = [i for i, l in enumerate(l1) if not l.endswith("n = 1") and not l.endswith("n = 2") and not l.endswith("n = 4") and "symmetric pump, 2 mW, n = 3" not in l]
     fig.legend(h0 + [h1[i] for i in keep], l0 + [l1[i] for i in keep], loc="lower center", ncol=3, bbox_to_anchor=(0.5, -0.01), fontsize=10, columnspacing=1.0)
