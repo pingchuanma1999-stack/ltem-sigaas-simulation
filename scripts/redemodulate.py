@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from ltemsim.tip_demod import demodulate_pizzuto, lowpass, amplitude_metrics
 
 
-def main(run_dir, A_nm=200.0, h_min_nm=0.0, harmonics=(1, 2, 3, 4), ltem_factor=False):
+def main(run_dir, A_nm=180.0, h_min_nm=0.0, harmonics=(1, 2, 3, 4), ltem_factor=False):
     rows = {}
     for f in sorted(glob.glob(os.path.join(run_dir, "X*.npz"))):
         d = np.load(f)

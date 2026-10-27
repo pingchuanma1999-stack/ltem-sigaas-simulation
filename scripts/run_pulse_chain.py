@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import RegularGridInterpolator
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from ltemsim.pulse_dynamics import PulseConfig, PulseSim
-from ltemsim.tip_demod import demodulate, lowpass, amplitude_metrics
+from ltemsim.tip_demod import demodulate_pizzuto, lowpass, amplitude_metrics
 from run_baseline import load_measured
 
 X_LIST = (-7.5, -5.0, -2.5, 0.0, 2.5, 5.0, 7.5)
@@ -32,8 +32,9 @@ def load_ratio(path):
     return ratio_map, d
 
 
-def main(out="results/pulse_chain", fdtd="results/fdtd_pump/ratio.npz", P_avg_mW=2.0, A_nm=60.0, h_min_nm=1.0,
-         t_end_ps=4.0, harmonics=(1, 2, 3)):
+def main(out="results/pulse_chain", fdtd="results/fdtd_pump/ratio.npz", P_avg_mW=2.0, A_nm=180.0, h_min_nm=0.0,
+         t_end_ps=4.0, harmonics=(1, 2, 3, 4)):
+    # tapping amplitude 180 nm (user, 2026-10-26: ~180 nm in the experiment), harmonics 1-4, Pizzuto FDM conventions
     os.makedirs(out, exist_ok=True)
     ratio_map, dr = load_ratio(fdtd)
     measured = load_measured(os.path.join(os.path.dirname(__file__), "..", "data", "measured_tip_scan.csv"))
@@ -44,8 +45,8 @@ def main(out="results/pulse_chain", fdtd="results/fdtd_pump/ratio.npz", P_avg_mW
         N = sim.generation_profile(ratio_map)
         t0 = time.time()
         rec = sim.run(N)
-        dem = demodulate(rec["t"], rec["heights_nm"], rec["Ez_tip"], rec["n_center"], A_nm=A_nm, h_min_nm=h_min_nm,
-                         harmonics=harmonics)
+        dem = demodulate_pizzuto(rec["t"], rec["heights_nm"], rec["Ez_tip"], rec["n_center"], A_nm=A_nm,
+                                 h_min_nm=h_min_nm, harmonics=harmonics)
         t = rec["t"]
         dJx = np.gradient(rec["Jx"], t)
         traces = {f"S{n}": dem[n] for n in harmonics}
@@ -89,9 +90,9 @@ def main(out="results/pulse_chain", fdtd="results/fdtd_pump/ratio.npz", P_avg_mW
     # (c) traces at X = 0, 2.5, 5
     ax = axs[0, 2]
     for X, c in ((0.0, "k"), (2.5, "C0"), (5.0, "C1"), (-2.5, "C2"), (-5.0, "C3")):
-        y = lowpass(results[X]["t"], results[X]["traces"]["dS2_dt"])
+        y = lowpass(results[X]["t"], results[X]["traces"]["dS3_dt"])
         ax.plot(results[X]["t"] * 1e12, y / 1e12, color=c, label=f"X={X:+.1f}")
-    ax.set_xlabel("t (ps)"); ax.set_ylabel("d S2/dt (V/cm/ps, 2.2 THz low-pass)"); ax.legend(fontsize=8); ax.set_title("detected waveform ∝ d/dt of the demodulated near field (2nd harmonic)")
+    ax.set_xlabel("t (ps)"); ax.set_ylabel("d S3/dt (V/cm/ps, 2.2 THz low-pass)"); ax.legend(fontsize=8); ax.set_title("detected waveform ∝ d/dt of the demodulated near field (3rd harmonic)")
     # (d) E_loc vs height at a few times, X = 0
     ax = axs[1, 0]
     rec = r0["rec"]
@@ -106,7 +107,7 @@ def main(out="results/pulse_chain", fdtd="results/fdtd_pump/ratio.npz", P_avg_mW
     ax.set_xlabel("t (ps)"); ax.legend(loc="upper left", fontsize=8); ax2.legend(loc="upper right", fontsize=8); ax.set_title("screening of the applied field, X = 0")
     # (f) amplitude vs X
     ax = axs[1, 2]
-    for k, c in (("dS2_dt", "C0"), ("dS3_dt", "C1"), ("S2", "C9"), ("dJx_dt", "C3")):
+    for k, c in (("dS1_dt", "C9"), ("dS2_dt", "C0"), ("dS3_dt", "C1"), ("dS4_dt", "C2"), ("dJx_dt", "C3")):
         if k in table:
             ax.plot(Xs, table[k] / table[k].max(), "o-", color=c, label=f"model {k} RMS")
     for Vb, col, mk in ((25, "k", "o"), (-25, "C7", "s")):

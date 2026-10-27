@@ -148,25 +148,26 @@ Pizzuto-style self-consistent carrier dynamics; tip scattering demodulated at th
 2. **Carrier dynamics** (`ltemsim/pulse_dynamics.py`): hydrodynamic electrons/holes with
    inertia (τ_n = τ_p = 0.1 ps), self-consistent Poisson every 0.5 fs, 4 ps; quasi-static
    THz near field above the tip position vs height from the instantaneous charge.
-3. **Tip + demodulation** (`ltemsim/tip_demod.py`): finite-dipole tip (R 40 nm, L 300 nm),
-   Drude-GaAs β under the tip, tapping A = 60 nm, harmonics 1–3; detected waveform
+3. **Tip + demodulation** (`ltemsim/tip_demod.py`): finite-dipole tip in Pizzuto's
+   conventions (a 40 nm, l 600 nm, g 0.8e^{0.06i}, 0.84 THz), Drude-GaAs β under the tip,
+   tapping A = 180 nm (as in the experiment), harmonics 1–4; detected waveform
    ∝ d S_n/dt, 2.2 THz low-pass; RMS vs beam position X (`scripts/run_pulse_chain.py`,
-   `results/pulse_chain/`).
+   `scripts/redemodulate.py`, `results/pulse_chain/`).
 
-Results (RMS of the detected 2nd-harmonic waveform, normalised; anode at −x; beam
-travels toward +x; `results/pulse_chain/summary_table.md`):
+Results (RMS of the detected 3rd-harmonic waveform, A = 180 nm, normalised; anode at −x;
+beam travels toward +x; harmonics 1–4 in `results/pulse_chain/*/redemod_A180_h0.json`):
 
 | run | X = −7.5 | −5 | −2.5 | 0 | +2.5 | +5 | +7.5 |
 |---|---|---|---|---|---|---|---|
-| 2 mW, symmetric spot (no tip map) | 0.09 | 0.63 | 0.18 | 0.07 | 0.38 | **1.00** | 0.11 |
-| 2 mW, with 2-D tip shadow map | 0.08 | 0.44 | **1.00** | 0.70 | 0.58 | 0.07 | 0.08 |
-| 30 mW (saturated, 2×10¹⁹), tip map | 0.17 | **1.00** | 0.54 | 0.13 | 0.13 | 0.31 | 0.14 |
+| 2 mW, symmetric spot (no tip map) | 0.11 | 0.76 | 0.22 | 0.02 | 0.24 | **1.00** | 0.14 |
+| 2 mW, with 2-D tip shadow map | 0.11 | 0.70 | **1.00** | 0.64 | 0.54 | 0.13 | 0.09 |
+| 30 mW (saturated, 2×10¹⁹), tip map | 0.19 | **1.00** | 0.46 | 0.12 | 0.12 | 0.31 | 0.11 |
 | measured +25 V | – | (≈0) | – | 0.24 | 0.59 | 1.00 | 0.15 |
 | measured −25 V | 0.15 | 0.45 | 0.52 | 0.33 | 0.20 | 0.32 | – |
 
 With a symmetric spot the chain is **one-sided by itself**: the signal peaks with the
-tip 5 µm from the spot on the **anode side** (X = +5 for anode at −x), 1.6× the
-cathode side, and drops sharply at 7.5 µm — the same side and shape as the +25 V
+tip 5 µm from the spot on the **anode side** (X = +5 for anode at −x), 1.3× the
+cathode side (1.6× with a 60 nm tapping amplitude), and drops sharply at 7.5 µm — the same side and shape as the +25 V
 data. The mechanism is the electron front: the light electrons accelerate toward the
 anode-side flank and build the sharpest, fastest charge front there, which is what a
 tip sensing dE_z/dt picks up; the hole front on the cathode side is slower. This is

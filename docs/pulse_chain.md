@@ -62,12 +62,18 @@ retardation across it (30 fs) is small against the 100 fs rise.
 
 ## Stage 3 — tip scattering and demodulation (`ltemsim/tip_demod.py`)
 
-* Finite-dipole model (Cvitkovic et al. 2007; Hauer et al. 2012 form), R = 40 nm,
-  L = 300 nm, sample response β = (ε − 1)/(ε + 1) with ε the Drude permittivity of
-  photoexcited GaAs at 1 THz using the instantaneous density under the tip.
-* Scattered field E_sc(h, t) = Re α_eff(h, t)·E_loc(h, t); tapping h(τ) = h_min + A(1 + cos Ωτ),
-  Ω = 2π·68 kHz, A = 60 nm, h_min = 1 nm; lock-in harmonics S_n(t) = (1/π)∫E_sc cos(nθ)dθ.
-  Ω drops out (time scales separated by 10⁷); A, h_min and n matter.
+* Finite-dipole model in the conventions of A. Pizzuto's MATLAB script
+  (`docs/reference/pizzuto_fdm_demod_reference.m`): original Cvitkovic 2007 form,
+  a = 40 nm, l = 600 nm, g = 0.8 e^{0.06 i}, 0.84 THz, collection factor (1 + β);
+  sample response β = (ε − 1)/(ε + 1) with ε the Drude permittivity of photoexcited
+  GaAs using the instantaneous density under the tip. Her LTEM (1 − β)·t_pump factor
+  is available as an option but off by default, because the carrier simulation already
+  supplies the emitted field below the tip (its static part, 2/(ε_r + 1), is in E_loc).
+* The complex α acts on the analytic signal of E_loc(h, t): E_sc = Re[α (E_loc + iH[E_loc])].
+* Tapping h(τ) = h_min + A(1 + cos Ωτ), Ω = 2π·68 kHz, **A = 180 nm** (experiment ≈ 180 nm),
+  h_min = 0; harmonics **n = 1–4** all reported, S_n(t) = (1/π)∫E_sc cos(nθ)dθ (exact
+  projection; equivalent to the cosine-series fit of the script). Ω drops out; A, h_min
+  and n matter.
 * The detected waveform is taken ∝ d S_n/dt (the static dipole left behind after the
   pulse does not radiate), low-passed at 2.2 THz (detector bandwidth). Amplitude metric:
   RMS of that trace, compared with the measured RMS vs X.
