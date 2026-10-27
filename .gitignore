@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 results/**/solution.npz
 *.log
+results/tip_positions/logs/
+results/tip_positions/**/*.npz
+results/fdtd_pump/heights/*.npz

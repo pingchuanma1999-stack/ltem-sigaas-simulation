@@ -82,6 +82,12 @@ class PulseConfig:
     v_sat: float = 1.0e7              # cm/s
     T: float = 300.0
     degenerate_diffusion: bool = False   # generalised Einstein relation D = mu (kT/q) F_1/2(eta)/F_-1/2(eta), eta from the local density
+    # tip as an equipotential body in the Poisson solve (per-tip-position chain)
+    tip_in_poisson: bool = False
+    tip_height_nm: float = 100.0      # apex-surface distance
+    tip_half_angle_deg: float = 15.0
+    tip_apex_radius_um: float = 0.04
+    V_tip: float = 0.0                # tip potential relative to the gap midpoint (V); 0 = grounded tip, symmetric bias
     # run
     dt_fs: float = 0.5
     t_end_ps: float = 4.0
@@ -101,13 +107,17 @@ def build_grid(cfg: PulseConfig) -> Grid:
     xf = np.arange(-cfg.x_fine, cfg.x_fine + 1e-9, cfg.dx_fine)
     right = _graded(cfg.x_fine, cfg.x_half, cfg.dx_fine, 2.0)
     xe = np.concatenate([(-right)[::-1], xf, right])
-    # z: 0.02 um within 0.3 um of the surface, 0.1 um to 2 um, graded beyond
+    # z (GaAs): 0.02 um within 0.3 um of the surface, 0.1 um to 2 um, graded beyond
     z1 = np.arange(0.0, 0.3 + 1e-9, 0.02)
     z2 = np.arange(0.3, 2.0 + 1e-9, 0.1)[1:]
     z3 = _graded(2.0, cfg.depth, 0.1, 3.0)
     zs = np.concatenate([z1, z2, z3])                 # positive depths 0 .. depth
+    # z (air): 0.02 um to 0.5 um (tapping range), 0.05 um to 1 um, 0.1 um to 2 um, graded beyond
+    za1 = np.arange(0.0, 0.5 + 1e-9, 0.02)
+    za2 = np.arange(0.5, 1.0 + 1e-9, 0.05)[1:]
+    za2b = np.arange(1.0, 2.0 + 1e-9, 0.1)[1:]
     za3 = _graded(2.0, cfg.air_height, 0.1, 3.0)
-    za = np.concatenate([z1, z2, za3])
+    za = np.concatenate([za1, za2, za2b, za3])
     ze = np.concatenate([(-zs)[::-1], za[1:]])
     ks = int(np.argmin(np.abs(ze)))
     ze[ks] = 0.0
@@ -139,7 +149,8 @@ class PulseSim:
         VT = self.mat.sc.VT
         Vl, Vr = self.mat.psi_eq + V_left / VT, self.mat.psi_eq + V_right / VT
         self.b_applied = self.pois.dirichlet_rhs(Vl, Vr)
-        psi0 = self.pois.solve_linear(self.b_applied, np.zeros(self.top.N_all))
+        self._setup_tip(VT)
+        psi0 = self.solve_poisson(self.b_applied, np.zeros(self.top.N_all), applied=True)
         Ex0, Ez0 = self.pois.field(psi0)
         E0 = self.mat.sc.E0
         self.Ex_app = Ex0[: g.ks] * E0
@@ -169,6 +180,56 @@ class PulseSim:
         """F_1/2(eta)/F_-1/2(eta) for the local reduced density dens/N_eff (parabolic band, lattice temperature)."""
         r, gval = self._g_table
         return np.interp(np.log(np.maximum(dens, 1e-30) / N_eff), r, gval, left=1.0, right=gval[-1])
+
+    # ------------------------------------------------------------ tip as an equipotential in Poisson
+    def _setup_tip(self, VT):
+        """Mark the air cells inside the tip (apex at tip_height above the surface, half-angle cone, one cell wide
+        at least) and build the Poisson matrix with those cells held at a fixed potential (Dirichlet rows)."""
+        import scipy.sparse as sp
+        import scipy.sparse.linalg as spla
+        cfg, g, top = self.cfg, self.grid, self.top
+        self.tip_cells = np.zeros(0, dtype=int)
+        self.V_tip_scaled = cfg.V_tip / VT
+        if not cfg.tip_in_poisson:
+            self._lu_tip = None
+            return
+        h = cfg.tip_height_nm * 1e-3                       # um
+        th = np.radians(cfg.tip_half_angle_deg)
+        R = cfg.tip_apex_radius_um
+        zb = g.ze[:-1]                                     # bottom edge of each cell row (um)
+        rows = np.where((zb >= h - 1e-9) & (np.arange(g.Nz) >= g.ks))[0]
+        cells = []
+        for k in rows:
+            half = max(R, R + (g.zc[k] - h - R) * np.tan(th)) if g.zc[k] > h + R else R
+            half = max(half, 0.5 * g.dx[np.argmin(np.abs(g.xc - cfg.tip_x_um))] + 1e-9)
+            cols = np.where(np.abs(g.xc - cfg.tip_x_um) <= half)[0]
+            cells.append(k * g.Nx + cols)
+        self.tip_cells = np.concatenate(cells) if cells else np.zeros(0, dtype=int)
+        A = (self.pois.lam2 * self.pois.L).tolil()
+        for c in self.tip_cells:
+            A.rows[c] = [int(c)]
+            A.data[c] = [1.0]
+        self._A_tip = A.tocsc()
+        self._lu_tip = spla.splu(self._A_tip)
+        self._tip_mask = np.zeros(top.N_all, dtype=bool); self._tip_mask[self.tip_cells] = True
+        if self.verbose:
+            print(f"  tip in Poisson: apex {cfg.tip_height_nm:.0f} nm above the surface, {self.tip_cells.size} cells, V_tip = {cfg.V_tip:g} V")
+
+    def solve_poisson(self, b, rho, applied=False):
+        """Linear Poisson with the electrodes (via b) and, if enabled, the tip cells at V_tip (applied=True) or 0 (space charge)."""
+        if self._lu_tip is None:
+            return self.pois.solve_linear(b, rho)
+        rhs = -(self.pois.lam2 * b + self.pois.vol * rho)
+        rhs[self.tip_cells] = self.V_tip_scaled if applied else 0.0
+        return self._lu_tip.solve(rhs)
+
+    def tip_charge(self, psi, b, rho):
+        """Charge induced on the tip (C per cm of y) = minus the residual of the free Poisson equation on the tip cells."""
+        if self.tip_cells.size == 0:
+            return 0.0
+        res = self.pois.lam2 * (self.pois.L @ psi + b) + self.pois.vol * rho      # = 0 on free cells
+        q_scaled = -res[self.tip_cells].sum()                                      # units: C0 * um^2 (per unit y)
+        return float(q_scaled * QE * self.mat.sc.C0 * 1e-8)
 
     # ------------------------------------------------------------ generation
     def generation_profile(self, ratio_map=None):
@@ -252,9 +313,20 @@ class PulseSim:
         ic = np.argmin(np.abs(self.xc)); kc = self.Nzs - 1
         t_wall = time.time()
         rho_all = np.zeros(self.top.N_all)
-        psi_app = self.pois.solve_linear(self.b_applied, np.zeros(self.top.N_all))
+        psi_app = self.solve_poisson(self.b_applied, np.zeros(self.top.N_all), applied=True)
         Exf, Ezf = self._face_fields(psi_app)
         Exf_app, Ezf_app = Exf.copy(), Ezf.copy()
+        rec["Q_tip"] = []; rec["E_gap"] = []
+        rec["Q_tip_static"] = self.tip_charge(psi_app, self.b_applied, np.zeros(self.top.N_all))
+        # gap cell: the air cell just below the apex at the tip column (for E_gap); surface cell below it
+        ic_tip = np.argmin(np.abs(self.xc - cfg.tip_x_um * 1e-4))
+        if self.tip_cells.size:
+            k_apex = int(self.tip_cells.min() // self.Nx)
+            k_gap = max(k_apex - 1, g.ks)
+        else:
+            k_gap = g.ks + int(np.argmin(np.abs(g.zc[g.ks:] - cfg.tip_height_nm * 1e-3)))
+        i_gap = k_gap * self.Nx + ic_tip; i_surf = (g.ks - 1) * self.Nx + ic_tip
+        dz_gap = (g.zc[k_gap] - g.zc[g.ks - 1]) * 1e-4
         for step in range(nsteps):
             t = step * dt
             gt = np.exp(-((t - t0) ** 2) / (2 * sigI ** 2)) / (sigI * np.sqrt(2 * np.pi))
@@ -271,10 +343,12 @@ class PulseSim:
             p = np.maximum(p + dt * (G - divp), 0.0)
             # Poisson: space-charge potential (electrodes at the applied potentials by superposition)
             rho_all[: self.Ns] = ((p - n) / C0).ravel()
-            psi_sc = self.pois.solve_linear(self.b_zero, rho_all)
+            psi_sc = self.solve_poisson(self.b_zero, rho_all)
             Exs, Ezs = self._face_fields(psi_sc)
             Exf = Exf_app + Exs; Ezf = Ezf_app + Ezs
             if step % rec_every == 0:
+                rec["Q_tip"].append(self.tip_charge(psi_sc, self.b_zero, rho_all))
+                rec["E_gap"].append(-(psi_sc[i_gap] - psi_sc[i_surf]) * self.VT / dz_gap)
                 # total current per unit y length: the x-current through a vertical cut, averaged over cuts (A/cm);
                 # for the far field only its time derivative matters
                 Jx = QE * np.sum((Fpx - Fnx) * self.dz[:, None], axis=0).mean()
@@ -289,7 +363,7 @@ class PulseSim:
                 rec["snapshots"][snap_steps[step]] = dict(n=n.copy(), p=p.copy(), Ex=Exc, Ez=Ezc)
             if self.verbose and step % 2000 == 0:
                 print(f"  t={t*1e12:.2f} ps  n_max={n.max():.2e}  E_x(centre,surf)={0.5*(Exf[kc, ic-1]+Exf[kc, ic])/1e3:.2f} kV/cm  ({time.time()-t_wall:.0f}s)")
-        for k in ("t", "Jx", "Jz", "Ex_center", "n_center"):
+        for k in ("t", "Jx", "Jz", "Ex_center", "n_center", "Q_tip", "E_gap"):
             rec[k] = np.array(rec[k])
         rec["Ez_tip"] = np.array(rec["Ez_tip"])          # (nt, nh), V/cm
         rec["heights_nm"] = np.array(cfg.heights_nm)

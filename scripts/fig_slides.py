@@ -174,11 +174,11 @@ def fig_nearfield():
     for X, col, ls in ((5.0, C["orange"], "-"), (2.5, C["blue"], "-"), (0.0, C["ink"], "-"), (-2.5, C["green"], "--"), (-5.0, C["amber"], "--")):
         d = load_run("P2mW_notipmap_degen", X)
         dem = redemod(d, harmonics=(3,))
-        y = lowpass(d["t"], np.gradient(dem[3], d["t"]))
-        ax.plot(d["t"] * 1e12, y / 1e12, color=col, lw=2, ls=ls, label=f"X = {X:+.1f} µm")
+        y = detected_waveform(d["t"], dem[3], order=2)
+        ax.plot(d["t"] * 1e12, y / 1e24, color=col, lw=2, ls=ls, label=f"X = {X:+.1f} µm")
     ax.axhline(0, color=C["grey"], lw=0.6)
-    ax.set_xlim(0, 2.5); ax.set_xlabel("t (ps)"); ax.set_ylabel("dS₃/dt (V cm⁻¹ ps⁻¹), 2.2 THz low-pass")
-    ax.set_title("(c) detected waveform ∝ dS₃/dt vs beam position"); ax.legend(loc="upper right")
+    ax.set_xlim(0, 2.5); ax.set_xlabel("t (ps)"); ax.set_ylabel("d²S₃/dt² (V cm⁻¹ ps⁻²), steep 2.2 THz low-pass")
+    ax.set_title("(c) detected waveform ∝ d²S₃/dt² vs beam position"); ax.legend(loc="upper right")
     fig.savefig(os.path.join(OUT, "sim_nearfield_demod.png"), dpi=150)
     plt.close(fig)
 
@@ -195,50 +195,80 @@ def xscan_table(folder):
     return {nh: np.array(v) for nh, v in out.items()}, np.array(ff)
 
 
-def summary_rms(folder, key="dS3_dt"):
-    """RMS vs X from a run's summary.json (A = 180 nm, h_min = 0, harmonics 1-4 as run)."""
-    d = json.load(open(os.path.join(ROOT, "results", "pulse_chain", folder, "summary.json")))
-    return np.array(d["X"]), np.array(d["rms"][key]), np.array(d["rms"]["dJx_dt"])
+from ltemsim.tip_demod import detected_waveform, lowpass_steep
+
+
+def fdm_route(folder, X, deriv=2, harmonics=(1, 2, 3, 4), f_cut=2.2):
+    """RMS of the detected waveform from a tip-free + FDM run (npz with S_n at A = 180 nm, h_min = 0), both conventions."""
+    d = load_run(folder, X)
+    t = d["t"]
+    out = {}
+    for n in harmonics:
+        Sn = d[f"S{n}"] if f"S{n}" in d.files else None
+        if Sn is None:
+            continue
+        out[n] = amplitude_metrics(t, detected_waveform(t, Sn, order=deriv, f_cut_thz=f_cut))[1]
+    out["far"] = amplitude_metrics(t, lowpass_steep(t, np.gradient(d["Jx"], t), f_cut_thz=f_cut))[1]
+    return out
+
+
+def fdm_table(folder, deriv=2, X_list=X_LIST):
+    rows = [fdm_route(folder, X, deriv=deriv) for X in X_list]
+    keys = rows[0].keys()
+    return {k: np.array([r[k] for r in rows]) for k in keys}
+
+
+def positions_table(folder, A_nm=180.0, h_min_nm=10.0):
+    """Per-tip-position run: demodulated with the saved json if present, else recomputed."""
+    fn = os.path.join(ROOT, "results", "tip_positions", folder, f"demod_A{A_nm:g}_h{h_min_nm:g}.json")
+    if not os.path.exists(fn):
+        sys.path.insert(0, os.path.join(ROOT, "scripts"))
+        from run_tip_positions import demod
+        demod(os.path.join(ROOT, "results", "tip_positions", folder), A_nm=A_nm, h_min_nm=h_min_nm)
+    d = json.load(open(fn))
+    return np.array(d["X"]), {k: np.array(v) for k, v in d["rms"].items()}
 
 
 def fig_xscan():
     fig, axs = plt.subplots(1, 2, figsize=(17, 6.8), constrained_layout=True, sharey=True)
     fig.get_layout_engine().set(rect=(0, 0.13, 1, 0.87))
     tables = {}
-    # (a) 3 um spot, 2 mW: classical (old) vs degenerate diffusion, harmonics 1-4
-    ax = axs[0]
     Xs = np.array(X_LIST)
-    tab_old, ff_old = xscan_table("P2mW_notipmap")
-    tables["P2mW_notipmap_classical"] = dict(rms={str(nh): v.tolist() for nh, v in tab_old.items()}, dJx_dt=ff_old.tolist(), X=list(X_LIST))
-    ax.plot(Xs, tab_old[3] / tab_old[3].max(), color=C["grey"], lw=1.8, ls="--", marker="^", ms=7, mfc="white",
-            label="2 mW, w = 3 µm: classical D = µkT/q, n = 3")
-    d = json.load(open(os.path.join(ROOT, "results", "pulse_chain", "P2mW_notipmap_degen", "summary.json")))
-    tables["P2mW_notipmap_degen"] = d["rms"]
+    # (a) tip-free near field + FDM, 2 mW: the two detection conventions
+    ax = axs[0]
+    t1 = fdm_table("P2mW_notipmap_degen", deriv=1); t2 = fdm_table("P2mW_notipmap_degen", deriv=2)
+    tables["fdm_2mW_deriv1"] = {str(k): v.tolist() for k, v in t1.items()}; tables["fdm_2mW_deriv2"] = {str(k): v.tolist() for k, v in t2.items()}
+    ax.plot(Xs, t2["far"] / t2["far"].max(), color=C["grey"], lw=1.6, ls=":", marker="x", ms=7, label="far-field reference dJ_x/dt")
+    ax.plot(Xs, t1[3] / t1[3].max(), color=C["amber"], lw=2, ls="--", marker="^", ms=7, mfc="white", label="FDM route, detected ∝ ṗ (resonant-antenna limit), n = 3")
     for nh in (1, 2, 3, 4):
-        v = np.array(d["rms"][f"dS{nh}_dt"])
-        ax.plot(d["X"], v / v.max(), color=HARM[nh], lw=2, marker=MARK[nh], ms=7, mfc="white", label=f"2 mW, w = 3 µm: degenerate (Fermi-pressure) diffusion, n = {nh}")
+        ax.plot(Xs, t2[nh] / t2[nh].max(), color=HARM[nh], lw=2, marker=MARK[nh], ms=7, mfc="white", label=f"FDM route, detected ∝ p̈ (short-dipole limit), n = {nh}")
     plot_measured(ax)
-    ax.set_title("(a) 3 µm spot, 2 mW: Fermi-pressure diffusion changes little")
-    # (b) 30 mW: spot size 3 um vs 7 um, 3rd harmonic
+    ax.set_title("(a) tip-free near field + finite-dipole tip, 2 mW: the detection convention decides the side")
+    # (b) per-tip-position chain
     ax = axs[1]
-    for folder, col, mk, ls, lab in (("P30mW_notipmap_degen", C["orange"], "o", "-", "30 mW, w = 3 µm: degenerate, 300 K"),
-                                     ("P30mW_w7_degen", C["blue"], "s", "-", "30 mW, w = 7 µm: degenerate, 300 K"),
-                                     ("P30mW_w7_T1500", C["amber"], "D", "--", "30 mW, w = 7 µm: classical, 1500 K")):
+    for folder, col, ls, mk, lab, allh in (("P2mW_sym", None, "-", None, "tip in Poisson, symmetric pump, 2 mW", True),
+                                           ("P2mW_tipmap", C["ink"], "--", "v", "tip in Poisson + FDTD tip pump maps, 2 mW, n = 3", False),
+                                           ("P2mW_sym_Vtip12", C["grey"], "-.", "P", "tip at +12.5 V (one electrode grounded), 2 mW, n = 3", False)):
         try:
-            X, r, ff = summary_rms(folder)
-        except FileNotFoundError:
-            continue
-        tables[folder] = dict(X=X.tolist(), dS3_dt=r.tolist(), dJx_dt=ff.tolist())
-        ax.plot(X, r / r.max(), color=col, lw=2, ls=ls, marker=mk, ms=7, mfc="white", label=lab + ", n = 3")
+            Xp, tp = positions_table(folder)
+        except Exception as e:
+            print("skip", folder, e); continue
+        tables["positions_" + folder] = {k: v.tolist() for k, v in tp.items()}
+        if allh:
+            for nh in (1, 2, 3, 4):
+                ax.plot(Xp, tp[f"det{nh}"] / tp[f"det{nh}"].max(), color=HARM[nh], lw=2, marker=MARK[nh], ms=7, mfc="white", label=f"{lab}, n = {nh}")
+            ax.plot(Xp, tp["far"] / tp["far"].max(), color=C["grey"], lw=1.6, ls=":", marker="x", ms=7)
+        else:
+            ax.plot(Xp, tp["det3"] / tp["det3"].max(), color=col, lw=1.8, ls=ls, marker=mk, ms=7, mfc="white", label=lab)
     plot_measured(ax)
-    ax.set_title("(b) 30 mW: the peak follows the spot edge — 1/e² radius 3 µm vs 7 µm")
+    ax.set_title("(b) per-tip-position chain: tip as an equipotential in Poisson, detected ∝ p̈")
     for ax in axs:
-        ax.axvline(0, color=C["grey"], lw=0.6); ax.set_xlim(-11, 11); ax.set_ylim(0, 1.15)
+        ax.axvline(0, color=C["grey"], lw=0.6); ax.set_xlim(-8.5, 8.5); ax.set_ylim(0, 1.15)
         ax.set_xlabel("X = beam position relative to the tip (µm);  X > 0: tip on the anode side of the spot")
     axs[0].set_ylabel("RMS of the detected waveform, normalised")
     h0, l0 = axs[0].get_legend_handles_labels(); h1, l1 = axs[1].get_legend_handles_labels()
-    keep = [i for i, l in enumerate(l1) if l.startswith("30 mW")]
-    fig.legend(h0 + [h1[i] for i in keep], l0 + [l1[i] for i in keep], loc="lower center", ncol=4, bbox_to_anchor=(0.5, -0.01), fontsize=10, columnspacing=1.0)
+    keep = [i for i, l in enumerate(l1) if not l.endswith("n = 1") and not l.endswith("n = 2") and not l.endswith("n = 4") and "symmetric pump, 2 mW, n = 3" not in l]
+    fig.legend(h0 + [h1[i] for i in keep], l0 + [l1[i] for i in keep], loc="lower center", ncol=3, bbox_to_anchor=(0.5, -0.01), fontsize=10, columnspacing=1.0)
     with open(os.path.join(OUT, "xscan_A180.json"), "w") as fh:
         json.dump(tables, fh, indent=1)
     fig.savefig(os.path.join(OUT, "sim_xscan.png"), dpi=150)
@@ -246,51 +276,51 @@ def fig_xscan():
     return tables
 
 
-# ----------------------------------------------------------------------------- diffusion model / Dember interference
-DEMBER = {  # from scripts/dember_interference.py (dS3/dt RMS, A = 180 nm, 2 mW, 3 um), normalised to the 25 V maximum of each temperature
-    (300, 25): [0.75, 0.46, 0.02, 0.54, 1.00], (300, 0): [0.08, 0.07, 0.03, 0.07, 0.08],
-    (1500, 25): [0.37, 0.29, 0.07, 0.52, 1.00], (1500, 0): [0.26, 0.16, 0.08, 0.16, 0.28]}
-DX = [-5, -2.5, 0, 2.5, 5]
-
-
+# ----------------------------------------------------------------------------- diffusion model / Dember interference (p̈ convention)
 def fig_dember():
     fig, axs = plt.subplots(1, 2, figsize=(17, 5.8), constrained_layout=True, sharey=True)
-    # (a) 25 V, 3 um, 2 mW: the weak side vs the diffusion model
+    Xs = np.array(X_LIST)
     ax = axs[0]
-    ax.plot(DX, DEMBER[(300, 25)], color=C["grey"], lw=1.6, ls=":", marker="o", ms=7, mfc="white", label="classical, 300 K (D_n = 68 cm²/s)")
-    for folder, col, mk, ls, lab in (("P2mW_notipmap_degen", C["blue"], "^", "-", "degenerate, 300 K (D_n ≈ 450 cm²/s in the core)"),
-                                     ("P2mW_notipmap_degen_T600", C["green"], "s", "-", "degenerate, 600 K"),
-                                     ("P2mW_notipmap_degen_T1500", C["orange"], "D", "-", "degenerate, 1500 K (≈ classical 1500 K)")):
+    cases = (("P2mW_notipmap", C["grey"], ":", "o", "classical, 300 K (D_n = 68 cm²/s)"),
+             ("P2mW_notipmap_degen", C["blue"], "-", "^", "degenerate, 300 K (D_n ≈ 450 cm²/s in the core)"),
+             ("P2mW_notipmap_degen_T600", C["green"], "-", "s", "degenerate, 600 K"),
+             ("P2mW_notipmap_degen_T1500", C["orange"], "-", "D", "degenerate, 1500 K (≈ classical 1500 K)"))
+    ref = {}
+    for folder, col, ls, mk, lab in cases:
         try:
-            X, r, _ = summary_rms(folder)
+            if folder == "P2mW_notipmap":
+                tab = {}
+                for X in X_LIST:
+                    d = load_run(folder, X); dem = redemod(d, harmonics=(3,))
+                    tab.setdefault(3, []).append(amplitude_metrics(d["t"], detected_waveform(d["t"], dem[3], order=2))[1])
+                r = np.array(tab[3])
+            else:
+                r = fdm_table(folder, deriv=2)[3]
         except FileNotFoundError:
             continue
-        ax.plot(X, r / r.max(), color=col, lw=2, ls=ls, marker=mk, ms=7, mfc="white", label=lab)
+        ref[folder] = r.max()
+        ax.plot(Xs, r / r.max(), color=col, lw=2, ls=ls, marker=mk, ms=7, mfc="white", label=lab)
     plot_measured(ax)
-    ax.set_title("(a) 25 V, 3 µm, 2 mW: the weak side is set by the flank diffusion, i.e. the temperature")
+    ax.set_title("(a) 25 V, 3 µm, 2 mW, detected ∝ p̈: hotter flanks favour the cathode side")
     ax.legend(loc="upper left", fontsize=10)
-    # (b) 0 V: the even term alone, normalised to the same case's 25 V maximum
     ax = axs[1]
-    ax.plot(DX, DEMBER[(300, 0)], color=C["grey"], lw=1.6, ls=":", marker="o", ms=7, mfc="white", label="classical, 300 K, 2 mW")
-    ax.plot(DX, DEMBER[(1500, 0)], color=C["amber"], lw=1.8, ls="--", marker="D", ms=7, mfc="white", label="classical, 1500 K, 2 mW")
     notes = []
     for f25, f0, col, mk, lab in (("P2mW_notipmap_degen", "P2mW_notipmap_degen_0V", C["blue"], "^", "degenerate, 300 K, 2 mW"),
                                   ("P30mW_notipmap_degen", "P30mW_notipmap_degen_0V", C["orange"], "s", "degenerate, 300 K, 30 mW"),
                                   ("P30mW_notipmap_degen_T600", "P30mW_notipmap_degen_T600_0V", C["green"], "v", "degenerate, 600 K, 30 mW")):
         try:
-            X25, r25, _ = summary_rms(f25); X0, r0, _ = summary_rms(f0)
+            r25 = fdm_table(f25, deriv=2)[3]; r0 = fdm_table(f0, deriv=2)[3]
         except FileNotFoundError:
             continue
-        ax.plot(X0, r0 / r25.max(), color=col, lw=2, marker=mk, ms=7, mfc="white", label=lab)
+        ax.plot(Xs, r0 / r25.max(), color=col, lw=2, marker=mk, ms=7, mfc="white", label=lab)
         notes.append(f"{lab}: {r0.max() / r25.max():.2f}")
-    ax.set_title("(b) 0 V: the even term alone — symmetric; its size relative to the 25 V peak is the test")
+    ax.set_title("(b) 0 V: the even (photo-Dember) term alone, relative to the same case's 25 V peak")
     ax.legend(loc="upper left", fontsize=10)
-    ax.text(7.8, 1.12, "0 V maximum / 25 V maximum\n" + "\n".join(["classical 300 K, 2 mW: 0.08", "classical 1500 K, 2 mW: 0.26"] + notes),
-            ha="right", va="top", fontsize=10, color=C["muted"])
+    ax.text(7.8, 1.12, "0 V maximum / 25 V maximum\n" + "\n".join(notes), ha="right", va="top", fontsize=10, color=C["muted"])
     for ax in axs:
         ax.axvline(0, color=C["grey"], lw=0.6); ax.set_xlim(-8, 8); ax.set_ylim(0, 1.15)
         ax.set_xlabel("X = beam position relative to the tip (µm)")
-    axs[0].set_ylabel("dS₃/dt RMS, normalised to each case's 25 V maximum")
+    axs[0].set_ylabel("RMS (n = 3), normalised to each case's 25 V maximum")
     fig.savefig(os.path.join(OUT, "sim_dember.png"), dpi=150)
     plt.close(fig)
 

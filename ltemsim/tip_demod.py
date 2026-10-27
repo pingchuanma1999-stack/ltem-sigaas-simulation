@@ -132,3 +132,48 @@ def demodulate_pizzuto(t, heights_nm, Ez_tip, n_surface_t, A_nm=200.0, h_min_nm=
             out[n][i] = np.mean(Esc * np.cos(n * theta)) * 2.0
         out["E_loc_mid"][i] = np.interp(h_min_nm * 1e-9 + A_nm * 1e-9, hs, Ez_tip[i])
     return out
+
+
+# ---------------------------------------------------------------------------
+# Detection conventions (2026-10-27). The near field at the tip is quasi-static (∝ the instantaneous
+# dipole of the charge distribution), the tip's induced dipole/charge follows it instantaneously, and
+# the field radiated to the detector is ∝ the SECOND time derivative of that dipole — the same order
+# as the far-field reference dJ/dt = d²P/dt². The earlier dS/dt convention was one derivative short.
+# The detector is a steep low-pass (Butterworth-like |H|² = 1/(1+(f/fc)^(2m))), because a soft Gaussian
+# lets the 20 THz plasma oscillations of the model leak into a second-derivative quantity.
+# ---------------------------------------------------------------------------
+def lowpass_steep(t, y, f_cut_thz=2.2, order=8):
+    """Zero-phase steep low-pass (|H| = 1/(1+(f/fc)^order)) on a uniformly sampled trace; baseline removed."""
+    y = np.asarray(y, dtype=float)
+    y0 = y - y[: max(3, len(y) // 20)].mean()
+    f = np.fft.rfftfreq(len(y0), t[1] - t[0])
+    H = 1.0 / (1.0 + (f / (f_cut_thz * 1e12)) ** order)
+    return np.fft.irfft(np.fft.rfft(y0) * H, n=len(y0))
+
+
+def detected_waveform(t, S, order=2, f_cut_thz=2.2, filter_order=8):
+    """Detected THz waveform from a demodulated quasi-static signal S(t): order-th time derivative, steep low-pass."""
+    y = np.asarray(S, dtype=float)
+    for _ in range(order):
+        y = np.gradient(y, t)
+    return lowpass_steep(t, y, f_cut_thz=f_cut_thz, order=filter_order)
+
+
+def demodulate_positions(heights_nm, Q, A_nm=180.0, h_min_nm=10.0, harmonics=(1, 2, 3, 4), n_theta=256):
+    """Lock-in harmonics from per-tip-position data Q[k, i] (height k, time i), as in the per-position
+    simulation approach: interpolate the sampled heights onto the tapping trajectory h(θ) = h_min + A(1+cos θ)
+    and project on cos(nθ). Returns dict n -> S_n(t)."""
+    theta = np.linspace(0, 2 * np.pi, n_theta, endpoint=False)
+    h_tap = h_min_nm + A_nm * (1 + np.cos(theta))
+    hs = np.asarray(heights_nm, dtype=float)
+    order = np.argsort(hs)
+    hs, Q = hs[order], np.asarray(Q)[order]
+    out = {}
+    # interpolate in height for every time sample (linear in h; clamp outside the sampled range)
+    Qt = np.empty((n_theta, Q.shape[1]))
+    for i in range(Q.shape[1]):
+        Qt[:, i] = np.interp(h_tap, hs, Q[:, i])
+    for n in harmonics:
+        out[n] = (2.0 / n_theta) * np.sum(Qt * np.cos(n * theta)[:, None], axis=0)
+    out[0] = Qt.mean(axis=0)
+    return out
