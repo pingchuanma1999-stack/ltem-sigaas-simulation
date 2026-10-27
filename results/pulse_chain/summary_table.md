@@ -11,3 +11,13 @@
 | P30mW_tipmap | S2 RMS | 1.00 | 0.30 | 0.72 | 0.32 | 0.48 | 0.53 | 0.44 |
 | measured +25 V | RMS | – | – | – | 0.24 | 0.59 | 1.00 | 0.15 |
 | measured −25 V | RMS | 0.15 | 0.45 | 0.52 | 0.33 | 0.20 | 0.32 | – |
+
+## Drift (odd) + lateral photo-Dember (even) interference — `scripts/dember_interference.py`
+dS3/dt RMS, A = 180 nm, 2 mW, symmetric spot, anode at −x; normalised to the 25 V maximum of each temperature.
+
+| carrier temperature | V | X = −5 | −2.5 | 0 | +2.5 | +5 |
+|---|---|---|---|---|---|---|
+| 300 K (D_n = 68 cm²/s) | 25 V | 0.75 | 0.46 | 0.02 | 0.54 | 1.00 |
+| 300 K | 0 V | 0.08 | 0.07 | 0.03 | 0.07 | 0.08 |
+| 1500 K (D_n = 339 cm²/s) | 25 V | 0.37 | 0.29 | 0.07 | 0.52 | 1.00 |
+| 1500 K | 0 V | 0.26 | 0.16 | 0.08 | 0.16 | 0.28 |
