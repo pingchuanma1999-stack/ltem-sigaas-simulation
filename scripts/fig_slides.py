@@ -328,28 +328,32 @@ def fig_dember():
 # ----------------------------------------------------------------------------- power dependence
 def fig_power():
     rows = {}
-    for key, fn in (("2e19", "power_dependence_X+5.0_nsat2e+19.json"), ("5e18", "power_dependence_X+5.0_nsat5e+18.json")):
-        rows[key] = json.load(open(os.path.join(ROOT, "results", "pulse_chain", fn)))
+    for key, fn in (("+5", "power_dependence_X+5.0_nsat2e+19.json"), ("-5", "power_dependence_X-5.0_nsat2e+19.json")):
+        rows[key] = json.load(open(os.path.join(ROOT, "results", "pulse_chain", "power", fn)))
     fig, axs = plt.subplots(1, 2, figsize=(17, 5.6), constrained_layout=True)
     ax = axs[0]
-    for key, col, mk, lab in (("2e19", C["orange"], "o", "near field, n_sat = 2×10¹⁹ cm⁻³"), ("5e18", C["blue"], "s", "near field, n_sat = 5×10¹⁸ cm⁻³")):
-        P = np.array([r["P_mW"] for r in rows[key]]); y = np.array([r["dS2dt_rms"] for r in rows[key]])
-        ax.semilogx(P, y / y.max(), color=col, lw=2, marker=mk, ms=7, mfc="white", label=lab)
-    P = np.array([r["P_mW"] for r in rows["2e19"]]); y = np.array([r["dJxdt_rms"] for r in rows["2e19"]])
-    ax.semilogx(P, y / y.max(), color=C["grey"], lw=1.6, ls=":", marker="x", ms=7, label="far-field reference dJ_x/dt")
-    ax.axvline(16, color=C["green"], lw=1.2, ls="--"); ax.text(15, 0.12, "model: peak ≈ 16 mW,\nthen a slow decline", color=C["green"], fontsize=11, ha="right")
-    ax.text(0.27, 1.28, "both n_sat curves coincide: the saturation is screening of the bias field\n(dipole limit p_sat = ε₀ε_r E), not absorption saturation", fontsize=10.5, color=C["muted"], va="top")
-    ax.axvspan(30, 50, color="#ece8de", alpha=0.8, lw=0); ax.text(31, 0.3, "experiment:\nsaturates ≈ 40 mW", color=C["muted"], fontsize=11)
-    ax.set_xlabel("average pump power (mW), 3 µm spot, 80 MHz"); ax.set_ylabel("dS₂/dt RMS at X = +5 µm, normalised")
-    ax.set_title("(a) THz amplitude vs pump power"); ax.legend(loc="lower right", bbox_to_anchor=(1.0, 0.28)); ax.set_ylim(0, 1.32)
+    ref = max(r["det3_band"] for r in rows["+5"])
+    for key, col, mk, lab in (("+5", C["orange"], "o", "near field, X = +5 µm (tip on the anode side)"), ("-5", C["blue"], "s", "near field, X = −5 µm (cathode side)")):
+        P = np.array([r["P_mW"] for r in rows[key]]); y = np.array([r["det3_band"] for r in rows[key]])
+        ax.semilogx(P, y / ref, color=col, lw=2, marker=mk, ms=7, mfc="white", label=lab)
+    P = np.array([r["P_mW"] for r in rows["+5"]]); y = np.array([r["far_band"] for r in rows["+5"]])
+    ax.semilogx(P, y / y.max(), color=C["grey"], lw=1.6, ls=":", marker="x", ms=7, label="far-field reference dJ_x/dt (own scale)")
+    ax.axvspan(30, 50, color="#ece8de", alpha=0.8, lw=0); ax.text(31, 0.08, "experiment:\nsaturates ≈ 40 mW", color=C["muted"], fontsize=11)
+    ax.set_xlabel("average pump power (mW), 3 µm spot, 80 MHz"); ax.set_ylabel("band-limited amplitude (0.3–2 THz, n = 3), normalised")
+    ax.set_title("(a) THz amplitude vs pump power: a maximum near 4 mW, then a slow decline"); ax.legend(loc="upper left"); ax.set_ylim(0, 1.15)
     ax = axs[1]
-    for key, col, mk, lab in (("2e19", C["orange"], "o", "n_sat = 2×10¹⁹ cm⁻³"), ("5e18", C["blue"], "s", "n_sat = 5×10¹⁸ cm⁻³")):
-        P = np.array([r["P_mW"] for r in rows[key]]); Ns = np.array([r["N_surface"] for r in rows[key]])
-        ax.loglog(P, Ns, color=col, lw=2, marker=mk, ms=7, mfc="white", label=lab)
-    Nlin = rows["2e19"][0]["N_surface"] / rows["2e19"][0]["P_mW"] * P * 1.02
+    P = np.array([r["P_mW"] for r in rows["+5"]]); Ns = np.array([r["N_surface"] for r in rows["+5"]])
+    ax.loglog(P, Ns, color=C["orange"], lw=2, marker="o", ms=7, mfc="white", label="peak pair density per pulse (n_sat = 2×10¹⁹ cm⁻³)")
+    Nlin = Ns[0] / P[0] * P
     ax.loglog(P, Nlin, color=C["grey"], lw=1.4, ls="--", label="linear absorption (no saturation)")
+    r = np.array([r["det3_band"] for r in rows["+5"]]) / np.array([r["det3_band"] for r in rows["-5"]])
+    ax2 = ax.twinx() if False else None
     ax.set_xlabel("average pump power (mW)"); ax.set_ylabel("peak pair density per pulse at the surface (cm⁻³)")
-    ax.set_title("(b) peak pair density per pulse vs power (soft cap n_sat)"); ax.legend(loc="upper left")
+    ax.set_title("(b) the density saturates at ≈ 10 mW; the spot then only widens"); ax.legend(loc="lower right"); ax.set_ylim(1e18, 1.5e21)
+    for Pv, rv in zip(P, r):
+        pass
+    ax.text(0.27, 6e20, "anode/cathode ratio (X = +5 / X = −5):\n" + ", ".join(f"{Pv:g} mW: {rv:.1f}" for Pv, rv in zip(P, r) if Pv in (0.25, 1, 2, 4, 8, 30, 120)),
+            fontsize=10.5, color=C["muted"], va="top")
     fig.savefig(os.path.join(OUT, "sim_power.png"), dpi=150)
     plt.close(fig)
 
