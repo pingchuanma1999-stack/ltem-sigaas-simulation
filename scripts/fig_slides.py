@@ -429,11 +429,12 @@ def fig_steady():
     ax.set_xlim(-20, 20); ax.set_ylim(1e11, 1e18); ax.set_xlabel("x (µm)"); ax.set_ylabel("density at 0.5 µm depth (cm⁻³)")
     ax.set_title("(b) a 10¹⁷ cm⁻³ photo-plasma fills the whole gap"); ax.legend(loc="center left")
     ax = axs[2]
-    ax.plot(Xs, S / S.max(), color=C["orange"], lw=2, label="model |tip signal|, n_pulse·E")
-    plot_measured(ax)
-    ax.axvline(0, color=C["grey"], lw=0.6); ax.set_xlim(-10, 10); ax.set_ylim(0, 1.15)
+    ax.plot(Xs, S / S.max(), color=C["orange"], lw=2, label="E_z at the apex of the static dipole density n_pulse·E")
+    ax.plot(-Xs, S / S.max(), color=C["grey"], lw=1.2, ls="--", label="the same, mirrored X → −X")
+    ax.axvline(0, color=C["grey"], lw=0.6); ax.set_xlim(-10, 10); ax.set_ylim(0, 1.3)
     ax.set_xlabel("X = beam position relative to the tip (µm)"); ax.set_ylabel("amplitude, normalised")
-    ax.set_title("(c) the predicted scan is symmetric; the data are not"); ax.legend(loc="upper left")
+    ax.set_title("(c) the standing field gives a mirror-symmetric scan"); ax.legend(loc="upper right", fontsize=9.5)
+    ax.text(-9.5, 0.9, "static estimate,\nno carrier dynamics —\nonly the symmetry\nis meaningful", ha="left", va="top", fontsize=10, color=C["muted"])
     fig.savefig(os.path.join(OUT, "sim_steady_state.png"), dpi=150)
     plt.close(fig)
 
