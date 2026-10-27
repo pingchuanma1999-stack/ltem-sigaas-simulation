@@ -21,3 +21,7 @@ dS3/dt RMS, A = 180 nm, 2 mW, symmetric spot, anode at −x; normalised to the 2
 | 300 K | 0 V | 0.08 | 0.07 | 0.03 | 0.07 | 0.08 |
 | 1500 K (D_n = 339 cm²/s) | 25 V | 0.37 | 0.29 | 0.07 | 0.52 | 1.00 |
 | 1500 K | 0 V | 0.26 | 0.16 | 0.08 | 0.16 | 0.28 |
+
+## 2026-10-27 — degenerate (Fermi–Dirac) diffusion and spot size
+See docs/pulse_chain.md (section "Results added 2026-10-27") for the full table; runs in
+results/pulse_chain/P*_degen*, P30mW_w7_*, P2mW_notipmap_T1500. Slide figures: results/slides/.

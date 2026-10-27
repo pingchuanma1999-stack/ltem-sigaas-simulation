@@ -2,7 +2,8 @@
 -> hydrodynamic carrier dynamics + Poisson -> THz near field at the tip -> FDM tip
 scattering -> tapping demodulation. Scans the beam position X relative to the tip.
 
-Usage: python scripts/run_pulse_chain.py [P_avg_mW=2] [A_nm=60] [out=results/pulse_chain] [fdtd=results/fdtd_pump/ratio.npz|none]
+Usage: python scripts/run_pulse_chain.py [P_avg_mW=2] [A_nm=180] [out=results/pulse_chain] [fdtd=results/fdtd_pump/ratio.npz|none]
+       [degenerate=1] [T=300] [V_bias=25] [x_list=-5,0,5] [w_um=3] [x_fine=8]
 """
 import os, sys, json, time
 import numpy as np
@@ -33,14 +34,17 @@ def load_ratio(path):
 
 
 def main(out="results/pulse_chain", fdtd="results/fdtd_pump/ratio.npz", P_avg_mW=2.0, A_nm=180.0, h_min_nm=0.0,
-         t_end_ps=4.0, harmonics=(1, 2, 3, 4)):
+         t_end_ps=4.0, harmonics=(1, 2, 3, 4), degenerate=0.0, T=300.0, V_bias=25.0, x_list=None, w_um=3.0, x_fine=None):
     # tapping amplitude 180 nm (user, 2026-10-26: ~180 nm in the experiment), harmonics 1-4, Pizzuto FDM conventions
     os.makedirs(out, exist_ok=True)
     ratio_map, dr = load_ratio(fdtd)
     measured = load_measured(os.path.join(os.path.dirname(__file__), "..", "data", "measured_tip_scan.csv"))
     results = {}
+    X_LIST = tuple(x_list) if x_list else globals()["X_LIST"]
     for X in X_LIST:
-        cfg = PulseConfig(P_avg_mW=P_avg_mW, x_beam_um=X, t_end_ps=t_end_ps)
+        xf = x_fine if x_fine else max(8.0, 2.0 * w_um + max(abs(x) for x in X_LIST) - 4.0)   # fine grid covers the spot at every offset
+        cfg = PulseConfig(P_avg_mW=P_avg_mW, x_beam_um=X, t_end_ps=t_end_ps, degenerate_diffusion=bool(degenerate), T=T, V_bias=V_bias,
+                          w_um=w_um, x_fine=xf)
         sim = PulseSim(cfg, verbose=(X == 0.0))
         N = sim.generation_profile(ratio_map)
         t0 = time.time()
@@ -67,14 +71,16 @@ def main(out="results/pulse_chain", fdtd="results/fdtd_pump/ratio.npz", P_avg_mW
               f"dJx/dt rms {metrics['dJx_dt']['rms']:.3e}, {time.time()-t0:.0f}s", flush=True)
     # ---------------- summary table and figures ----------------
     Xs = np.array(X_LIST)
-    table = {k: np.array([results[X]["metrics"][k]["rms"] for X in X_LIST]) for k in results[0.0]["metrics"]}
-    peaks = {k: np.array([results[X]["metrics"][k]["peak"] for X in X_LIST]) for k in results[0.0]["metrics"]}
+    Xref = 0.0 if 0.0 in results else X_LIST[0]
+    table = {k: np.array([results[X]["metrics"][k]["rms"] for X in X_LIST]) for k in results[Xref]["metrics"]}
+    peaks = {k: np.array([results[X]["metrics"][k]["peak"] for X in X_LIST]) for k in results[Xref]["metrics"]}
     with open(os.path.join(out, "summary.json"), "w") as fh:
         json.dump(dict(X=Xs.tolist(), rms={k: v.tolist() for k, v in table.items()}, peak={k: v.tolist() for k, v in peaks.items()},
-                       P_avg_mW=P_avg_mW, A_nm=A_nm, h_min_nm=h_min_nm, fdtd_ratio=bool(ratio_map)), fh, indent=1)
+                       P_avg_mW=P_avg_mW, A_nm=A_nm, h_min_nm=h_min_nm, fdtd_ratio=bool(ratio_map), degenerate=bool(degenerate), T=T, V_bias=V_bias,
+                       w_um=w_um), fh, indent=1)
     fig, axs = plt.subplots(2, 3, figsize=(17, 9), constrained_layout=True)
     # (a) generation map at X = 0
-    r0 = results[0.0]
+    r0 = results[Xref]
     ax = axs[0, 0]
     N = r0["N"]; xc, zc = r0["rec"]["xc_um"], r0["rec"]["zc_um"]
     sel = np.abs(xc) < 8
@@ -90,6 +96,8 @@ def main(out="results/pulse_chain", fdtd="results/fdtd_pump/ratio.npz", P_avg_mW
     # (c) traces at X = 0, 2.5, 5
     ax = axs[0, 2]
     for X, c in ((0.0, "k"), (2.5, "C0"), (5.0, "C1"), (-2.5, "C2"), (-5.0, "C3")):
+        if X not in results:
+            continue
         y = lowpass(results[X]["t"], results[X]["traces"]["dS3_dt"])
         ax.plot(results[X]["t"] * 1e12, y / 1e12, color=c, label=f"X={X:+.1f}")
     ax.set_xlabel("t (ps)"); ax.set_ylabel("d S3/dt (V/cm/ps, 2.2 THz low-pass)"); ax.legend(fontsize=8); ax.set_title("detected waveform ∝ d/dt of the demodulated near field (3rd harmonic)")
@@ -114,7 +122,8 @@ def main(out="results/pulse_chain", fdtd="results/fdtd_pump/ratio.npz", P_avg_mW
         m = measured[measured["bias_V"] == Vb]
         ax.errorbar(m["X_um"], m["rms"], yerr=m["rms_err"], fmt=mk, color=col, capsize=3, label=f"measured {Vb:+d} V")
     ax.set_xlabel("X = beam position relative to tip (um)"); ax.set_ylabel("amplitude (norm.)"); ax.legend(fontsize=7); ax.set_title("amplitude vs X")
-    fig.suptitle(f"single pulse, bare field, {P_avg_mW:g} mW, 45 deg incidence (beam travels to +x), tapping A = {A_nm:g} nm")
+    fig.suptitle(f"single pulse, bare field, {P_avg_mW:g} mW, w = {w_um:g} um, {V_bias:g} V, 45 deg incidence (beam travels to +x), tapping A = {A_nm:g} nm"
+                 + (", degenerate diffusion" if degenerate else "") + (f", T_carrier = {T:g} K" if T != 300 else ""))
     fig.savefig(os.path.join(out, "pulse_chain.png"), dpi=130)
     print("RMS vs X:", {k: np.round(v / v.max(), 3).tolist() for k, v in table.items()})
     return results
@@ -124,5 +133,5 @@ if __name__ == "__main__":
     kw = {}
     for a in sys.argv[1:]:
         k, v = a.split("=")
-        kw[k] = v if k in ("out", "fdtd") else float(v)
+        kw[k] = v if k in ("out", "fdtd") else ([float(a) for a in v.split(",")] if k == "x_list" else float(v))
     main(**kw)

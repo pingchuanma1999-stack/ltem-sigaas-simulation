@@ -133,6 +133,15 @@ side the 2-D line spot overestimates how far the plasma reaches, the contacts
 are either fully blocking or fully injecting (a Schottky contact is neither),
 and the 80 MHz pulse train is replaced by its average.
 
+
+**2026-10-27 update.** `PulseConfig(degenerate_diffusion=True)` applies the generalised
+(Fermi–Dirac) Einstein relation; `scripts/run_pulse_chain.py` takes `degenerate=1 T=... V_bias=...
+w_um=... x_list=...`; `scripts/fig_slides.py` renders the slide figures in `results/slides/`.
+Findings: Fermi pressure sets the even (photo-Dember) term's size but not the weak side, which
+follows the carrier temperature (0.73 → 0.38 for 300 → 1500 K); the peak position follows the spot
+edge (+5 µm for w = 3 µm, ±10 µm for w = 7 µm), so the spot size must be measured. Details in
+`docs/pulse_chain.md`.
+
 ## Single-pulse emission chain (added 2026-10-26 evening; `docs/pulse_chain.md`)
 
 Requested scope: one pulse, bare field, no traps; Maxwell solver for the optical pump;

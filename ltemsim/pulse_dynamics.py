@@ -8,6 +8,12 @@ and holes, self-consistent with Poisson at every step.
     dv_p/dt = +(e/m_p) E - v_p (1 + |v_p|/v_sat) / tau_p
     E = E_applied + E_space_charge,   div(eps grad phi_sc) = -e (p - n) / eps0
 
+Diffusion: D = mu kT/q by default; with degenerate_diffusion=True the generalised
+Einstein relation D(n) = mu (kT/q) F_1/2(eta)/F_-1/2(eta) is applied face by face with
+eta from the local density (parabolic band, N_c = 4.4e17 cm^-3 for electrons at 300 K),
+so the Fermi pressure of the 1e18-1e19 cm^-3 photo-plasma drives the lateral spreading
+(D_n ~ 6-10x the classical value at the spot centre, classical at the flanks).
+
 Explicit time stepping (0.5 fs), first-order upwind fluxes, cell-centred finite
 volumes on the same kind of tensor grid as the steady-state solver; Poisson is the
 existing finite-volume operator (GaAs/air interface, electrodes as equipotentials).
@@ -32,6 +38,28 @@ from .poisson import PoissonOperator
 ME = 9.1093837e-31   # kg
 
 
+def _fermi_dirac(j, eta):
+    """Complete Fermi-Dirac integral F_j(eta) = (1/Gamma(j+1)) int_0^inf x^j / (1 + exp(x - eta)) dx,
+    by quadrature in u = sqrt(x) (removes the x^-1/2 singularity): F_j = (2/Gamma(j+1)) int u^(2j+1) / (1 + exp(u^2 - eta)) du."""
+    from scipy.special import gamma
+    u = np.linspace(0, np.sqrt(max(80.0, eta.max() + 40.0)), 40001)
+    out = np.empty_like(eta)
+    for i, e in enumerate(eta):
+        with np.errstate(over="ignore"):
+            f = 2.0 * u ** (2 * j + 1) / (1.0 + np.exp(u ** 2 - e))
+        out[i] = np.trapezoid(f, u)
+    return out / gamma(j + 1)
+
+
+def _einstein_factor_table(eta_min=-15.0, eta_max=80.0, n_eta=400):
+    """Table of ln(n/N_c) -> F_1/2(eta)/F_-1/2(eta) (generalised Einstein relation, parabolic band)."""
+    eta = np.linspace(eta_min, eta_max, n_eta)
+    f12 = _fermi_dirac(0.5, eta)
+    fm12 = _fermi_dirac(-0.5, eta)
+    r = np.log(f12)                     # ln(n/N_c) = ln F_1/2(eta), monotone in eta
+    return r, f12 / fm12
+
+
 @dataclass
 class PulseConfig:
     V_bias: float = 25.0
@@ -53,6 +81,7 @@ class PulseConfig:
     tau_p_ps: float = 0.1
     v_sat: float = 1.0e7              # cm/s
     T: float = 300.0
+    degenerate_diffusion: bool = False   # generalised Einstein relation D = mu (kT/q) F_1/2(eta)/F_-1/2(eta), eta from the local density
     # run
     dt_fs: float = 0.5
     t_end_ps: float = 4.0
@@ -124,9 +153,22 @@ class PulseSim:
         self.D_n, self.D_p = self.mu_n * VT, self.mu_p * VT
         self.qm_n = QE / (cfg.m_n * ME) * 1e4        # (cm/s^2) per (V/cm): (e/m)[C/kg] * 100 [V/m per V/cm] * 100 [cm per m]
         self.qm_p = QE / (cfg.m_p * ME) * 1e4
+        # degenerate (Fermi-Dirac) diffusion: D(n) = D0 * g(n/N_c), g = F_1/2(eta)/F_-1/2(eta) -> 1 for n << N_c, (2/3) eta for n >> N_c
+        h_planck = 6.62607015e-34
+        self.N_c = 2 * (2 * np.pi * cfg.m_n * ME * kT / h_planck ** 2) ** 1.5 * 1e-6      # cm^-3
+        self.N_v = 2 * (2 * np.pi * cfg.m_p * ME * kT / h_planck ** 2) ** 1.5 * 1e-6
+        self._g_table = _einstein_factor_table()
         if verbose:
             print(f"pulse grid: Nx={g.Nx}, Nz semi={g.Nzs} (dz_min {g.dz.min():.3f} um), cells {self.Ns}; "
                   f"mu_n={self.mu_n:.0f}, mu_p={self.mu_p:.0f} cm^2/Vs; E_applied at centre {self.Ex_app[-1, np.argmin(np.abs(self.xc))]/1e3:.2f} kV/cm")
+            if cfg.degenerate_diffusion:
+                print(f"  degenerate diffusion on: N_c={self.N_c:.2e}, N_v={self.N_v:.2e} cm^-3; D_n at 1e18/1e19/2e19 = "
+                      + "/".join(f"{self.D_n * self.einstein_factor(nn, self.N_c):.0f}" for nn in (1e18, 1e19, 2e19)) + " cm^2/s")
+
+    def einstein_factor(self, dens, N_eff):
+        """F_1/2(eta)/F_-1/2(eta) for the local reduced density dens/N_eff (parabolic band, lattice temperature)."""
+        r, gval = self._g_table
+        return np.interp(np.log(np.maximum(dens, 1e-30) / N_eff), r, gval, left=1.0, right=gval[-1])
 
     # ------------------------------------------------------------ generation
     def generation_profile(self, ratio_map=None):
@@ -155,16 +197,19 @@ class PulseSim:
         Ezf = -(P[1:, :] - P[:-1, :]) / self.dcz[:, None]
         return Exf, Ezf
 
-    def _div_flux(self, dens, vxf, vzf, D):
-        """div(dens v) - div(D grad dens): face velocities, upwind advection, central diffusion (per cm^3 per s)."""
+    def _div_flux(self, dens, vxf, vzf, D, N_eff=None):
+        """div(dens v) - div(D grad dens): face velocities, upwind advection, central diffusion (per cm^3 per s).
+        With N_eff given, D is multiplied on every face by the generalised Einstein factor of the face density."""
         dx, dz = self.dx, self.dz
         up = np.where(vxf > 0, dens[:, :-1], dens[:, 1:])
-        Fx = vxf * up - D * (dens[:, 1:] - dens[:, :-1]) / self.dcx[None, :]
+        Dx = D if N_eff is None else D * self.einstein_factor(0.5 * (dens[:, 1:] + dens[:, :-1]), N_eff)
+        Fx = vxf * up - Dx * (dens[:, 1:] - dens[:, :-1]) / self.dcx[None, :]
         divx = np.zeros_like(dens)
         divx[:, :-1] += Fx * dz[:, None]
         divx[:, 1:] -= Fx * dz[:, None]
         upz = np.where(vzf > 0, dens[:-1, :], dens[1:, :])
-        Fz = vzf * upz - D * (dens[1:, :] - dens[:-1, :]) / self.dcz[:, None]
+        Dz = D if N_eff is None else D * self.einstein_factor(0.5 * (dens[1:, :] + dens[:-1, :]), N_eff)
+        Fz = vzf * upz - Dz * (dens[1:, :] - dens[:-1, :]) / self.dcz[:, None]
         divz = np.zeros_like(dens)
         divz[:-1, :] += Fz * dx[None, :]
         divz[1:, :] -= Fz * dx[None, :]
@@ -220,8 +265,8 @@ class PulseSim:
             dp_x = (1 + np.abs(vpx) / cfg.v_sat) / tau_p; dp_z = (1 + np.abs(vpz) / cfg.v_sat) / tau_p
             vpx = (vpx + dt * self.qm_p * Exf) / (1 + dt * dp_x); vpz = (vpz + dt * self.qm_p * Ezf) / (1 + dt * dp_z)
             # continuity
-            divn, Fnx, Fnz = self._div_flux(n, vnx, vnz, self.D_n)
-            divp, Fpx, Fpz = self._div_flux(p, vpx, vpz, self.D_p)
+            divn, Fnx, Fnz = self._div_flux(n, vnx, vnz, self.D_n, self.N_c if cfg.degenerate_diffusion else None)
+            divp, Fpx, Fpz = self._div_flux(p, vpx, vpz, self.D_p, self.N_v if cfg.degenerate_diffusion else None)
             n = np.maximum(n + dt * (G - divn), 0.0)
             p = np.maximum(p + dt * (G - divp), 0.0)
             # Poisson: space-charge potential (electrodes at the applied potentials by superposition)
