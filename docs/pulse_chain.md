@@ -131,3 +131,59 @@ Conclusions:
 * At 30 mW the 3 µm spot is flat-topped by the n_sat cap and its fronts move out to 5–7 µm
   (+7.5 rises to 0.45, +2.5 falls to 0.15), worse than at 2 mW. The cap is a density clip rather
   than bleaching in the FDTD; a bleached absorber would send light deeper rather than wider.
+
+## Per-tip-position chain and corrected metric (2026-10-27, `scripts/run_fdtd_heights.py`, `scripts/run_tip_positions.py`)
+
+Structure (as in the near-field LTEM simulation literature): for every beam position X and every apex height h
+of the tapping cycle (10, 15, 25, 45, 80, 130, 200, 270, 330, 370 nm) one full run — the pump FDTD with the tip
+at h (`results/fdtd_pump/heights/ratio_h<nm>.npz`) and the carrier dynamics with the tip as an equipotential cone
+in the Poisson solve (`PulseConfig(tip_in_poisson=True, tip_height_nm=h, V_tip=...)`, half-angle 15°, apex
+radius 40 nm, one cell wide at least; Dirichlet rows). Recorded: the charge induced on the tip Q_tip(t) (minus
+the residual of the free Poisson equation on the tip cells), the apex-gap field, J(t). Joint demodulation
+(`demodulate_positions`): Q_tip(h, t) interpolated along h(θ) = h_min + A(1 + cos θ), A = 180 nm, h_min = 10 nm,
+projected on cos nθ. No finite-dipole model is involved.
+
+Detection and metric (both routes):
+* The near field at the tip is quasi-static (∝ the dipole of the charge distribution); the field radiated by the
+  tip is ∝ its second time derivative, the same order as the far-field reference dJ/dt. The earlier dS/dt was one
+  derivative short.
+* Most of the power of d²S/dt² sits at 5–15 THz (the 0.1–0.2 ps current surge). The RMS of a softly filtered time
+  trace is then dominated by out-of-band leakage and depends on the filter shape; the comparison metric is now
+  the **band-limited spectral amplitude in 0.3–2 THz** (`band_metric`), which is what the RMS of a
+  detector-band-limited waveform measures and is independent of the roll-off. In this metric the first- and
+  second-derivative conventions agree.
+* `amplitude_metrics` no longer subtracts the mean of the first 5 % of the window (that was the rising edge of
+  the pulse, not a baseline). This mainly changed the X = ±2.5 and 0 values of earlier tables.
+
+Results (band-limited amplitude, n = 3, normalised; 3 µm spot, degenerate diffusion, 300 K, anode at −x):
+
+| run | X = −7.5 | −5 | −2.5 | 0 | +2.5 | +5 | +7.5 |
+|---|---|---|---|---|---|---|---|
+| route 1 (tip-free field × FDM), 2 mW, classical 300 K | 0.15 | 0.72 | 0.14 | 0.06 | 0.26 | 1.00 | 0.20 |
+| route 1, 2 mW, degenerate 300 K | 0.15 | 0.70 | 0.06 | 0.24 | 0.34 | 1.00 | 0.20 |
+| route 1, 2 mW, 600 K | 0.13 | 0.60 | 0.05 | 0.23 | 0.36 | 1.00 | 0.20 |
+| route 1, 2 mW, 1500 K | 0.08 | 0.41 | 0.17 | 0.28 | 0.45 | 1.00 | 0.22 |
+| route 1, 30 mW | 0.45 | 0.53 | 0.11 | 0.09 | 0.42 | 1.00 | 0.56 |
+| route 2 (tip in Poisson, V_tip = 0), symmetric pump, 2 mW | 0.39 | 1.00 | 0.46 | 0.13 | 0.26 | 0.88 | 0.42 |
+| route 2 + FDTD pump map per height, 2 mW | 0.43 | 1.00 | 0.45 | 0.18 | 0.37 | 0.48 | 0.28 |
+| route 2, symmetric pump, 30 mW | 0.64 | 1.00 | 0.45 | 0.20 | 0.09 | 0.76 | 0.78 |
+| route 2 + FDTD pump map per height, 30 mW | 0.86 | 1.00 | 0.46 | 0.17 | 0.25 | 0.90 | 0.42 |
+| route 2, tip at the anode potential (V_tip = +12.5 V), 2 mW (3.9× amplitude) | 0.06 | 0.57 | 0.54 | 0.53 | 0.74 | 1.00 | 0.29 |
+| measured +25 V | – | ≈0 | – | 0.24 | 0.59 | 1.00 | 0.15 |
+| measured −25 V, X → −X | – | 0.32 | 0.20 | 0.33 | 0.52 | 0.45 | 0.15 |
+
+0 V / 25 V maximum (route 1): 0.24 (2 mW), 0.26 (30 mW), 0.29 (600 K, 30 mW). Power dependence
+(`results/pulse_chain/power/`, route 1, X = ±5): maximum near 4 mW, then a slow decline (0.57 at 30 mW at X = +5);
+the anode/cathode ratio grows 1.4 (2 mW) → 1.9 (30 mW) → 2.5 (120 mW).
+
+Reading:
+* Robust: two lobes at the spot edges, a minimum at the centre, all harmonics alike, mirror image under V → −V.
+* Not robust: which lobe is stronger. Route 1 favours the anode side (1.00 : 0.70); the explicit grounded tip
+  favours the cathode side (0.88 : 1.00); the 2-D pump shadow (upper bound) pushes further that way. Neither gives
+  the measured ≈ 0 on the cathode side.
+* A DC potential between tip and sample (tip at one electrode's potential) makes the scan strongly one-sided
+  toward the electrode at the tip's potential, lifts the centre to 0.53 and multiplies the amplitude by 3.9: a
+  vertical drift dipole under the apex. Which supply terminal is grounded therefore matters; grounding the gap
+  midpoint is the test. Caveats: the 2-D wedge's field reaches further sideways than a cone's; the DC field is
+  applied to a bare sample, whereas the standing plasma between pulses would screen part of it.
+* The 7 µm spot runs are kept in `results/pulse_chain/P30mW_w7_*` but dropped from the deck (user, 2026-10-27).

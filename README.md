@@ -134,7 +134,15 @@ are either fully blocking or fully injecting (a Schottky contact is neither),
 and the 80 MHz pulse train is replaced by its average.
 
 
-**2026-10-27 update.** `PulseConfig(degenerate_diffusion=True)` applies the generalised
+**2026-10-27 update (b).** Per-tip-position chain: `scripts/run_fdtd_heights.py` (pump FDTD per apex height),
+`scripts/run_tip_positions.py simulate|demod` (tip as an equipotential in Poisson, one run per X and height,
+joint cos nθ demodulation of the induced tip charge). Detection: field ∝ d²S/dt²; comparison metric = band-limited
+(0.3–2 THz) spectral amplitude (`band_metric`); the baseline bug in `amplitude_metrics` is fixed. Findings: two
+lobes at the spot edges are robust, the stronger side is not (route 1: anode 1.00 : 0.70; explicit grounded tip:
+0.88 : 1.00); a DC tip–sample potential makes the scan one-sided toward the electrode at the tip's potential and
+lifts X = 0. Details: `docs/pulse_chain.md`.
+
+**2026-10-27 update (a).** `PulseConfig(degenerate_diffusion=True)` applies the generalised
 (Fermi–Dirac) Einstein relation; `scripts/run_pulse_chain.py` takes `degenerate=1 T=... V_bias=...
 w_um=... x_list=...`; `scripts/fig_slides.py` renders the slide figures in `results/slides/`.
 Findings: Fermi pressure sets the even (photo-Dember) term's size but not the weak side, which

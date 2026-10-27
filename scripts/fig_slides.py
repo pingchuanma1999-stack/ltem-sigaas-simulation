@@ -230,30 +230,30 @@ def positions_table(folder, A_nm=180.0, h_min_nm=10.0):
 
 
 def fig_xscan():
-    fig, axs = plt.subplots(1, 2, figsize=(17, 6.8), constrained_layout=True, sharey=True)
-    fig.get_layout_engine().set(rect=(0, 0.13, 1, 0.87))
+    fig, axs = plt.subplots(1, 2, figsize=(17, 7.4), constrained_layout=True, sharey=True)
+    fig.get_layout_engine().set(rect=(0, 0.19, 1, 0.81))
     tables = {}
     Xs = np.array(X_LIST)
-    # (a) tip-free near field + FDM, 2 mW: the two detection conventions
+    # (a) tip-free near field + FDM, 2 mW
     ax = axs[0]
     t1 = fdm_table("P2mW_notipmap_degen", deriv=1); t2 = fdm_table("P2mW_notipmap_degen", deriv=2)
     tables["fdm_2mW_deriv1"] = {str(k): v.tolist() for k, v in t1.items()}; tables["fdm_2mW_deriv2"] = {str(k): v.tolist() for k, v in t2.items()}
     ax.plot(Xs, t2["far"] / t2["far"].max(), color=C["grey"], lw=1.6, ls=":", marker="x", ms=7, label="far-field reference dJ_x/dt")
     for nh in (1, 2, 3, 4):
-        ax.plot(Xs, t2[nh] / t2[nh].max(), color=HARM[nh], lw=2, marker=MARK[nh], ms=7, mfc="white", label=f"local field + finite-dipole tip, 2 mW, n = {nh}")
+        ax.plot(Xs, t2[nh] / t2[nh].max(), color=HARM[nh], lw=2, marker=MARK[nh], ms=7, mfc="white", label=f"route 1, 2 mW, n = {nh}")
     try:
         t30 = fdm_table("P30mW_notipmap_degen", deriv=2)
-        ax.plot(Xs, t30[3] / t30[3].max(), color=C["ink"], lw=1.8, ls=":", marker="x", ms=7, label="local field + finite-dipole tip, 30 mW, n = 3")
+        ax.plot(Xs, t30[3] / t30[3].max(), color=C["ink"], lw=1.8, ls=":", marker="x", ms=7, label="route 1, 30 mW, n = 3")
     except FileNotFoundError:
         pass
     plot_measured(ax)
     ax.set_title("(a) route 1: tip-free local field × finite-dipole model (tip absent from the physics)")
     # (b) per-tip-position chain
     ax = axs[1]
-    for folder, col, ls, mk, lab, allh in (("P2mW_sym", None, "-", None, "grounded tip, symmetric pump, 2 mW", True),
-                                           ("P2mW_tipmap", C["ink"], "--", "v", "grounded tip + FDTD pump map per height (2-D shadow), 2 mW, n = 3", False),
-                                           ("P30mW_sym", C["ink"], ":", "x", "grounded tip, symmetric pump, 30 mW, n = 3", False),
-                                           ("P2mW_sym_Vtip12", C["grey"], "-.", "P", "tip at +12.5 V (one electrode grounded), 2 mW, n = 3", False)):
+    for folder, col, ls, mk, lab, allh in (("P2mW_sym", None, "-", None, "route 2, grounded tip, symmetric pump, 2 mW", True),
+                                           ("P2mW_tipmap", C["ink"], "--", "v", "route 2 + FDTD pump map per height (2-D shadow), 2 mW, n = 3", False),
+                                           ("P30mW_sym", C["ink"], ":", "x", "route 2, grounded tip, 30 mW, n = 3", False),
+                                           ("P2mW_sym_Vtip12", C["grey"], "-.", "P", "route 2, tip at the anode potential (+12.5 V), 2 mW, n = 3", False)):
         try:
             Xp, tp = positions_table(folder)
         except Exception as e:
@@ -272,8 +272,9 @@ def fig_xscan():
         ax.set_xlabel("X = beam position relative to the tip (µm);  X > 0: tip on the anode side of the spot")
     axs[0].set_ylabel("band-limited amplitude (0.3–2 THz) of the detected waveform, normalised")
     h0, l0 = axs[0].get_legend_handles_labels(); h1, l1 = axs[1].get_legend_handles_labels()
-    keep = [i for i, l in enumerate(l1) if not l.endswith("n = 1") and not l.endswith("n = 2") and not l.endswith("n = 4") and "symmetric pump, 2 mW, n = 3" not in l]
-    fig.legend(h0 + [h1[i] for i in keep], l0 + [l1[i] for i in keep], loc="lower center", ncol=3, bbox_to_anchor=(0.5, -0.01), fontsize=10, columnspacing=1.0)
+    keep = [i for i, l in enumerate(l1) if l.startswith("route 2") and not l.endswith("n = 1") and not l.endswith("n = 2") and not l.endswith("n = 4")]
+    l1 = [l.replace("symmetric pump, 2 mW, n = 3", "symmetric pump, 2 mW, n = 1–4 (colours as in a)") for l in l1]
+    fig.legend(h0 + [h1[i] for i in keep], l0 + [l1[i] for i in keep], loc="lower center", ncol=4, bbox_to_anchor=(0.5, -0.01), fontsize=10, columnspacing=1.0)
     with open(os.path.join(OUT, "xscan_A180.json"), "w") as fh:
         json.dump(tables, fh, indent=1)
     fig.savefig(os.path.join(OUT, "sim_xscan.png"), dpi=150)
@@ -306,7 +307,7 @@ def fig_dember():
         ref[folder] = r.max()
         ax.plot(Xs, r / r.max(), color=col, lw=2, ls=ls, marker=mk, ms=7, mfc="white", label=lab)
     plot_measured(ax)
-    ax.set_title("(a) 25 V, 3 µm, 2 mW, detected ∝ p̈: hotter flanks favour the cathode side")
+    ax.set_title("(a) 25 V, 3 µm, 2 mW, route 1: hotter flanks suppress the cathode side")
     ax.legend(loc="upper left", fontsize=10)
     ax = axs[1]
     notes = []
@@ -325,7 +326,7 @@ def fig_dember():
     for ax in axs:
         ax.axvline(0, color=C["grey"], lw=0.6); ax.set_xlim(-8, 8); ax.set_ylim(0, 1.15)
         ax.set_xlabel("X = beam position relative to the tip (µm)")
-    axs[0].set_ylabel("RMS (n = 3), normalised to each case's 25 V maximum")
+    axs[0].set_ylabel("band-limited amplitude (n = 3), normalised to each case's 25 V max")
     fig.savefig(os.path.join(OUT, "sim_dember.png"), dpi=150)
     plt.close(fig)
 
@@ -437,9 +438,53 @@ def fig_steady():
     plt.close(fig)
 
 
+# ----------------------------------------------------------------------------- per-tip-position chain
+def fig_positions():
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    from ltemsim.tip_demod import demodulate_positions, detected_waveform
+    base = os.path.join(ROOT, "results", "tip_positions")
+    meta = json.load(open(os.path.join(base, "P2mW_sym", "meta.json"))); H = meta["heights_nm"]
+    fig, axs = plt.subplots(1, 3, figsize=(17, 5.6), constrained_layout=True)
+    # (a) Q_tip(h, t) at X = +5, grounded tip
+    ax = axs[0]
+    for k, h in enumerate(H):
+        d = np.load(os.path.join(base, "P2mW_sym", f"X+5.0_h{int(h)}.npz"))
+        ax.plot(d["t"] * 1e12, d["Q_tip"] * 1e12, color=plt.cm.YlOrBr(0.25 + 0.7 * k / (len(H) - 1)), lw=1.8, label=f"{h:g} nm")
+    ax.set_xlim(0, 3); ax.set_xlabel("t (ps)"); ax.set_ylabel("charge induced on the tip (pC per cm of y)")
+    ax.set_title("(a) one run per tip height: Q_tip(t), X = +5 µm, grounded tip"); ax.legend(title="apex height", fontsize=8.5, ncol=2, loc="lower right")
+    # (b) detected waveforms n = 3 for several X (grounded tip)
+    ax = axs[1]
+    for X, col, ls in ((5.0, C["orange"], "-"), (2.5, C["blue"], "-"), (0.0, C["ink"], "-"), (-2.5, C["green"], "--"), (-5.0, C["amber"], "--")):
+        Q = []
+        for h in H:
+            d = np.load(os.path.join(base, "P2mW_sym", f"X{X:+.1f}_h{int(h)}.npz")); Q.append(d["Q_tip"]); t = d["t"]
+        dem = demodulate_positions(H, np.array(Q)); y = detected_waveform(t, dem[3], order=2)
+        if X == 5.0:
+            yref = np.abs(y).max()
+        ax.plot(t * 1e12, y / yref, color=col, lw=2, ls=ls, label=f"X = {X:+.1f} µm")
+    ax.axhline(0, color=C["grey"], lw=0.6); ax.set_xlim(0, 2.5); ax.set_xlabel("t (ps)"); ax.set_ylabel("detected waveform (n = 3), normalised")
+    ax.set_title("(b) joint demodulation of all heights → d²S₃/dt², 2.2 THz detector"); ax.legend(loc="upper right", fontsize=9)
+    # (c) X scans: grounded tip vs tip at the anode potential
+    ax = axs[2]
+    Xs = np.array(meta["X"])
+    for folder, col, mk, lab in (("P2mW_sym", C["blue"], "s", "tip at the gap-midpoint potential (V_tip = 0)"),
+                                 ("P2mW_sym_Vtip12", C["orange"], "o", "tip at the anode potential (V_tip = +12.5 V)")):
+        d = json.load(open(os.path.join(base, folder, "demod_A180_h10.json")))
+        r = np.array(d["rms"]["det3"])
+        ax.plot(Xs, r / r.max(), color=col, lw=2, marker=mk, ms=7, mfc="white", label=lab + f"  (peak {r.max():.1e})")
+    plot_measured(ax)
+    ax.axvline(0, color=C["grey"], lw=0.6); ax.set_xlim(-8.5, 8.5); ax.set_ylim(0, 1.15)
+    ax.set_xlabel("X = beam position relative to the tip (µm)"); ax.set_ylabel("band-limited amplitude (n = 3), normalised")
+    ax.set_title("(c) the tip's DC potential decides the side"); ax.legend(loc="upper left", fontsize=9)
+    fig.savefig(os.path.join(OUT, "sim_positions.png"), dpi=150)
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     which = sys.argv[1].split("=")[-1] if len(sys.argv) > 1 else "all"
-    todo = dict(steady=fig_steady, pump=fig_pump, dynamics=fig_dynamics, nearfield=fig_nearfield, xscan=fig_xscan, dember=fig_dember, power=fig_power, dipole=fig_dipole)
+    todo = dict(steady=fig_steady, positions=fig_positions, pump=fig_pump, dynamics=fig_dynamics, nearfield=fig_nearfield, xscan=fig_xscan, dember=fig_dember, power=fig_power, dipole=fig_dipole)
     for k, f in todo.items():
         if which in ("all", k):
             f(); print("saved", k, flush=True)
+
+
