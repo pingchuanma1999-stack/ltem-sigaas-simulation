@@ -1,0 +1,12 @@
+pair                                                                                                 phi0 (deg)  tau (ps) res (deg)   best shift (same / inverted)
+route 1 (tip-free + FDM): +25 V X=+5  vs  +25 V X=-5  (= -25 V, X=+5: same X, polarity flipped)             166      0.10         4   {'residual': 1.0, 'shift_ps': 0.365}  /  {'residual': 0.536, 'shift_ps': 0.0}
+route 1 (tip-free + FDM): +25 V X=+5  vs  +25 V X=+2.5                                                      -35      0.17         7   {'residual': 0.505, 'shift_ps': -0.145}  /  {'residual': 0.85, 'shift_ps': -0.4}
+route 1 (tip-free + FDM): +25 V X=+5  vs  +25 V X=0                                                         142      0.44         2   {'residual': 0.9, 'shift_ps': -0.09}  /  {'residual': 0.576, 'shift_ps': -0.35}
+route 1 (tip-free + FDM): +25 V X=-5  vs  +25 V X=-2.5                                                      -12      0.12         2   {'residual': 0.74, 'shift_ps': -0.185}  /  {'residual': 0.99, 'shift_ps': 0.4}
+route 2 (grounded tip): +25 V X=+5  vs  +25 V X=-5  (= -25 V, X=+5: same X, polarity flipped)               170      0.02         1   {'residual': 0.855, 'shift_ps': -0.3}  /  {'residual': 0.051, 'shift_ps': 0.0}
+route 2 (grounded tip): +25 V X=+5  vs  +25 V X=+2.5                                                         16      0.09         3   {'residual': 0.404, 'shift_ps': -0.095}  /  {'residual': 0.708, 'shift_ps': 0.18}
+route 2 (grounded tip): +25 V X=+5  vs  +25 V X=0                                                          -163      0.07         3   {'residual': 0.696, 'shift_ps': 0.2}  /  {'residual': 0.388, 'shift_ps': -0.075}
+route 2 (grounded tip): +25 V X=-5  vs  +25 V X=-2.5                                                         25      0.06         3   {'residual': 0.374, 'shift_ps': -0.08}  /  {'residual': 0.696, 'shift_ps': 0.195}
+route 2, tip at a FIXED potential (+12.5 V vs midpoint): +25 V X=+5  vs  mirror pair -25 V X=-5            -178     -0.01         3   {'residual': 0.878, 'shift_ps': 0.32}  /  {'residual': 0.114, 'shift_ps': 0.01}
+route 2, tip at a FIXED potential: +25 V X=-5  vs  mirror pair -25 V X=+5                                   172      0.06         3   {'residual': 0.878, 'shift_ps': 0.28}  /  {'residual': 0.182, 'shift_ps': -0.03}
+route 2, tip at +12.5 V: +25 V X=+5 vs +25 V X=-5 (same X, polarity flipped, tip potential mirrored)         10     -0.04         1   {'residual': 0.072, 'shift_ps': 0.02}  /  {'residual': 0.912, 'shift_ps': 0.345}

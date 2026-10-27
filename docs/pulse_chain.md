@@ -200,3 +200,16 @@ E_x = 4.3 kV/cm. Reasons it is small: field lines bow on the gap scale (40 µm) 
 lateral dipole (fringe field of its fronts), so a 1 % vertical addition moves the signal by ≈ 1 %.
 Figure: `results/slides/sim_field_bending.png` (deck slide 13); the EL2 slide of Part 2 was replaced by a
 "three kinds of field distortion" slide (17).
+
+## Waveform relations between positions and polarities (2026-10-27, `scripts/waveform_phase.py`)
+
+Same analysis as for the measured ±25 V traces (FFT phase in 0.25–1.6 THz, fit φ₀ + 2πfτ). Model, 2 mW, n = 3:
+* No arrival-time difference anywhere: fitted delays ≤ 0.1 ps (route 2) for all pairs; the near field of the
+  fronts forms at the spot within the pulse and reaches the tip at c; nothing travels 5 µm.
+* Same X, polarity flipped (X = +5 vs X = −5 at +25 V): φ₀ = 166° (route 1), 170° (route 2) — an inversion.
+* Mirror pairs (+V, +X) ↔ (−V, −X): identical by symmetry (φ₀ = 0) in every symmetric variant.
+* Tip at a fixed potential that does not mirror with the bias: the tip-potential term E is in phase with the
+  drift term O (φ₀(E vs O) = −19°), so mirror pairs go from 0° to 180° by amplitude cancellation; they pass 90°
+  only near V_tip ≈ 4 V (E/O ≈ 0.7), where one member of the pair is 4× weaker. The measured mirror pairs are
+  ≈ 90° apart with equal amplitudes, which needs a term in quadrature (differing by one time derivative) — not
+  present in the chain. Table: `results/tip_positions/waveform_phase_table.txt`.
