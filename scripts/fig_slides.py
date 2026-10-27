@@ -480,11 +480,70 @@ def fig_positions():
     plt.close(fig)
 
 
+# ----------------------------------------------------------------------------- electrode field-line bending (numerical)
+def fig_field_bending():
+    """(a) numerically solved bare field of the coplanar gap on a 350 um wafer (field lines, tilt map),
+    (b) tilt vs depth, (c) the single-pulse chain with and without the applied vertical component."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    from field_bending import bare_field_solution, BOX
+    from ltemsim import Params
+    p = Params(**{**BOX, **dict(depth=350.0, back_boundary="neumann")})
+    sim, sol = bare_field_solution(p)
+    g = sim.grid
+    Ex, Ez = sol.fields_physical(sim)                      # V/cm on all cells (Nz, Nx); keep the semiconductor rows
+    Ex, Ez = Ex[: g.ks], Ez[: g.ks]
+    xc, zc = g.xc, g.zc[: g.ks]
+    fig, axs = plt.subplots(1, 3, figsize=(17, 5.8), constrained_layout=True, gridspec_kw=dict(width_ratios=[1.5, 0.9, 1.1]))
+    ax = axs[0]
+    selx = np.abs(xc) <= 22; selz = zc >= -20
+    X, Z = np.meshgrid(xc[selx], zc[selz])
+    tilt = np.degrees(np.arctan2(Ez[selz][:, selx], np.abs(Ex[selz][:, selx]) + 1e-9))
+    pc = ax.pcolormesh(xc[selx], zc[selz], tilt, cmap="RdBu_r", vmin=-15, vmax=15, shading="nearest", rasterized=True)
+    fig.colorbar(pc, ax=ax, label="tilt of E below the horizontal (°)", pad=0.01)
+    # field lines on a regular grid
+    xi = np.linspace(-21, 21, 170); zi = np.linspace(-20, -0.05, 120)
+    from scipy.interpolate import RegularGridInterpolator
+    fx = RegularGridInterpolator((zc[selz], xc[selx]), Ex[selz][:, selx], bounds_error=False, fill_value=0.0)
+    fz = RegularGridInterpolator((zc[selz], xc[selx]), Ez[selz][:, selx], bounds_error=False, fill_value=0.0)
+    XI, ZI = np.meshgrid(xi, zi); pts = np.stack([ZI.ravel(), XI.ravel()], axis=1)
+    U = fx(pts).reshape(XI.shape); W = fz(pts).reshape(XI.shape)
+    ax.streamplot(xi, zi, U, W, color="0.35", density=1.1, linewidth=0.7, arrowsize=0.8)
+    ax.axhspan(-0.9, 0, color=C["green"], alpha=0.35, lw=0); ax.text(-15, -2.4, "820 nm carriers: top 0.9 µm", color=C["green"], fontsize=10.5)
+    for xe in (-20, 20):
+        ax.plot([xe, np.sign(xe) * 22], [0, 0], color=C["amber"], lw=5)
+    ax.set_xlim(-22, 22); ax.set_ylim(-20, 0.3); ax.set_xlabel("x (µm), electrodes at ±20 µm"); ax.set_ylabel("depth (µm)"); ax.grid(False)
+    ax.set_title("(a) bare field of the gap, 350 µm wafer, Poisson solve (no carriers)")
+    ax = axs[1]
+    for xx, col in ((2.5, C["grey"]), (5.0, C["ink"]), (7.5, C["orange"])):
+        i = np.argmin(np.abs(xc - xx)); sel = zc >= -20
+        t = np.degrees(np.arctan2(Ez[sel, i], np.abs(Ex[sel, i])))
+        ax.plot(t, -zc[sel], color=col, lw=2, label=f"x = {xx:g} µm")
+    ax.axhspan(0, 0.9, color=C["green"], alpha=0.25, lw=0); ax.text(6.5, 1.6, "carrier layer", color=C["green"], fontsize=10.5)
+    ax.invert_yaxis(); ax.set_xlabel("tilt of E (°)"); ax.set_ylabel("depth (µm)"); ax.set_title("(b) tilt vs depth at three x"); ax.legend(loc="lower right")
+    ax.set_xlim(0, 12)
+    ax = axs[2]
+    d = json.load(open(os.path.join(ROOT, "results", "field_bending_chain", "summary.json")))
+    Xs = np.array(d["X"]); ab = np.array([d["bent"][str(X)]["a3"] for X in Xs]); ah = np.array([d["horizontal"][str(X)]["a3"] for X in Xs])
+    ax.plot(Xs, ab / ab.max(), color=C["orange"], lw=2, marker="o", ms=8, mfc="white", label="full applied field (E_x + E_z)")
+    ax.plot(Xs, ah / ab.max(), color=C["blue"], lw=2, ls="--", marker="s", ms=7, mfc="white", label="vertical component removed")
+    ax.set_ylim(0, 1.15); ax.set_xlim(-8.5, 8.5); ax.axvline(0, color=C["grey"], lw=0.6)
+    ax.set_xlabel("X = beam position relative to the tip (µm)"); ax.set_ylabel("band-limited amplitude (n = 3), normalised")
+    ax.set_title("(c) single-pulse chain with / without E_z: %s" % (f"≤ {100*np.max(np.abs(ab/ah-1)):.1f} % difference"))
+    ax.legend(loc="upper left")
+    for X, r in zip(Xs, ab / ah):
+        ax.text(X, min(ab[np.argmin(np.abs(Xs - X))] / ab.max() + 0.06, 1.08), f"{100*(r-1):+.1f}%", ha="center", fontsize=9, color=C["muted"])
+    fig.savefig(os.path.join(OUT, "sim_field_bending.png"), dpi=150)
+    plt.close(fig)
+    return d
+
+
 if __name__ == "__main__":
     which = sys.argv[1].split("=")[-1] if len(sys.argv) > 1 else "all"
-    todo = dict(steady=fig_steady, positions=fig_positions, pump=fig_pump, dynamics=fig_dynamics, nearfield=fig_nearfield, xscan=fig_xscan, dember=fig_dember, power=fig_power, dipole=fig_dipole)
+    todo = dict(steady=fig_steady, positions=fig_positions, bending=fig_field_bending, pump=fig_pump, dynamics=fig_dynamics, nearfield=fig_nearfield, xscan=fig_xscan, dember=fig_dember, power=fig_power, dipole=fig_dipole)
     for k, f in todo.items():
         if which in ("all", k):
             f(); print("saved", k, flush=True)
+
+
 
 

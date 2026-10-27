@@ -88,6 +88,7 @@ class PulseConfig:
     tip_half_angle_deg: float = 15.0
     tip_apex_radius_um: float = 0.04
     V_tip: float = 0.0                # tip potential relative to the gap midpoint (V); 0 = grounded tip, symmetric bias
+    applied_vertical: bool = True     # False: drop the vertical component of the applied (electrode) field -> isolates field-line bending
     # run
     dt_fs: float = 0.5
     t_end_ps: float = 4.0
@@ -315,6 +316,8 @@ class PulseSim:
         rho_all = np.zeros(self.top.N_all)
         psi_app = self.solve_poisson(self.b_applied, np.zeros(self.top.N_all), applied=True)
         Exf, Ezf = self._face_fields(psi_app)
+        if not cfg.applied_vertical:
+            Ezf = np.zeros_like(Ezf)
         Exf_app, Ezf_app = Exf.copy(), Ezf.copy()
         rec["Q_tip"] = []; rec["E_gap"] = []
         rec["Q_tip_static"] = self.tip_charge(psi_app, self.b_applied, np.zeros(self.top.N_all))

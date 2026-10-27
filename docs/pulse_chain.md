@@ -187,3 +187,16 @@ Reading:
   midpoint is the test. Caveats: the 2-D wedge's field reaches further sideways than a cone's; the DC field is
   applied to a bare sample, whereas the standing plasma between pulses would screen part of it.
 * The 7 µm spot runs are kept in `results/pulse_chain/P30mW_w7_*` but dropped from the deck (user, 2026-10-27).
+
+## Electrode field-line bending through the chain (2026-10-27, `scripts/field_bending_chain.py`)
+
+The applied field of the chain is the finite-volume Poisson solution of the coplanar gap (E_x + E_z); with
+`PulseConfig(applied_vertical=False)` its vertical component is dropped. Route 1, 2 mW, band-limited amplitude
+(n = 3): bent / horizontal = 0.996, 0.994, 1.008, 1.000, 1.001, 0.996, 0.993 at X = −7.5 … +7.5, i.e. the bending
+changes the signal by ≤ 0.8 %. Tilt of the bare field (350 µm wafer, floating back; chain's own 30 µm box agrees):
+at x = 5 µm 0.01° at the surface, 0.5° at 1 µm, 2.6° at 5 µm, 6.9° at 20 µm; E_z(1 µm) = 0.04 kV/cm vs
+E_x = 4.3 kV/cm. Reasons it is small: field lines bow on the gap scale (40 µm) while the carriers sit in the top
+0.9 µm; the vertical drift dipole is tilt × lateral dipole (≈ 1 %); and the tip already reads an E_z of order the
+lateral dipole (fringe field of its fronts), so a 1 % vertical addition moves the signal by ≈ 1 %.
+Figure: `results/slides/sim_field_bending.png` (deck slide 13); the EL2 slide of Part 2 was replaced by a
+"three kinds of field distortion" slide (17).
