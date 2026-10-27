@@ -78,3 +78,57 @@ def amplitude_metrics(t, y):
     """Peak |y| and RMS over the trace (after removing the pre-pulse baseline)."""
     y = y - y[: max(3, len(y) // 20)].mean()
     return float(np.max(np.abs(y))), float(np.sqrt(np.mean(y ** 2)))
+
+
+# ---------------------------------------------------------------------------
+# Pizzuto-style FDM (the MATLAB script shared on 2026-10-26): original Cvitkovic 2007
+# form of f0/f1, L = 600 nm, g = 0.8 exp(0.06 i), tapping 0..400 nm (A = 200 nm, z = 0),
+# single frequency 0.84 THz, harmonic coefficients of alpha_eff(h(t)) by cosine-series
+# decomposition, |a_n| = sqrt(Re^2 + Im^2).
+#   alpha_thz  = (1 + beta) * t1 * t2 * (2 + t3/t4)                     (reflection s-SNOM)
+#   alpha_ltem = t_pump * (1 + beta) * (1 - beta) * t1 * t2 * (2 + t3/t4)  (her LTEM FDM)
+# with t3 = beta (g - (a + h)/l) ln(4l/(4h + 3a)),  t4 = ln(4l/a) - beta (g - (3a + 4h)/(4l)) ln(2l/(2h + a)).
+# ---------------------------------------------------------------------------
+from scipy.signal import hilbert as _hilbert
+
+
+def fdm_alpha_pizzuto(h, beta, a=40e-9, l=600e-9, g=0.8 * np.exp(0.06j)):
+    """alpha_eff(h) up to the constant t1*t2 (returned without it), original FDM form used in the MATLAB script."""
+    t3 = beta * (g - (a + h) / l) * np.log(4 * l / (4 * h + 3 * a))
+    t4 = np.log(4 * l / a) - beta * (g - (3 * a + 4 * h) / (4 * l)) * np.log(2 * l / (2 * h + a))
+    return 2 + t3 / t4
+
+
+def demodulate_pizzuto(t, heights_nm, Ez_tip, n_surface_t, A_nm=200.0, h_min_nm=0.0, harmonics=(1, 2, 3, 4),
+                       a_nm=40.0, l_nm=600.0, g=0.8 * np.exp(0.06j), f_thz=0.84, collection_factor=True,
+                       ltem_transmission_factor=False, eps_inf=12.9, tau_s=1e-13, n_theta=256):
+    """Harmonic traces S_n(t) with the Pizzuto FDM conventions.
+
+    The local near field E_loc(h, t) (real, from the carrier simulation; it already contains the
+    static dielectric transmission 2/(eps_r+1)) is turned into its analytic signal in t so that the
+    complex polarisability acts as a phase shift at the working frequency:
+        E_sc(h, t) = Re[ alpha(h, t) * (E_loc + i H[E_loc]) ].
+    collection_factor multiplies by (1 + beta) (tip field reaching the detector directly and via the
+    sample); ltem_transmission_factor multiplies by (1 - beta) as in the LTEM FDM of the script (not
+    used by default here, because the carrier simulation already provides the emitted field below the tip).
+    """
+    theta = np.linspace(0, 2 * np.pi, n_theta, endpoint=False)
+    h_tap = (h_min_nm + A_nm * (1 + np.cos(theta))) * 1e-9
+    hs = np.asarray(heights_nm, dtype=float) * 1e-9
+    # analytic signal of E_loc along t for every recorded height
+    Ea = _hilbert(Ez_tip, axis=0)                       # (nt, nh) complex
+    out = {n: np.zeros(len(t)) for n in harmonics}
+    out["E_loc_mid"] = np.zeros(len(t))
+    for i in range(len(t)):
+        Eh = np.interp(h_tap, hs, Ea[i].real) + 1j * np.interp(h_tap, hs, Ea[i].imag)
+        beta = beta_thz(max(n_surface_t[i], 0.0), f_thz=f_thz, eps_inf=eps_inf, tau_s=tau_s)
+        alpha = fdm_alpha_pizzuto(h_tap, beta, a=a_nm * 1e-9, l=l_nm * 1e-9, g=g)
+        if collection_factor:
+            alpha = alpha * (1 + beta)
+        if ltem_transmission_factor:
+            alpha = alpha * (1 - beta)
+        Esc = np.real(alpha * Eh)
+        for n in harmonics:
+            out[n][i] = np.mean(Esc * np.cos(n * theta)) * 2.0
+        out["E_loc_mid"][i] = np.interp(h_min_nm * 1e-9 + A_nm * 1e-9, hs, Ez_tip[i])
+    return out
