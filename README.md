@@ -64,6 +64,15 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-gui.txt   # numpy
 The `.app` is a thin launcher for this checkout (code changes apply on the next start); rebuild it if
 the folder moves. Log: `~/Library/Logs/LTEMSim.log`.
 
+Multi-core: one steady-state solve runs on one core (96 % of its time is SciPy's single-threaded sparse LU;
+UMFPACK/MUMPS gave ≤ 1.2× for these 52k-unknown 2-D Jacobians), so the GUI runs the independent solves
+of a job in parallel instead (`ltemsim_gui/parallel.py`: sweep values, pulse-chain beam positions,
+tip-chain (X, h) runs, the three pump-FDTD runs, FDTD tip heights). Results are identical to the
+sequential scripts. On an 18-core M5 Pro, 18 concurrent coarse solves give 10× the throughput of one.
+
+Tip shape: `FDTDConfig.tip_shape` and `PulseConfig.tip_shape` take `"cone"` (default, as in the committed
+results) or `"rod"` — the apex sphere plus a straight shank of width 2R. The GUI uses the rod by default.
+
 ## Geometry and conventions
 
 * x along the bias field, z vertical, GaAs at z < 0; thin Au electrodes on the

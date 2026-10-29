@@ -1,4 +1,5 @@
-"""One-parameter sweeps of the steady-state model (the scripts/sweep.py workflow, run through gui_tasks.custom_sweep)."""
+"""One-parameter sweeps of the steady-state model (the scripts/sweep.py workflow, run through parallel.sweep:
+the values are solved at the same time on separate cores)."""
 from __future__ import annotations
 
 import json
@@ -20,6 +21,7 @@ from ..jobs import FINISHED, JobManager
 from ..paramspec import FieldSpec, format_float, params_specs
 from ..theme import ThemeManager
 from ..widgets.common import MetricTile, Page, button, card, error_box, label, reveal
+from ..widgets.cores import CoresSpin, estimate_s, slowdown
 from ..widgets.imageview import ImageView
 from ..widgets.mpl import PlotWidget
 from ..widgets.paramform import ParamForm
@@ -31,7 +33,7 @@ from .steady import steady_metrics
 HIDDEN = {"gummel_max_iter", "gummel_tol", "poisson_max_iter", "poisson_tol", "generation_ramp", "bias_ramp_steps",
           "rep_rate"}
 QUICK = {"dx_fine": 0.5, "x_fine": 8.0, "dz_fine": 0.25}      # coarse grid of results/coarse_scenarios
-MIN_PER_RUN = {False: 6.5, True: 0.6}                        # minutes per value: production / coarse grid
+MIN_PER_RUN = {False: 6.5, True: 0.55}                       # minutes per solve on one core: production / coarse
 # copy of scripts/sweep.py SWEEPS (importing it would pull pyplot into the GUI process)
 PRESETS = (
     ("power", "P_avg_mW", (0.5, 1.0, 2.0, 4.0, 8.0), "Pump power"),
@@ -41,7 +43,7 @@ PRESETS = (
     ("spot", "spot_w_um", (2.0, 3.0, 4.5), "Spot radius"),
     ("anode", "anode_side", ("-x", "+x"), "Anode side"),
 )
-PROGRESS_PATTERN = r"^\s+\S.*: I=-?[\d.]+ mA, converged="
+PROGRESS_PATTERN = r"^@@PAR \d+/\d+ done"          # parallel.sweep prints one per finished value
 _DONE_RE = re.compile(PROGRESS_PATTERN)
 COLS = ("Value", "|I| (mA)", "Gain", "Peak X (µm)", "S(+5)/S(−5)", "S(0)/max", "Converged", "Time")
 COL_TIPS = ("Value of the swept parameter", "Photocurrent |I_left|", "I / I_unity (unity-gain current)",
@@ -50,7 +52,7 @@ COL_TIPS = ("Value of the swept parameter", "Photocurrent |I_left|", "I / I_unit
             "Solve time for this value")
 # value separators: ASCII comma / semicolon / whitespace, plus the full-width comma and semicolon and the
 # ideographic comma (U+FF0C, U+FF1B, U+3001) that a Chinese input method types when it is left switched on
-_SEP_RE = re.compile(r"[,;\s，；、]+")
+_SEP_RE = re.compile(r"[,;\s\uff0c\uff1b\u3001]+")
 # ordinal single-hue ramps (blue), low → high value; the dark one runs toward the light end
 RAMP = {False: ("#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281", "#0d366b"),
         True: ("#256abf", "#3987e5", "#6da7ec", "#9ec5f4", "#cde2fb")}
@@ -82,6 +84,16 @@ def _is_num(v) -> bool:
 
 def plural(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def fmt_dur(s: float) -> str:
+    """Short runtime estimate: '45 s', '7.8 min', '33 min', '1.6 h'."""
+    if s < 90:
+        return f"{s:.0f} s"
+    m = s / 60
+    if m < 10:
+        return f"{m:.1f} min"
+    return f"{m:.0f} min" if m < 90 else f"{m / 60:.1f} h"
 
 
 def parse_values(spec: FieldSpec, text: str) -> list:
@@ -314,9 +326,8 @@ class _Reflow(QWidget):
 # ----------------------------------------------------------------------------- page
 class SweepPage(Page):
     title = "Parameter sweep"
-    subtitle = ("One-parameter sweeps of the steady-state model: a full steady solve per value (the scripts/sweep.py "
-                "workflow), comparing |S|(X), next-pulse weight, EL2⁺ profile and photocurrent. "
-                "About 6.5 min per value on the production grid, 0.6 min on the coarse grid.")
+    subtitle = ("One-parameter sweeps of the steady-state model (scripts/sweep.py): one full steady solve per value, "
+                "several values at once on separate cores.")
     confirm_minutes = 20          # ask before queueing sweeps estimated to take longer than this
 
     def __init__(self):
@@ -330,8 +341,12 @@ class SweepPage(Page):
         self.specs = {s.name: s for s in all_specs}
         self._swept = None
 
+        self._n = 0                   # number of valid values in the list
         self.est_head = label("", "muted")
         self.header.add_action(self.est_head)
+        self.cores = CoresSpin()
+        self.cores.changed.connect(self._update_estimate)
+        self.header.add_action(self.cores)
         self.run_btn = button("  Run sweep", lambda: self.run(), "primary")     # not clicked(bool) → confirm
         self.header.add_action(self.run_btn)
 
@@ -413,15 +428,17 @@ class SweepPage(Page):
         g.addWidget(self.preview, 5, 0, 1, 3)
         self.quick = QCheckBox("Coarse grid (fast)")
         self.quick.setToolTip("dx_fine = 0.5 µm, x_fine = 8 µm, dz_fine = 0.25 µm (as in results/coarse_scenarios): "
-                              "about 0.6 min per value, good for a first look at trends")
+                              "about 0.55 min per solve, good for a first look at trends")
         self.quick.toggled.connect(self._toggle_quick)
-        self.est = label("", "muted")
-        self.est.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.per_run = label("", "muted")
+        self.per_run.setToolTip("Time of one solve on one core")
         qrow = QHBoxLayout()
         qrow.addWidget(self.quick)
         qrow.addStretch(1)
-        qrow.addWidget(self.est)
+        qrow.addWidget(self.per_run)
         g.addLayout(qrow, 6, 0, 1, 3)
+        self.est = label("", "muted", wrap=True)
+        g.addWidget(self.est, 7, 0, 1, 3)
         ll.addWidget(box)
         base_head = label("Base parameters · used for every solve", "sectionHeader")
         base_head.setToolTip("Every solve uses these values; the swept parameter is replaced by each value in turn")
@@ -673,16 +690,47 @@ class SweepPage(Page):
         except ValueError as e:
             self.preview.setText(f"<span style='color:{t.danger}'>{e}</span>")
             n = 0
+        self._n = n
+        self.cores.set_runs(max(1, n))          # follows the number of values until the user sets it
+        self._update_estimate()
+        self.run_btn.setEnabled(n > 0)
+
+    def estimate(self, n: int | None = None) -> tuple[int, float, float]:
+        """(cores used, wall-time estimate in s, time on one core in s) for n values."""
+        n = self._n if n is None else n
+        per_s = MIN_PER_RUN[self.quick.isChecked()] * 60
+        k = max(1, min(self.cores.value(), n))
+        return k, estimate_s(per_s, n, k), n * per_s
+
+    def _update_estimate(self, *_):
+        if not hasattr(self, "est"):
+            return
+        n = self._n
         per = MIN_PER_RUN[self.quick.isChecked()]
-        if n:
-            total = fmt_elapsed(n * per * 60)
-            self.est.setText(f"{n} × {per:g} min ≈ {total}")
-            self.est_head.setText(f"{plural(n, 'solve')} · ≈ {total}"
-                                  + (" · coarse grid" if self.quick.isChecked() else ""))
-        else:
+        self.per_run.setText(f"{per:g} min per solve")
+        if not n:
             self.est.setText("")
             self.est_head.setText("")
-        self.run_btn.setEnabled(n > 0)
+            return
+        k, wall, one = self.estimate(n)
+        if n == 1:
+            txt = f"1 solve ≈ {fmt_dur(one)} (a single solve runs on one core)"
+        elif k == 1:
+            txt = f"{n} solves one after another ≈ {fmt_dur(one)}"
+        else:
+            txt = f"{n} solves on {k} cores ≈ {fmt_dur(wall)} (≈ {fmt_dur(one)} on one core)"
+        self.est.setText(txt)
+        if k == 1:
+            tip = f"{per:g} min per solve on one core, solved one after another."
+        else:
+            rounds = math.ceil(n / k)
+            tip = (f"{per:g} min per solve on one core. Solves that share the machine run a little slower "
+                   f"(≈ {slowdown(k):.2f}× with {k} at once)"
+                   + (f"; with {k} cores for {n} values they run in {rounds} rounds." if rounds > 1 else "."))
+        self.est.setToolTip(tip + " A single solve cannot use more than one core: its sparse LU solver is "
+                                  "single-threaded.")
+        self.est_head.setText(f"{plural(n, 'solve')} · ≈ {fmt_dur(wall)}"
+                              + (" · coarse grid" if self.quick.isChecked() else ""))
 
     def _toggle_quick(self, on):
         if on:
@@ -720,7 +768,7 @@ class SweepPage(Page):
         base = {k: v for k, v in self.form.overrides().items() if k != key}
         n = len(vals)
         quick = self.quick.isChecked()
-        minutes = n * MIN_PER_RUN[quick]
+        workers, wall, one = self.estimate(n)
         out = self.out_edit.text().strip()
         root = paths.absolute(Path(out).expanduser()) if out else paths.new_run_dir("sweep")
         if confirm:
@@ -730,24 +778,28 @@ class SweepPage(Page):
                                          "are swept again will be overwritten. Continue?")
                 if r != QMessageBox.StandardButton.Yes:
                     return None
-            if minutes > self.confirm_minutes:
+            if wall / 60 > self.confirm_minutes:
+                how = ("one after another" if workers == 1
+                       else f"{workers} at a time" if workers < n else f"all at once on {workers} cores")
                 r = QMessageBox.question(self, "Start sweep?",
                                          f"Run {plural(n, 'steady solve')} on the "
-                                         f"{'coarse' if quick else 'production'} grid, one after another? "
-                                         f"This takes ≈ {fmt_elapsed(minutes * 60)}.\n\n"
+                                         f"{'coarse' if quick else 'production'} grid, {how}? "
+                                         f"This takes ≈ {fmt_dur(wall)}"
+                                         + (f" (≈ {fmt_dur(one)} on one core)" if workers > 1 else "") + ".\n\n"
                                          "The job runs in the background; you can keep using the other pages.")
                 if r != QMessageBox.StandardButton.Yes:
                     return None
-        title = f"Sweep {key} · {plural(n, 'value')}" + (" · coarse grid" if quick else "")
+        title = (f"Sweep {key} · {plural(n, 'value')} · {plural(workers, 'core')}"
+                 + (" · coarse grid" if quick else ""))
         if self.job is not None:              # only the newest sweep drives the live refresh
             try:
                 self.job.output.disconnect(self._on_job_output)
             except (RuntimeError, TypeError):
                 pass
         self.job = JobManager.instance().submit(
-            title, "sweep", "ltemsim_gui/gui_tasks.py", "custom_sweep",
-            kwargs=dict(root=paths.rel(root), key=key, values=vals, base=base, name=key), out=root,
-            progress={"type": "count", "pattern": PROGRESS_PATTERN, "total": n, "steady_sub": True})
+            title, "sweep", "ltemsim_gui/parallel.py", "sweep",
+            kwargs=dict(root=paths.rel(root), key=key, values=vals, base=base, name=key, workers=workers), out=root,
+            progress={"type": "count", "pattern": PROGRESS_PATTERN, "total": n})
         self.job.output.connect(self._on_job_output)
         self._follow = (root / key).resolve()
         self.panel.attach(self.job)
@@ -812,7 +864,9 @@ class SweepPage(Page):
         conv = [m.get("converged") for m in ms if m.get("converged") is not None]
         state = "" if not conv else ("  ·  all converged" if all(conv)
                                      else f"  ·  ⚠ {conv.count(False)} not fully converged")
-        self.res_title.setText(f"{spec.label if spec else key} sweep  ·  {plural(sw['n_done'], 'value')}{state}")
+        count = (plural(sw["n_done"], "value") if sw["n_done"] >= sw["n_total"]
+                 else f"{sw['n_done']} of {plural(sw['n_total'], 'value')}")
+        self.res_title.setText(f"{spec.label if spec else key} sweep  ·  {count}{state}")
         self.res_title.setToolTip(key)
         base = sw["base"]
         coarse = all(base.get(k) == v for k, v in QUICK.items())
@@ -834,8 +888,10 @@ class SweepPage(Page):
         Xs = sorted({round(m["peak_X"], 1) + 0.0 for m in ms if m.get("peak_X") is not None})
         self.m_peak.set(f"{fmt_x(Xs[0])} … {fmt_x(Xs[-1])} µm" if len(Xs) > 1 else f"{fmt_x(Xs[0])} µm" if Xs else "—")
         walls = [m["wall"] for m in ms if m.get("wall")]
+        workers = sw["spec"].get("workers")
         self.m_wall.set(fmt_elapsed(sum(walls)) if walls else "—",
-                        f"≈ {fmt_elapsed(sum(walls) / len(walls))} per value" if walls else "")
+                        (f"≈ {fmt_elapsed(sum(walls) / len(walls))} per value" if walls else "")
+                        + (f" · {workers} cores" if walls and isinstance(workers, int) and workers > 1 else ""))
         self.metrics_line.setText("  ·  ".join(f"{m.lab.text()}: {m.val.text()}" for m in
                                                (self.m_runs, self.m_I, self.m_peak, self.m_wall)))
         self.metrics_line.setToolTip("\n".join(f"{m.lab.text()}: {m.val.text()} ({m.hint.text()})" for m in

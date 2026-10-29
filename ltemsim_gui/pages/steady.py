@@ -282,6 +282,12 @@ class SteadyPage(Page):
         # long job titles must not widen the page (RunPanel's title label does not elide)
         self.panel.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.panel.job_finished.connect(self._on_finished)
+        cores_note = label(
+            "One solve runs on one CPU core: about 96 % of its time is the sparse LU factorisation (SciPy SuperLU), "
+            "which is single-threaded, and multithreaded solvers do not help at this problem size. To use all cores, "
+            "run several solves at once — Parameter sweep does that, or allow more jobs at a time in the Jobs menu.",
+            "muted", wrap=True)
+        rl.addWidget(cores_note)
         rl.addWidget(self.panel)
         self.tabs.addTab(run_tab, "Run")
 

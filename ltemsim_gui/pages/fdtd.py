@@ -19,6 +19,7 @@ from ..jobs import CANCELLED, FAILED, FINISHED, JobManager
 from ..paramspec import FieldSpec, format_float
 from ..theme import ThemeManager
 from ..widgets.common import MetricTile, Page, button, error_box, label, reveal
+from ..widgets.cores import CoresSpin, estimate_s
 from ..widgets.device import FieldView, draw_fdtd_device
 from ..widgets.imageview import ImageView
 from ..widgets.mpl import PlotWidget
@@ -36,8 +37,18 @@ BOX = dict(x_half=4.0e-6, z_min=-3.0e-6, z_max=2.5e-6, z_source=2.2e-6)    # har
 # dx = 15 nm: 70–80 s per run, dx = 40 nm: 5 s (whole dx = 40 nm job: 16 s).  JOB_OVERHEAD = start-up + figure.
 STEP_OVERHEAD, CELL_STEP, RUN_OVERHEAD, JOB_OVERHEAD = 4e-5, 14.5e-9, 0.5, 3.0
 SPREAD = (0.8, 1.35)            # machine load; shown as a range
-PUMP_PROGRESS = {"type": "count", "pattern": r"^(vacuum|notip|tip): launched", "total": 3, "sub": r"step (\d+)/(\d+)"}
+# both modes run through ltemsim_gui/parallel.py: one FDTD run per core, "@@PAR i/n done" after each
+PAR_SCRIPT = "ltemsim_gui/parallel.py"
+PAR_PATTERN = r"^@@PAR \d+/\d+ done"
+PUMP_PROGRESS = {"type": "count", "pattern": PAR_PATTERN, "total": 3}
 CMAPS = ("RdBu_r", "coolwarm", "viridis", "magma", "inferno", "plasma", "cividis", "turbo", "gray")
+
+# tip shape: form label <-> FDTDConfig.tip_shape. The app default is the rod; FDTDConfig's default (and every
+# result computed before the choice existed, incl. the committed results/fdtd_pump) is the cone.
+ROD, CONE = "Rod (width 2R)", "Cone"
+SHAPES = {ROD: "rod", CONE: "cone"}
+SHAPE_LABEL = {v: k for k, v in SHAPES.items()}
+LEGACY_SHAPE = "cone"
 
 # form field -> (FDTDConfig field, factor to SI); every other field keeps its name and unit
 SCALE = {"wavelength_nm": ("wavelength", 1e-9), "tip_radius_nm": ("tip_radius", 1e-9),
@@ -61,6 +72,28 @@ FIELD_HELP = ("|E|max: the peak of |E(t)| in each cell during the pulse (max ove
               "Q: absorbed energy density ∫σ|E|² dt, normalised to its maximum without the tip; zero (blank) in the air.\n"
               "Black lines: the exact tip outline and the GaAs surface z = 0. Cells the FDTD treats as PtIr are blank.")
 E0_Z = 0.5                                   # µm; |E0| is measured in the air between this height and the source
+
+
+SHAPE_HELP = ("Straight rod: the apex sphere of radius R plus a straight shank of width 2R. Cone: the apex sphere plus "
+              "a cone of the half-angle below (the repository result results/fdtd_pump used the cone). In the 2-D model "
+              "either shank is infinitely long in y.")
+
+
+def shape_spec(section: str) -> FieldSpec:
+    return FieldSpec("tip_shape", ROD, "choice", "Tip shape", "", SHAPE_HELP, section, choices=(ROD, CONE))
+
+
+def shape_of(d: dict | None) -> str:
+    """'rod' | 'cone' of an FDTDConfig dict or run kwargs; without the key: the cone (the library default)."""
+    s = (d or {}).get("tip_shape") or LEGACY_SHAPE
+    return s if s in SHAPE_LABEL else LEGACY_SHAPE
+
+
+def shape_text(shape: str, R_nm: float | None = None, half_deg: float | None = None) -> str:
+    """'rod tip, 2R = 80 nm' / 'cone tip, R = 40 nm, 15°' (short, for captions and history rows)."""
+    if shape == "rod":
+        return "rod tip" + (f", 2R = {2 * R_nm:.0f} nm" if R_nm else "")
+    return "cone tip" + (f", R = {R_nm:.0f} nm" if R_nm else "") + (f", {half_deg:g}°" if half_deg else "")
 
 
 def pump_specs() -> list[FieldSpec]:
@@ -98,11 +131,12 @@ def pump_specs() -> list[FieldSpec]:
                   G, minimum=1),
         FieldSpec("kappa_gaas", 0.078, "float", "Extinction coefficient κ", "",
                   "α = 4πκ/λ; 0.078 gives 1.2×10⁴ cm⁻¹ at 820 nm.", G, minimum=0),
+        shape_spec(T),
         FieldSpec("tip_radius_nm", 40.0, "float", "Apex radius R", "nm",
-                  "FDTDConfig.tip_radius (metres), converted automatically.", T, minimum=1),
+                  "FDTDConfig.tip_radius (metres), converted automatically. The straight rod is 2R wide.", T, minimum=1),
         FieldSpec("tip_half_angle_deg", 15.0, "float", "Cone half-angle", "deg",
-                  "In the 2-D model the tip is a wedge, infinitely long in y, so its shadow is an upper bound.", T,
-                  minimum=1, maximum=60),
+                  "Cone only (unused for the straight rod). In the 2-D model the tip is a wedge, infinitely long in y, "
+                  "so its shadow is an upper bound.", T, minimum=1, maximum=60),
         FieldSpec("tip_gap_nm", 20.0, "float", "Tip–surface gap", "nm",
                   "Distance from the apex to the GaAs surface (FDTDConfig.tip_gap, metres).", T, minimum=0),
         FieldSpec("tip_x_um", 0.0, "float", "Tip position x", "µm", "FDTDConfig.tip_x (metres), converted automatically.",
@@ -114,7 +148,10 @@ def pump_specs() -> list[FieldSpec]:
 
 
 def pump_kwargs(ov: dict) -> dict:
-    """Form values -> run_fdtd_pump.main keyword arguments (FDTDConfig units; dx stays dx_nm)."""
+    """Form values -> run_fdtd_pump.main keyword arguments (FDTDConfig units; dx stays dx_nm).
+
+    tip_shape is always passed (the app default, the rod, is not FDTDConfig's default); the half-angle is
+    dropped for the rod, which does not use it."""
     kw = {}
     for k, v in ov.items():
         if k == "t_end_fs":
@@ -123,8 +160,13 @@ def pump_kwargs(ov: dict) -> dict:
         elif k in SCALE:
             name, f = SCALE[k]
             kw[name] = float(f"{float(v) * f:.12g}")       # 3e-08, not 3.0000000000000004e-08
+        elif k == "tip_shape":
+            kw[k] = SHAPES.get(v, v)
         else:
             kw[k] = v
+    kw.setdefault("tip_shape", SHAPES[ROD])
+    if kw["tip_shape"] == "rod":
+        kw.pop("tip_half_angle_deg", None)
     return kw
 
 
@@ -135,6 +177,16 @@ def device_cfg(values: dict) -> dict:
     return cfg
 
 
+def kwargs_cfg(kw: dict) -> dict:
+    """The FDTDConfig dict of a pump run from its run_fdtd_pump / parallel.fdtd_pump kwargs (gui_run.json).
+    Without tip_shape it is FDTDConfig's default, the cone, which is what such runs used."""
+    from ltemsim.optics_fdtd import FDTDConfig
+    c = {**FDTDConfig().__dict__, **BOX}
+    c.update({k: v for k, v in kw.items() if k in c})
+    c["dx"] = float(kw.get("dx_nm", 15.0)) * 1e-9
+    return c
+
+
 def form_kwarg(k: str, v) -> str:
     """A run_fdtd_pump kwarg as shown to the user: in the form's units (tip_gap=3e-08 -> tip_gap_nm=30)."""
     if k in UNSCALE and isinstance(v, (int, float)):
@@ -143,13 +195,16 @@ def form_kwarg(k: str, v) -> str:
 
 
 def cfg_to_form(cfg: dict) -> dict:
-    """FDTDConfig dict (from an npz) -> form values."""
+    """FDTDConfig dict (from an npz, or a run's kwargs with dx_nm) -> form values. A missing tip_shape means the
+    cone: every run before the shape choice existed, the repository result included, used it."""
     r = lambda v: float(f"{v:.6g}")
     out = {}
     for spec in pump_specs():
         n = spec.name
-        if n == "dx_nm" and "dx" in cfg:
-            out[n] = r(cfg["dx"] * 1e9)
+        if n == "dx_nm" and ("dx" in cfg or "dx_nm" in cfg):
+            out[n] = r(cfg["dx"] * 1e9) if "dx" in cfg else r(float(cfg["dx_nm"]))
+        elif n == "tip_shape":
+            out[n] = SHAPE_LABEL[shape_of(cfg)]
         elif n in SCALE and SCALE[n][0] in cfg:
             out[n] = r(cfg[SCALE[n][0]] / SCALE[n][1])
         elif n == "t_end_fs":
@@ -190,12 +245,21 @@ def fmt_range(s: float) -> str:
     return f"{a / 3600:.1f}–{b / 3600:.1f} h"
 
 
-def pump_total(values: dict) -> float:
-    return 3 * (fdtd_cost(**values)[3] + RUN_OVERHEAD) + JOB_OVERHEAD
+def pump_total(values: dict, workers: int = 3) -> float:
+    """Wall time of the three FDTD runs (vacuum, no tip, with tip) on `workers` cores."""
+    return estimate_s(fdtd_cost(**values)[3] + RUN_OVERHEAD, 3, workers) + JOB_OVERHEAD
 
 
-def heights_total(n: int) -> float:
-    return n * (fdtd_cost()[3] + RUN_OVERHEAD) + (JOB_OVERHEAD if n else 0.0)
+def heights_total(n: int, workers: int = 1) -> float:
+    """Wall time of n tip heights (one full 15 nm FDTD run each) on `workers` cores."""
+    return estimate_s(fdtd_cost()[3] + RUN_OVERHEAD, n, workers) + (JOB_OVERHEAD if n else 0.0)
+
+
+def speedup_text(n: int, unit: str, workers: int, total: float, serial: float) -> str:
+    """'3 runs on 3 cores ≈ 1.4 min (≈ 3.8 min on one core)'."""
+    k = max(1, min(workers, n))
+    s = f"{n} {unit if n != 1 else unit.rstrip('s')} on {k} core{'s' if k > 1 else ''} ≈ {fmt_dur(total)}"
+    return s + (f" (≈ {fmt_dur(serial)} on one core)" if k > 1 else "")
 
 
 def heights_in(d: Path) -> dict[int, Path]:
@@ -305,10 +369,15 @@ def check_ref(p: Path) -> tuple[str, str]:
     return "ok", f"✓ Default 15 nm grid · θ = {cfg['theta_deg']:g}° · w = {cfg['w_um']:g} µm · matches the height series"
 
 
-def tip_outline(x0, gap, R, half_deg, z_top=20.0):
-    """Outline (µm) of the 2-D tip: apex circle + wedge, as in optics_fdtd.in_tip."""
-    th = math.radians(half_deg)
+def tip_outline(x0, gap, R, half_deg, z_top=20.0, shape=LEGACY_SHAPE):
+    """Outline (µm) of the 2-D tip, as in optics_fdtd.in_tip: apex circle + wedge (cone) or + straight shank of
+    width 2R (rod)."""
     zc = gap + R
+    if shape == "rod":
+        phi = np.linspace(math.pi, 2 * math.pi, 64)
+        return (np.concatenate([[x0 - R], x0 + R * np.cos(phi), [x0 + R]]),
+                np.concatenate([[z_top], zc + R * np.sin(phi), [z_top]]))
+    th = math.radians(half_deg)
     phi = np.linspace(math.pi - th, 2 * math.pi + th, 64)
     z_t = zc + R * math.sin(th)
     half_top = R * math.cos(th) + (z_top - z_t) * math.tan(th)
@@ -320,11 +389,12 @@ def tip_outline(x0, gap, R, half_deg, z_top=20.0):
 def tip_mask(cfg: dict, z_top: float):
     """(xs, zs, f[z, x]) in µm for FieldView's outlines: f = 0.5 − (signed distance to the tip of FDTDConfig `cfg`,
     the shape of optics_fdtd.in_tip), so its 0.5 contour is the exact, smooth geometry edge (a boolean mask would
-    give a staircase). The grid is fine around the apex and coarse along the straight cone."""
+    give a staircase). The grid is fine around the apex and coarse along the straight shank."""
     R, gap, xt = cfg["tip_radius"] * 1e6, cfg["tip_gap"] * 1e6, cfg["tip_x"] * 1e6
-    th = math.radians(cfg["tip_half_angle_deg"])
+    rod = shape_of(cfg) == "rod"
+    th = 0.0 if rod else math.radians(cfg["tip_half_angle_deg"])
     zc = gap + R
-    z_t = zc + R * math.sin(th)                         # the cone is tangent to the apex sphere here
+    z_t = zc + R * math.sin(th)                         # the shank is tangent to the apex sphere here
     h = max(min(R / 10, cfg.get("dx", 15e-9) * 1e6 / 2), 5e-4)
     half = R * math.cos(th) + max(z_top - z_t, 0.0) * math.tan(th) + 4 * h
     hx = max(h, 2 * half / 800)
@@ -333,8 +403,9 @@ def tip_mask(cfg: dict, z_top: float):
     zs = np.concatenate([np.arange(gap - 4 * h, z_fine, h), np.linspace(z_fine, max(z_top, z_fine + h), 80)])
     X, Z = np.meshgrid(xs, zs)
     d_sphere = np.hypot(X - xt, Z - zc) - R
-    d_cone = np.maximum((np.abs(X - xt) - R * math.cos(th) - (Z - z_t) * math.tan(th)) * math.cos(th), z_t - Z)
-    return xs, zs, 0.5 - np.minimum(d_sphere, d_cone)
+    # rod (th = 0): the slab |x − x_t| ≤ R above the sphere centre; cone: the wedge tangent to the sphere
+    d_shank = np.maximum((np.abs(X - xt) - R * math.cos(th) - (Z - z_t) * math.tan(th)) * math.cos(th), z_t - Z)
+    return xs, zs, 0.5 - np.minimum(d_sphere, d_shank)
 
 
 def _edges(c) -> np.ndarray:
@@ -347,9 +418,15 @@ def _edges(c) -> np.ndarray:
     return np.concatenate([[2 * c[0] - mid[0]], mid, [2 * c[-1] - mid[-1]]])
 
 
+def tip_text(cfg: dict) -> str:
+    """The tip of an FDTDConfig dict, e.g. 'rod tip, 2R = 80 nm' or 'cone tip, R = 40 nm, 15°'."""
+    shape = shape_of(cfg)
+    return shape_text(shape, cfg["tip_radius"] * 1e9, cfg.get("tip_half_angle_deg") if shape == "cone" else None)
+
+
 def cfg_caption(cfg: dict) -> str:
-    return (f"θ {cfg['theta_deg']:g}° · w {cfg['w_um']:g} µm · λ {cfg['wavelength'] * 1e9:.0f} nm · R "
-            f"{cfg['tip_radius'] * 1e9:.0f} nm · gap {cfg['tip_gap'] * 1e9:.0f} nm · dx {cfg['dx'] * 1e9:g} nm")
+    return (f"θ {cfg['theta_deg']:g}° · w {cfg['w_um']:g} µm · λ {cfg['wavelength'] * 1e9:.0f} nm · {tip_text(cfg)} · "
+            f"gap {cfg['tip_gap'] * 1e9:.0f} nm · dx {cfg['dx'] * 1e9:g} nm")
 
 
 def source_cut(cfg: dict | None) -> float:
@@ -485,9 +562,12 @@ def load_pump(d: Path) -> dict:
     res["cfg"] = cfg
     tip = None
     tcfg = (runs.get("tip") or {}).get("cfg") or cfg
+    gkw = (res["gui"] or {}).get("kwargs") if isinstance(res["gui"], dict) else None
+    if tcfg is None and ratio is not None and isinstance(gkw, dict):
+        tcfg = kwargs_cfg(gkw)          # no readable run npz: the tip from the run's arguments (outline, layers)
     if tcfg:
         tip = dict(x0=tcfg["tip_x"] * 1e6, gap=tcfg["tip_gap"] * 1e6, R=tcfg["tip_radius"] * 1e6,
-                   half=tcfg["tip_half_angle_deg"])
+                   half=tcfg["tip_half_angle_deg"], shape=shape_of(tcfg))
     res["field"] = field_data(runs, x, z, Qt, Qn, ratio, tcfg)
 
     # headline numbers: summary.json, else recomputed like the script does
@@ -557,6 +637,25 @@ def heights_ref(d: Path) -> Path:
     return DEFAULT_REF
 
 
+def heights_shapes(d: Path) -> set[str]:
+    """Tip shapes the height runs in folder `d` used, from its gui_run*.json (ratio_h*.npz do not record the tip).
+
+    Folders without a GUI record (the repository result) and runs of scripts/run_fdtd_heights.py used the cone;
+    a resumed folder can hold both shapes."""
+    shapes = set()
+    for p in Path(d).glob("gui_run*.json"):
+        kw = read_dict(p).get("kwargs") or {}
+        if isinstance(kw, dict) and "heights" in kw:
+            shapes.add(shape_of(kw))
+    return shapes or {LEGACY_SHAPE}
+
+
+def heights_shape(d: Path) -> str:
+    """'rod' | 'cone' | 'mixed' for a heights folder."""
+    s = heights_shapes(d)
+    return next(iter(s)) if len(s) == 1 else "mixed"
+
+
 def _launched_absorbed(p: Path) -> tuple[float | None, float | None]:
     try:
         with np.load(p, allow_pickle=False) as z:
@@ -589,11 +688,15 @@ def load_heights(d: Path) -> dict:
         norm = dict(basis="vacuum", factor=L_ref / L_vac, notip=A_ref / L_vac)
     else:
         norm = dict(basis="notip", factor=1.0, notip=A_ref / L_ref if L_ref else None)
+    shape = heights_shape(d)
     res = {"dir": d, "files": files, "summary": summ, "ref": ref, "ref_summary": ref_summary, "layers": [],
-           "from_npz": [], "bad": {}, "norm": norm, "gui": read_json(d / "gui_run.json")}
-    tcfg = npz_cfg(ref.parent / "tip.npz")       # the pump run's own tip point, if it used the series' tip shape
+           "from_npz": [], "bad": {}, "norm": norm, "gui": read_json(d / "gui_run.json"), "shape": shape}
+    # the pump run's own with-tip point, if its tip is the series' tip (R = 40 nm and the same shape; a cone also
+    # needs the default 15°). npz without tip_shape — the repository result included — used the cone.
+    tcfg = npz_cfg(ref.parent / "tip.npz")
     if (norm["basis"] == "vacuum" and tcfg and isinstance(ref_summary.get("absorbed_fraction_tip"), (int, float))
-            and abs(tcfg.get("tip_radius", 0) - 40e-9) < 1e-12 and tcfg.get("tip_half_angle_deg") == 15.0):
+            and abs(tcfg.get("tip_radius", 0) - 40e-9) < 1e-12 and shape_of(tcfg) == shape
+            and (shape == "rod" or tcfg.get("tip_half_angle_deg") == 15.0)):
         res["pump_tip"] = (tcfg["tip_gap"] * 1e9, float(ref_summary["absorbed_fraction_tip"]))
     for h, f in files.items():
         prob = height_npz_problem(f)
@@ -616,7 +719,8 @@ def load_heights(d: Path) -> dict:
         res["layers"].append(dict(key=f"h{h}", group="ratio", label=f"h = {h} nm · log₁₀(Q_tip/Q_notip)", x=x, z=zz, data=data,
                                   cmap="RdBu_r", v=(-1.0, 1.0), xlim=(-2.0, 2.0), zlim=(-1.5, 0.3 + h / 1000),
                                   title=f"log10(Q_tip(h) / Q_notip), h = {h} nm", cbar="log10 ratio",
-                                  tip=dict(x0=0.0, gap=h / 1000, R=0.04, half=15.0)))
+                                  tip=None if shape == "mixed" else dict(x0=0.0, gap=h / 1000, R=0.04, half=15.0,
+                                                                         shape=shape)))
     res["summary"] = dict(sorted(summ.items()))
     return res
 
@@ -1046,7 +1150,7 @@ class MapView(QWidget):
             ax.axhline(0.0, color=t.muted, lw=0.8, ls="--")
             if show_tip and L.get("tip"):
                 tp = L["tip"]
-                xs, zs = tip_outline(tp["x0"], tp["gap"], tp["R"], tp["half"])
+                xs, zs = tip_outline(tp["x0"], tp["gap"], tp["R"], tp["half"], shape=tp.get("shape", LEGACY_SHAPE))
                 ax.fill(xs, zs, facecolor="#9aa0a6", edgecolor=t.text, alpha=0.45, lw=0.9, zorder=3)
             ax.set_xlim(min(x0, x1), max(x0, x1) if x1 != x0 else x0 + 0.1)
             ax.set_ylim(min(z0, z1), max(z0, z1) if z1 != z0 else z0 + 0.1)
@@ -1063,12 +1167,13 @@ class FdtdPage(Page):
     title = "Pump FDTD (optics)"
     subtitle = ("2-D FDTD of the 820 nm, 100 fs p-polarised pump on GaAs: vacuum reference, no tip, and a PtIr (Drude) "
                 "tip. Gives the optical field |E|, the absorbed energy density Q(x, z) and the tip's enhancement / "
-                "shadow Q_tip/Q_notip. Default grid ≈ 4–5 min.")
+                f"shadow Q_tip/Q_notip. The three runs execute side by side on 3 cores: default grid ≈ "
+                f"{fmt_dur(pump_total({}))}.")
 
     def __init__(self):
         super().__init__()
         self.job = None
-        self.post_job = None
+        self._runs2 = None          # heights to compute, last passed to cores2.set_runs
         self.pump = None            # loaded pump result dict
         self.heights = None         # loaded heights result dict
         self._pump_token = self._heights_token = 0
@@ -1098,6 +1203,7 @@ class FdtdPage(Page):
         self.hform.changed.connect(self._schedule_device)
         self.tabs.currentChanged.connect(self._on_tab)
 
+        self._sync_shape()
         self._update_pump_estimate()
         self._refresh_refs()
         self._update_heights_info()
@@ -1130,9 +1236,18 @@ class FdtdPage(Page):
         l1.setContentsMargins(0, 0, 0, 0)
         l1.setSpacing(6)
         self.form = ParamForm(pump_specs())
+        self.form.changed.connect(self._sync_shape)
         self.form.changed.connect(self._update_pump_estimate)
+        self._compact_form(self.form)
+        for sig in (self.form.adv.toggled, self.form.search.textChanged, self.form.changed):    # after ParamForm's filter
+            sig.connect(self._align_labels)
+        self._align_labels()
         l1.addWidget(self.form, 1)
-        self.est1 = MetricTile("Estimated runtime", "—")
+        self.cores1 = CoresSpin()
+        self.cores1.set_runs(3)
+        self.cores1.changed.connect(self._update_pump_estimate)
+        self.est1 = self._estimate_tile(self.cores1, "The three FDTD runs (vacuum, no tip, with tip) are independent; "
+                                                     "each one runs on one core.")
         l1.addWidget(self.est1)
         self.warn1 = label("", wrap=True)
         self.warn1.setVisible(False)
@@ -1154,26 +1269,29 @@ class FdtdPage(Page):
         l2 = QVBoxLayout(m2)
         l2.setContentsMargins(0, 0, 12, 0)        # room for the overlay scroll bar
         l2.setSpacing(8)
-        self.hform = ParamForm([FieldSpec("heights", HEIGHTS_DEFAULT, "tuple", "Heights h", "nm",
+        self.hform = ParamForm([shape_spec("Tip heights"),
+                                FieldSpec("heights", HEIGHTS_DEFAULT, "tuple", "Heights h", "nm",
                                           "Apex–surface distances, comma separated. Files are named by int(h), "
                                           "so 12.5 and 12 collide.", "Tip heights")],
                                toolbar=False, scroll=False)
         self.hform.changed.connect(self._update_heights_info)
+        self._compact_form(self.hform)
         self.hform.rows["heights"].editor.setCursorPosition(0)
         hrow = self.hform.rows["heights"]
         gg = hrow.group.layout()                 # the form's own group box: add presets + note below the field
         gg.setColumnMinimumWidth(0, 90)
-        prow = QHBoxLayout()
+        presets = QWidget()
+        prow = FlowLayout(presets, hspacing=4, vspacing=2)          # wraps in the narrow column of small windows
         prow.addWidget(label("Presets", "muted"))
         for text, hs in (("Default (10)", HEIGHTS_DEFAULT), ("Quick (3)", (10, 80, 370)),
                          ("Dense near field", (5, 10, 15, 20, 25, 35, 45, 60, 80))):
             pb = button(text, lambda _=False, v=hs: self._set_heights(v), "flat")
             prow.addWidget(pb)
-        prow.addStretch(1)
         r0 = gg.rowCount()
-        gg.addLayout(prow, r0, 0, 1, 3)
-        gg.addWidget(label("One full FDTD run (with tip) per height. The script fixes dx = 15 nm, θ = 45°, w = 3 µm and "
-                           "all other FDTDConfig defaults; the “Pump field” form does not apply to the series.",
+        gg.addWidget(presets, r0, 0, 1, 3)
+        gg.addWidget(label("One full FDTD run (with tip) per height, one height per core. The script fixes dx = 15 nm, "
+                           "θ = 45°, w = 3 µm, R = 40 nm and all other FDTDConfig defaults except the tip shape chosen "
+                           "here; the “Pump field” form does not apply to the series.",
                            "muted", wrap=True), r0 + 1, 0, 1, 3)
         l2.addWidget(self.hform)
 
@@ -1207,14 +1325,13 @@ class FdtdPage(Page):
         gl.addLayout(orow)
         self.out2_info = label("", "muted", wrap=True)
         gl.addWidget(self.out2_info)
-        self.rebuild = QCheckBox("Rebuild summary.json when done")
-        self.rebuild.setChecked(True)
-        self.rebuild.setToolTip("Summarise every height in the folder. run_fdtd_heights.py writes only this run's heights "
-                                "into summary.json (skipped heights are lost);\nwhen checked, "
-                                "gui_tasks.fdtd_heights_summary is queued to rebuild it from all ratio_h*.npz.")
-        gl.addWidget(self.rebuild)
+        gl.addWidget(label("summary.json is rebuilt from every ratio_h*.npz in the folder when the series ends, so "
+                           "heights from earlier runs are kept.", "muted", wrap=True))
         l2.addWidget(g)
-        self.est2 = MetricTile("Estimated runtime", "—")
+        self.cores2 = CoresSpin()
+        self.cores2.changed.connect(self._update_heights_info)
+        self.est2 = self._estimate_tile(self.cores2, "One tip height per core; each height is a full FDTD run on one "
+                                                     "core.")
         l2.addWidget(self.est2)
         l2.addStretch(1)
         area = QScrollArea()
@@ -1385,6 +1502,7 @@ class FdtdPage(Page):
         self.run_btn.setIcon(icons.icon("play", t.on_accent))
         for w, level in self._levels.items():
             self._paint(w, level)
+        self._sync_shape()
 
     def _paint(self, w: QLabel, level: str):
         """Colour a message label by level ('ok' | 'warn' | 'err' | 'muted')."""
@@ -1392,6 +1510,58 @@ class FdtdPage(Page):
         t = ThemeManager.instance().tokens
         col = {"ok": t.success, "warn": t.warning, "err": t.danger}.get(level, t.muted)
         w.setStyleSheet(f"color: {col};")
+
+    @staticmethod
+    def _estimate_tile(spin: CoresSpin, tip: str) -> MetricTile:
+        """'Estimated runtime' tile with 'Cores [k] of n' at the right of its title line (saves a form row)."""
+        general = spin.spin.toolTip().split(" A single steady-state")[0]     # drop the steady-state remark
+        spin.spin.setToolTip(general + "\n" + tip)
+        tile = MetricTile("Estimated runtime", "—")
+        lay = tile.layout()
+        lay.removeWidget(tile.lab)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(tile.lab, 1, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(spin, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.insertLayout(0, row)
+        return tile
+
+    @staticmethod
+    def _compact_form(form: ParamForm):
+        """Let the form fit the 330 px left column of a 1120 px window. ParamForm's 110 px editor minimum (and the
+        long 'Rod (width 2R)' item) make the content wider than its scroll area, which then clips the
+        right-aligned values; the editors still take all the width they get."""
+        for r in form.rows.values():
+            e = r.editor
+            if isinstance(e, QComboBox):
+                e.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+                e.setMinimumContentsLength(6)
+                e.setMinimumWidth(64)
+            elif isinstance(e, QLineEdit):
+                e.setMinimumWidth(64)
+
+    def _align_labels(self, *_):
+        """Label column of the pump form = its widest visible label (ParamForm's fixed 178 px leaves the editors
+        ~65 px in a 1120 px window), the same in every group so that the editors stay aligned."""
+        rows = [r for r in self.form.rows.values() if not r.label.isHidden()]
+        w = max((r.label.sizeHint().width() for r in rows), default=120)
+        for g in {r.group for r in self.form.rows.values()}:
+            g.layout().setColumnMinimumWidth(0, w)
+
+    def _shape(self, form: ParamForm) -> str:
+        """'rod' | 'cone' chosen in `form` (the pump form or the heights form)."""
+        return SHAPES.get(form.values().get("tip_shape"), SHAPES[ROD])
+
+    def _sync_shape(self, *_):
+        """The cone half-angle means nothing for the straight rod: grey it out."""
+        cone = self._shape(self.form) == "cone"
+        row = self.form.rows["tip_half_angle_deg"]
+        row.editor.setEnabled(cone)
+        row.label.setEnabled(cone)
+        row.editor.setToolTip("" if cone else "Unused: the straight rod has no half-angle. Choose “Cone” to set it.")
+        t = ThemeManager.instance().tokens            # the app style sheet has no :disabled look for these two
+        row.editor.setStyleSheet("" if cone else f"color: {t.muted}; background: {t.surface2};")
+        row.label.setStyleSheet("" if cone else f"color: {t.muted};")
 
     # ================================================================== device view
     def _schedule_device(self, *_):
@@ -1406,7 +1576,7 @@ class FdtdPage(Page):
         if self.mode_bar.currentIndex() == 1:
             hs = sorted(h for h in self._heights() if h > 0)
             h = hs[0] if hs else 20.0
-            cfg = dict(dx=15e-9, tip_gap=float(f"{h * 1e-9:.12g}"))
+            cfg = dict(dx=15e-9, tip_gap=float(f"{h * 1e-9:.12g}"), tip_shape=self._shape(self.hform))
             more = f" (lowest of {len(hs)}, up to {hs[-1]:g} nm)" if len(hs) > 1 else ""
             note = ("Tip-height series: one run per height with the fixed 15 nm grid and the default beam, GaAs and tip "
                     f"(FDTDConfig); the apex is drawn at h = {h:g} nm{more}.")
@@ -1467,10 +1637,13 @@ class FdtdPage(Page):
             self.est1.set("—", "Invalid parameters" + (": " + ", ".join(bad) if bad else ""))
             self.warn1.setVisible(False)
             return
-        total = 3 * (per + RUN_OVERHEAD) + JOB_OVERHEAD
+        w = self.cores1.value()
+        total, serial = pump_total(v, w), pump_total(v, 1)
         self.est1.set(f"≈ {fmt_dur(total)}",
-                      f"Range {fmt_range(total)} · 3 FDTD runs (vacuum / no tip / with tip) × {steps} steps · "
-                      f"grid {nx}×{nz} (incl. PML) · runtime ∝ dx⁻³")
+                      f"{speedup_text(3, 'runs', w, total, serial)} · range {fmt_range(total)} · {steps} steps on "
+                      f"{nx}×{nz} cells per run")
+        self.est1.setToolTip("Vacuum reference, no tip and with tip: three independent FDTD runs, each on one core. "
+                             "Runtime ∝ dx⁻³ (grid incl. PML).")
         warns = []
         dx = v.get("dx_nm", 15.0)
         ppw = v.get("wavelength_nm", 820.0) / (max(v.get("n_gaas", 3.67), 1.0) * dx)
@@ -1506,24 +1679,29 @@ class FdtdPage(Page):
         if out.exists() and any(out.iterdir()):
             committed = out.resolve() == PUMP_DIR.resolve()
             msg = (f"{paths.rel(out)} already contains files; the run overwrites its npz files, figure and summary.json."
-                   + ("\n\nThis is the repository's reference result: the height series and the Single-pulse chain read "
-                      "its notip.npz / ratio.npz by default, so overwriting it with other parameters silently changes "
-                      "downstream results." if committed else "") + "\n\nContinue?")
+                   + ("\n\nThis is the repository's reference result (computed with the cone tip): the height series "
+                      "and the Single-pulse chain read its notip.npz / ratio.npz by default, so overwriting it with "
+                      "other parameters silently changes downstream results." if committed else "") + "\n\nContinue?")
             if QMessageBox.question(self, "Overwrite existing results?", msg) != QMessageBox.StandardButton.Yes:
                 return
-        total = pump_total(self._pump_values())
+        w = self.cores1.value()
+        total, serial = pump_total(self._pump_values(), w), pump_total(self._pump_values(), 1)
         if total > 1800 and QMessageBox.question(
                 self, "Long run", f"With the current grid this takes about {fmt_dur(total)}. Run it?") \
                 != QMessageBox.StandardButton.Yes:
             return
-        desc = ", ".join(f"{k}={format_float(v) if isinstance(v, float) else v}" for k, v in ov.items()) or "default parameters"
+        shape = kw["tip_shape"]
+        hidden = {"tip_shape"} | ({"tip_half_angle_deg"} if shape == "rod" else set())       # shape is in the title
+        desc = ", ".join(f"{k}={format_float(v) if isinstance(v, float) else v}" for k, v in ov.items()
+                         if k not in hidden) or "default parameters"
+        k = min(w, 3)
         self.job = JobManager.instance().submit(
-            f"Pump FDTD · {desc}", "fdtd", "scripts/run_fdtd_pump.py", "main",
-            kwargs=dict(out=paths.rel(out), **kw), out=out, progress=PUMP_PROGRESS)
-        self.post_job = None
-        self.run_info.setText(f"Pump-field FDTD (3 runs) · estimated ≈ {fmt_dur(total)} ({fmt_range(total)}) · output: "
-                              f"{paths.rel(out)}. A stopped run cannot be resumed; running again recomputes all three. "
-                              "The optical field opens automatically when the run finishes.")
+            f"Pump FDTD · {shape_text(shape)} · {desc} · {k} core{'s' if k > 1 else ''}", "fdtd", PAR_SCRIPT,
+            "fdtd_pump", kwargs=dict(out=paths.rel(out), workers=w, **kw), out=out, progress=PUMP_PROGRESS)
+        self.run_info.setText(f"Pump-field FDTD with the {shape_text(shape)}: {speedup_text(3, 'runs', w, total, serial)} "
+                              f"(range {fmt_range(total)}) · output: {paths.rel(out)}. Each FDTD run uses one core. "
+                              "A stopped run cannot be resumed; running again recomputes all three. The optical field "
+                              "opens automatically when the run finishes.")
         self.panel.attach(self.job)
         self.tabs.setCurrentWidget(self.tab_run)
 
@@ -1589,25 +1767,37 @@ class FdtdPage(Page):
             self.out2_info.setText("⚠ This is a file, not a folder.")
         else:
             skip = [h for h in existing if h in {int(x) for x in hs}]
+            other = self._other_shapes(out) if existing else set()
             self.out2_info.setText(f"{len(existing)} ratio_h*.npz already here" + (
                 f"; {len(skip)} height(s) ({', '.join(map(str, skip))} nm) will be skipped (resume)." if skip else ".")
+                + (f"\n⚠ They were computed with the {' and '.join(sorted(other))} tip; new heights would use the "
+                   f"{self._shape(self.hform)} — choose that shape or another folder." if other else "")
                 + ("\n⚠ This is the repository's height-results folder: npz files will be written and summary.json "
                    "overwritten." if out.resolve() == HEIGHTS_DIR.resolve() else ""))
         ref = Path(self.ref.currentData()) if self.ref.currentData() else DEFAULT_REF
         level, msg = self._check_ref(ref)
         self.ref_info.setText(msg)
         self._paint(self.ref_info, level)
+        if len(todo) != self._runs2:
+            self._runs2 = len(todo)
+            self.cores2.set_runs(max(1, len(todo)))         # re-enters here through cores2.changed with the same n
+        w = self.cores2.value()
         per = fdtd_cost()[3] + RUN_OVERHEAD
-        total = heights_total(len(todo))
+        total, serial = heights_total(len(todo), w), heights_total(len(todo), 1)
         bad = [h for h in hs if h <= 0]
         dup = len({int(h) for h in hs}) != len(hs)
         if not hs or bad or dup:
             self.est2.set("—", "Invalid height list: the heights must be positive with distinct int(h).")
         else:
             self.est2.set(f"≈ {fmt_dur(total)}" if todo else "Nothing to compute",
-                          (f"Range {fmt_range(total)} · " if todo else "")
-                          + f"{len(todo)} height(s) to compute × ≈ {fmt_dur(per)} each (one full FDTD per height, 15 nm grid)"
-                          + (f"; {len(hs) - len(todo)} already done, skipped" if len(hs) > len(todo) else ""))
+                          (f"{speedup_text(len(todo), 'heights', w, total, serial)} · range {fmt_range(total)} · "
+                           f"≈ {fmt_dur(per)} per height on one core (full 15 nm FDTD)" if todo else "")
+                          + (f"{'; ' if todo else ''}{len(hs) - len(todo)} already done, skipped" if len(hs) > len(todo)
+                             else ""))
+
+    def _other_shapes(self, d: Path) -> set[str]:
+        """Tip shapes of the heights already in folder `d` that differ from the one chosen in the heights form."""
+        return heights_shapes(d) - {self._shape(self.hform)}
 
     def _check_ref(self, ref: Path):
         """check_ref, memoised on (path, mtime) — it is called on every keystroke of the heights field."""
@@ -1634,21 +1824,26 @@ class FdtdPage(Page):
             error_box(self, "Invalid output folder", f"{paths.rel(out)} is a file, not a folder.")
             return
         jm = JobManager.instance()
+        shape, w = self._shape(self.hform), self.cores2.value()
         pre = None
+        pre_s = pump_total({}, min(w, 3))
         if not ref.exists():
             m = QMessageBox(self)
             m.setIcon(QMessageBox.Icon.Question)
             m.setWindowTitle("Reference field missing")
-            m.setText(f"The reference field {paths.rel(ref)} does not exist.\n\nA default pump FDTD (dx = 15 nm, ≈ 4–5 min) "
-                      "can be queued first; the height series then starts automatically with its notip.npz as the reference.")
+            m.setText(f"The reference field {paths.rel(ref)} does not exist.\n\nA default pump FDTD (dx = 15 nm, "
+                      f"≈ {fmt_dur(pre_s)}) can be queued first; the height series then starts automatically with its "
+                      "notip.npz as the reference.")
             yes = m.addButton("Run pump FDTD first", QMessageBox.ButtonRole.AcceptRole)
             m.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
             m.exec()
             if m.clickedButton() is not yes:
                 return
             pdir = paths.new_run_dir("fdtd")
-            pre = jm.submit("Pump FDTD · default parameters (height-series reference)", "fdtd", "scripts/run_fdtd_pump.py",
-                            "main", kwargs=dict(out=paths.rel(pdir)), out=pdir, progress=PUMP_PROGRESS)
+            k = min(w, 3)
+            pre = jm.submit(f"Pump FDTD · {shape_text(shape)} · default parameters (height-series reference) · {k} "
+                            f"core{'s' if k > 1 else ''}", "fdtd", PAR_SCRIPT, "fdtd_pump",
+                            kwargs=dict(out=paths.rel(pdir), workers=k, tip_shape=shape), out=pdir, progress=PUMP_PROGRESS)
             ref = pdir / "notip.npz"
         else:
             level, msg = check_ref(ref)
@@ -1668,29 +1863,39 @@ class FdtdPage(Page):
             return
         existing = heights_in(out) if out.is_dir() else {}
         todo = [h for h in hs if int(h) not in existing]
+        other = self._other_shapes(out) if existing else set()
+        if todo and other and QMessageBox.question(
+                self, "Different tip shape",
+                f"The heights already in {paths.rel(out)} were computed with the {' and '.join(sorted(other))} tip; the "
+                f"new ones would use the {shape} tip, so one summary would mix two tip shapes.\n\nContinue anyway?") \
+                != QMessageBox.StandardButton.Yes:
+            return
         rel_out, rel_ref = paths.rel(out), paths.rel(ref)
         if not todo:
             if not existing:
                 return
-            self.post_job = self.job = self._submit_summary(out, ref)
+            self.job = self._submit_summary(out, ref)
             self.run_info.setText(f"All selected heights already exist in {rel_out}; only summary.json is rebuilt "
                                   "(a few seconds).")
             self.panel.attach(self.job)
             self.tabs.setCurrentWidget(self.tab_run)
             return
         hs_json = [int(h) if float(h).is_integer() else float(h) for h in hs]
-        self.job = jm.submit(f"Tip-height series · {len(hs)} heights ({min(hs_json)}–{max(hs_json)} nm)", "fdtd_heights",
-                             "scripts/run_fdtd_heights.py", "main",
-                             kwargs=dict(out=rel_out, heights=hs_json, ref=rel_ref), out=out,
-                             progress={"type": "count", "pattern": r"^h = ", "total": len(hs)}, after=pre)
-        # the follow-up summary job shares the folder: it logs to gui_run_fdtd_heights_summary.json / gui_log_….txt
-        self.post_job = self._submit_summary(out, ref, after=self.job) if self.rebuild.isChecked() else None
-        total = heights_total(len(todo))
+        k = min(w, len(todo))
+        # parallel.fdtd_heights computes the missing heights, one per core, then rebuilds summary.json from every
+        # ratio_h*.npz in the folder (heights of earlier runs included)
+        self.job = jm.submit(f"Tip-height series · {shape_text(shape)} · {len(hs)} heights ({min(hs_json)}–{max(hs_json)} "
+                             f"nm) · {k} core{'s' if k > 1 else ''}", "fdtd_heights", PAR_SCRIPT, "fdtd_heights",
+                             kwargs=dict(out=rel_out, heights=hs_json, ref=rel_ref, tip_shape=shape, workers=w), out=out,
+                             progress={"type": "count", "pattern": PAR_PATTERN, "total": len(todo)}, after=pre)
+        total, serial = heights_total(len(todo), w), heights_total(len(todo), 1)
         self.run_info.setText(
-            ("A default pump FDTD (≈ 4–5 min) is queued first; the height series starts when it finishes. " if pre else "")
-            + f"Tip-height series: {len(todo)} height(s) to compute ({len(hs) - len(todo)} already done, skipped) · "
-            f"estimated ≈ {fmt_dur(total)} · output: {rel_out}. You can stop at any time; finished heights are kept "
-            "and skipped when you resume.")
+            (f"A default pump FDTD (≈ {fmt_dur(pre_s)}) is queued first; the height series starts when it finishes. "
+             if pre else "")
+            + f"Tip-height series with the {shape_text(shape)}: {speedup_text(len(todo), 'heights', w, total, serial)}"
+            + (f" ({len(hs) - len(todo)} already done, skipped)" if len(hs) > len(todo) else "")
+            + f" · output: {rel_out}. Each height is one FDTD run on one core. You can stop at any time; finished "
+            "heights are kept and skipped when you resume.")
         self.panel.attach(pre or self.job)
         self.tabs.setCurrentWidget(self.tab_run)
 
@@ -1702,14 +1907,16 @@ class FdtdPage(Page):
         hs = sorted(set(self.heights["summary"]) | set(self.heights["files"]))
         if hs:
             self._set_heights(tuple(hs))
+        if self.heights.get("shape") in SHAPE_LABEL:          # resume with the folder's tip shape
+            self.hform.set_values({"tip_shape": SHAPE_LABEL[self.heights["shape"]]})
         self._refresh_refs(select=self.heights["ref"])
         self.mode_bar.setCurrentIndex(1)
 
-    def _submit_summary(self, d: Path, ref: Path, after=None):
-        """Queue gui_tasks.fdtd_heights_summary for folder `d` (a follow-up job may share the series' folder)."""
+    def _submit_summary(self, d: Path, ref: Path):
+        """Queue gui_tasks.fdtd_heights_summary: rebuild summary.json of folder `d` without computing any height."""
         return JobManager.instance().submit(
             f"Rebuild height summary · {paths.rel(d)}", "fdtd_heights", "ltemsim_gui/gui_tasks.py", "fdtd_heights_summary",
-            kwargs=dict(out=paths.rel(d), ref=paths.rel(ref)), out=d, after=after)
+            kwargs=dict(out=paths.rel(d), ref=paths.rel(ref)), out=d)
 
     def _clear_broken(self, d: Path) -> bool:
         """Offer to move incomplete ratio_h*.npz aside (the script skips them as 'exists' and the summary task
@@ -1749,7 +1956,7 @@ class FdtdPage(Page):
                       "summary.json.")
             self.show_heights(d, switch=False)
             return
-        self.post_job = self.job = self._submit_summary(d, ref)
+        self.job = self._submit_summary(d, ref)
         self.run_info.setText(f"Rebuilding summary.json from the {n} ratio_h*.npz in {paths.rel(d)} (a few seconds).")
         self.panel.attach(self.job)
         self.tabs.setCurrentWidget(self.tab_run)
@@ -1773,8 +1980,6 @@ class FdtdPage(Page):
         if job.kind == "fdtd_heights" and job.status in (FAILED, CANCELLED) and d is not None:
             # any stopped series, also one no longer shown in the run panel (e.g. cancelled in the job centre)
             run_async(self._quarantine_partial, d, job.finished, on_done=lambda moved, d=d: self._after_quarantine(d, moved))
-        if job is self.post_job and job is not self.job and job.status == FINISHED and d is not None:
-            self.show_heights(d, switch=False)
         if job is not self.job and self.isVisible():
             self.refresh_history()
             self._refresh_refs()
@@ -1850,8 +2055,8 @@ class FdtdPage(Page):
         if cfg:
             self.p_cfg.setText(
                 f"θ {cfg['theta_deg']:g}° · w {cfg['w_um']:g} µm · X {cfg['x_beam_um']:g} µm · λ {cfg['wavelength'] * 1e9:.0f} nm · "
-                f"FWHM {cfg['fwhm_fs']:g} fs · n {cfg['n_gaas']:g}, κ {cfg['kappa_gaas']:g} · tip R {cfg['tip_radius'] * 1e9:.0f} nm, "
-                f"half-angle {cfg['tip_half_angle_deg']:g}°, gap {cfg['tip_gap'] * 1e9:.0f} nm · dx {cfg['dx'] * 1e9:g} nm")
+                f"FWHM {cfg['fwhm_fs']:g} fs · n {cfg['n_gaas']:g}, κ {cfg['kappa_gaas']:g} · {tip_text(cfg)}, "
+                f"gap {cfg['tip_gap'] * 1e9:.0f} nm · dx {cfg['dx'] * 1e9:g} nm")
         else:
             self.p_cfg.setText(f"θ = {m['theta_deg']:g}° · w = {m['w_um']:g} µm" if "theta_deg" in m else "")
         png = d / "fdtd_pump.png"
@@ -2045,8 +2250,10 @@ class FdtdPage(Page):
                 line = "incomplete: only " + " / ".join(npz)
             else:
                 line = "empty folder (run failed or still running)"
+            # runs without tip_shape (the repository reference, older GUI runs) used the cone
+            line += f" · {shape_text(shape_of(kw))}"
             line += f" · dx {kw.get('dx_nm', 15):g} nm" if d != PUMP_DIR else " · repository reference"
-            extra = ", ".join(form_kwarg(k, v) for k, v in kw.items() if k != "dx_nm")
+            extra = ", ".join(form_kwarg(k, v) for k, v in kw.items() if k not in ("dx_nm", "tip_shape", "workers"))
             it = QListWidgetItem(f"{paths.rel(d)}\n    {line}" + (f" · {extra}" if extra else "") + f" · {when(d)}")
             it.setData(Qt.ItemDataRole.UserRole, ("pump", str(d)))
             self.hist.addItem(it)
@@ -2062,8 +2269,10 @@ class FdtdPage(Page):
             s = read_dict(d / "summary.json")
             files = heights_in(d)
             hs = sorted({int(float(k)) for k in s} | set(files))
+            shape = heights_shape(d)
             line = (f"{len(hs)} heights: {', '.join(map(str, hs))} nm" if hs else "no finished heights yet") + \
-                   f" · {len(files)} npz" + (" · repository result (npz not committed)" if d == HEIGHTS_DIR and not files else "")
+                   f" · {'mixed tips' if shape == 'mixed' else shape_text(shape)} · {len(files)} npz" + \
+                   (" · repository result (npz not committed)" if d == HEIGHTS_DIR and not files else "")
             it = QListWidgetItem(f"{paths.rel(d)}\n    {line} · {when(d)}")
             it.setData(Qt.ItemDataRole.UserRole, ("heights", str(d)))
             self.hist.addItem(it)

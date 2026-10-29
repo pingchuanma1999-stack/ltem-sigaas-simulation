@@ -98,6 +98,9 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {{
     background: {t.surface}; border: 1px solid {t.border}; border-radius: 7px; padding: 5px 8px;
     selection-background-color: {t.selection}; selection-color: {t.text}; }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QTextEdit:focus {{ border: 1px solid {t.accent}; }}
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QPlainTextEdit:disabled {{
+    color: {t.muted}; background: {t.surface2}; border-color: {t.border}; }}
+QLabel:disabled, QCheckBox:disabled, QRadioButton:disabled {{ color: {t.muted}; }}
 QLineEdit[modified="true"] {{ border: 1px solid {t.accent}; background: {t.accent_soft}; }}
 QLineEdit[invalid="true"] {{ border: 1px solid {t.danger}; }}
 QComboBox[modified="true"] {{ border: 1px solid {t.accent}; background: {t.accent_soft}; }}

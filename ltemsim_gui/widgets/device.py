@@ -48,6 +48,8 @@ class Device:
     tip_x: float | None = 0.0      # µm; None: no tip
     tip_h_um: float = 0.05         # apex height above the surface
     tip_half_angle: float = 15.0
+    tip_shape: str = "rod"         # "rod": straight shank of width 2R; "cone": half-angle cone
+    tip_radius_um: float = 0.04    # apex radius R
     V_tip: float | None = None
     marks: tuple = ()              # positions to mark on the surface (scan positions)
     marks_label: str = ""
@@ -139,9 +141,17 @@ def _beam(ax, dev: Device, z_top, half_width=None):
                 arrowprops=dict(arrowstyle="-|>", color=C_BEAM, lw=1.4), zorder=4)
 
 
-def _tip(ax, x, h, top, half_angle, to_scale=True, width_scale=1.0):
+def _tip(ax, x, h, top, half_angle, shape="cone", half_width=None):
+    """Tip from the apex height h to `top`: a cone of the given half-angle, or a straight rod of half width
+    `half_width` (drawn with a rounded apex)."""
     import matplotlib.patches as mp
-    a = math.tan(math.radians(half_angle)) * width_scale
+    if shape == "rod":
+        hw = half_width
+        ax.add_patch(mp.FancyBboxPatch((x - hw, h + hw), 2 * hw, max(top - h - hw, 0), boxstyle="square,pad=0",
+                                       fc=C_TIP, ec=C_EDGE, lw=0.6, zorder=5))
+        ax.add_patch(mp.Ellipse((x, h + hw), 2 * hw, 2 * hw, fc=C_TIP, ec=C_EDGE, lw=0.6, zorder=5))
+        return
+    a = math.tan(math.radians(half_angle))
     pts = [(x, h), (x + a * (top - h), top), (x - a * (top - h), top)]
     ax.add_patch(mp.Polygon(pts, closed=True, fc=C_TIP, ec=C_EDGE, lw=0.6, zorder=5))
 
@@ -174,7 +184,10 @@ def _draw_device(fig, dev, zoom_half, k, mp):
         ax.add_patch(mp.Rectangle((x0, 0), x1 - x0, t_au, fc=C_AU, ec=C_EDGE, lw=0.6, zorder=4))
     _beam(ax, dev, dev.air * 0.92)
     if dev.tip_x is not None:
-        _tip(ax, dev.tip_x, max(dev.tip_h_um, 0.25), dev.air * 0.55, 8.0)
+        if dev.tip_shape == "rod":
+            _tip(ax, dev.tip_x, max(dev.tip_h_um, 0.25), dev.air * 0.55, 0, "rod", 0.012 * dev.x_half)
+        else:
+            _tip(ax, dev.tip_x, max(dev.tip_h_um, 0.25), dev.air * 0.55, 8.0)
         _label(ax, dev.tip_x + 4.5, dev.air * 0.45, "AFM tip\n(schematic)", ha="left", fontsize=7.5)
     _label(ax, -dev.x_half * 0.62, dev.air * 0.7, "Air", fontsize=9.5)
     _label(ax, 0, -dev.depth * 0.55, "SI-GaAs (EL2 compensated)", fontsize=9.5)
@@ -216,7 +229,14 @@ def _draw_device(fig, dev, zoom_half, k, mp):
     az.fill_between(xs, 0, 0.55 * ztop * prof, color=C_BEAM, alpha=0.25, lw=0, zorder=2)
     az.plot(xs, 0.55 * ztop * prof, color=C_BEAM, lw=1.0, zorder=3)
     if dev.tip_x is not None:
-        _tip(az, dev.tip_x, max(dev.tip_h_um, 0.02 * ztop), ztop * 0.98, dev.tip_half_angle)
+        if dev.tip_shape == "rod":
+            hw = max(dev.tip_radius_um, 0.006 * zh)              # true width 2R is below a pixel at this zoom
+            _tip(az, dev.tip_x, max(dev.tip_h_um, 0.02 * ztop), ztop * 0.98, 0, "rod", hw)
+            note = "" if hw <= dev.tip_radius_um * 1.01 else " (drawn wider)"
+            _label(az, dev.tip_x + hw + 0.02 * zh, 0.32 * ztop, f"rod tip, 2R = {2 * dev.tip_radius_um * 1e3:.0f} nm{note}",
+                   ha="left", fontsize=7)
+        else:
+            _tip(az, dev.tip_x, max(dev.tip_h_um, 0.02 * ztop), ztop * 0.98, dev.tip_half_angle)
         if dev.V_tip is not None:
             _label(az, dev.tip_x + 0.06 * zh, 0.55 * ztop, f"V_tip = {dev.V_tip:+g} V", ha="left", fontsize=7.5)
     # applied field direction (from the + to the − electrode)
@@ -295,11 +315,18 @@ def draw_fdtd_device(fig, cfg: dict | None = None):
     zc = gap + R
     zt = zc + R * math.sin(math.radians(ha))
     xr0 = R * math.cos(math.radians(ha))
-    cone = [(xt - xr0, zt), (xt + xr0, zt), (xt + xr0 + (zmax - zt) * math.tan(math.radians(ha)), zmax),
-            (xt - xr0 - (zmax - zt) * math.tan(math.radians(ha)), zmax)]
-    ax.add_patch(mp.Polygon(cone, closed=True, fc=C_TIP, ec=C_EDGE, lw=0.6, zorder=5))
+    rod = c.get("tip_shape", "cone") == "rod"
+
+    def shank(top):
+        if rod:
+            return [(xt - R, zc), (xt + R, zc), (xt + R, top), (xt - R, top)]
+        return [(xt - xr0, zt), (xt + xr0, zt), (xt + xr0 + (top - zt) * math.tan(math.radians(ha)), top),
+                (xt - xr0 - (top - zt) * math.tan(math.radians(ha)), top)]
+    ax.add_patch(mp.Polygon(shank(zmax), closed=True, fc=C_TIP, ec=C_EDGE, lw=0.6, zorder=5))
     ax.add_patch(mp.Circle((xt, zc), R, fc=C_TIP, ec=C_EDGE, lw=0.6, zorder=5))
-    _label(ax, xt + 0.25 + 1.7 * math.tan(math.radians(ha)) + 0.1, 1.5, "PtIr tip\n(Drude)", ha="left", fontsize=8)
+    lx = xt + R + 0.25 if rod else xt + 0.25 + 1.7 * math.tan(math.radians(ha)) + 0.1
+    _label(ax, lx, 1.5, "PtIr tip (Drude)\n" + (f"straight rod, 2R = {2 * R * 1e3:.0f} nm" if rod else f"cone, {ha:g}° half-angle"),
+           ha="left", fontsize=8)
     _label(ax, -xh * 0.9, 0.5, "Air", ha="left", fontsize=9)
     _label(ax, -xh * 0.9, zmin * 0.5, f"GaAs  n = {c['n_gaas']:g} + {c['kappa_gaas']:g}i", ha="left", fontsize=9)
     _label(ax, -xh - pml * 0.5, zmax + pml * 0.5, "CPML", ha="left", va="center", fontsize=7, color="#333",
@@ -315,13 +342,12 @@ def draw_fdtd_device(fig, cfg: dict | None = None):
     s = max(4 * R, 6 * gap, 0.12)
     ins.add_patch(mp.Rectangle((-s, -s), 2 * s, s, fc=C_GAAS, ec="none"))
     ins.add_patch(mp.Rectangle((-s, 0), 2 * s, s + 2 * s, fc=C_AIR, ec="none"))
-    ins.add_patch(mp.Polygon([(xt - xr0, zt), (xt + xr0, zt), (xt + xr0 + 3 * s * math.tan(math.radians(ha)), zt + 3 * s),
-                              (xt - xr0 - 3 * s * math.tan(math.radians(ha)), zt + 3 * s)], fc=C_TIP, ec=C_EDGE, lw=0.6))
+    ins.add_patch(mp.Polygon(shank(zt + 3 * s), closed=True, fc=C_TIP, ec=C_EDGE, lw=0.6))
     ins.add_patch(mp.Circle((xt, zc), R, fc=C_TIP, ec=C_EDGE, lw=0.6))
     ins.axhline(0, color=C_EDGE, lw=0.8)
     ins.annotate("", xy=(xt + 1.6 * R, 0), xytext=(xt + 1.6 * R, gap), arrowprops=dict(arrowstyle="<->", color="#3346c8", lw=0.8))
-    ins.text(xt + 1.8 * R, gap / 2, f"{gap * 1e3:.0f} nm", fontsize=6.5, va="center", color="#3346c8")
-    ins.text(xt, zc + R + 0.15 * s, f"R = {R * 1e3:.0f} nm", fontsize=6.5, ha="center", va="bottom", color=C_INK)
+    ins.text(xt + 1.8 * R, gap + 0.06 * s, f"{gap * 1e3:.0f} nm", fontsize=6.5, va="bottom", color="#3346c8")
+    ins.text(xt + 1.25 * R, zc, f"R = {R * 1e3:.0f} nm", fontsize=6.5, ha="left", va="center", color=C_INK)
     ins.set_xlim(xt - s, xt + s)
     ins.set_ylim(-0.5 * s, 1.5 * s)
     ins.set_aspect("equal")
@@ -405,7 +431,9 @@ def comsol_field(ax, xe, ze, S, *, label="Electric field norm", unit="kV/cm", Ex
         ax.set_aspect("equal")
     ax.set_xlabel("x (µm)")
     ax.set_ylabel("z (µm)")
+    import textwrap
     head = f"Surface: {label} ({unit})" if unit else f"Surface: {label}"
+    head = "\n".join(textwrap.wrap(head, 52, subsequent_indent="    ")) or head      # long labels wrap, never clip
     if Ex is not None and overlay == "arrows":
         head += "\nArrow Surface: Electric field"
     elif Ex is not None and overlay == "streamlines":

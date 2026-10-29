@@ -11,3 +11,4 @@ results/field_bending_chain/*.npz
 .venv/
 results/gui_runs/
 ltemsim_gui/assets/AppIcon.iconset/
+.DS_Store

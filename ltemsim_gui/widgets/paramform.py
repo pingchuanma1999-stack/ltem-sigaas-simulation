@@ -94,7 +94,6 @@ class ParamForm(QWidget):
                 grid.setHorizontalSpacing(8)
                 grid.setVerticalSpacing(5)
                 grid.setColumnStretch(1, 1)
-                grid.setColumnMinimumWidth(0, 178)
                 grid.setColumnMinimumWidth(2, 26)     # reset button column keeps editors aligned across groups
                 groups[sec], grids[sec] = g, grid
                 self._col.addWidget(g)
@@ -102,6 +101,7 @@ class ParamForm(QWidget):
             r = grid.rowCount()
             lab = QLabel(s.label + (f"  <span style='color:gray'>{s.unit}</span>" if s.unit else ""))
             lab.setTextFormat(Qt.TextFormat.RichText)
+            lab.setWordWrap(True)
             lab.setToolTip(_tooltip(s))
             ed = self._make_editor(s)
             ed.setToolTip(_tooltip(s))
@@ -117,6 +117,11 @@ class ParamForm(QWidget):
             grid.addWidget(rb, r, 2)
             self.rows[s.name] = _Row(s, lab, ed, rb, groups[sec])
         self._groups = groups
+        self._grids = list(grids.values())
+        # one label-column width for all groups (aligned editors), as narrow as the longest label allows
+        lw = max((r.label.sizeHint().width() for r in self.rows.values()), default=120)
+        for grid in self._grids:
+            grid.setColumnMinimumWidth(0, int(min(max(lw, 110), 160)))      # longer labels wrap onto two lines
         self._col.addStretch(1)
         if scroll:
             area = QScrollArea()
@@ -143,7 +148,7 @@ class ParamForm(QWidget):
             w.currentTextChanged.connect(lambda _="", n=s.name: self._on_edit(n))
         else:
             w = QLineEdit(format_value(s, s.default))
-            w.setMinimumWidth(110)
+            w.setMinimumWidth(80)
             w.textChanged.connect(lambda _="", n=s.name: self._on_edit(n))
             if s.type in ("float", "int"):
                 w.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)

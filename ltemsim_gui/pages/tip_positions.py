@@ -2,6 +2,7 @@
 
 For every beam position X and every apex height h one PulseSim with the tip as an equipotential body in Poisson
 (optionally with the per-height FDTD pump map) records Q_tip(t); demod projects Q_tip(h(θ), t) on cos nθ.
+The (X, h) runs are independent and execute in parallel (ltemsim_gui/parallel.py: tip_simulate, fdtd_heights).
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from ..jobs import CANCELLED, FAILED, FINISHED, PREREQ_FAILED, RUNNING, STATUS_T
 from ..paramspec import FieldSpec
 from ..theme import ThemeManager, repolish
 from ..widgets.common import MetricTile, Page, button, card, error_box, label, reveal
+from ..widgets.cores import CoresSpin, estimate_s
 from ..widgets.device import C_INK, device_from_pulse, draw_device
 from ..widgets.fileviews import FlowLayout
 from ..widgets.imageview import ImageView
@@ -34,6 +36,19 @@ from ..widgets.runpanel import RunPanel, fmt_elapsed
 from ..workers import run_async
 
 SCRIPT = "scripts/run_tip_positions.py"
+PAR_SCRIPT = "ltemsim_gui/parallel.py"
+PAR_PROGRESS = {"type": "count", "pattern": r"^@@PAR \d+/\d+ done"}     # + "total": runs to compute
+PAR_RE = re.compile(r"^@@PAR (\d+)/(\d+) done: (.*)$")
+PAR_START_RE = re.compile(r"^@@PAR start: (\d+) runs? on (\d+) cores?")
+TAIL_RE = re.compile(r"^\s+\| (X=[+-]\d+\.\d h=\s*\d+ nm:.*)$")       # a finished run's summary line, copied by parallel.py
+TIP_SHAPES = {"rod": "Rod (width 2R)", "cone": "Cone"}       # value → form label (short: fits the form column)
+TIP_R_NM = 40.0                      # PulseConfig.tip_apex_radius_um (the rod width is 2R)
+TIP_HALF_DEG = 15.0                  # PulseConfig.tip_half_angle_deg (cone only)
+POISSON_DX_NM = 100.0                # lateral Poisson cell of the tip chain near the tip
+SHAPE_HELP = (f"Straight rod: the apex sphere (R = {TIP_R_NM:g} nm) plus a straight shank of width 2R = {2 * TIP_R_NM:g} nm. "
+              f"Cone: the apex sphere plus a {TIP_HALF_DEG:g}° half-angle cone (used for the repository results). The "
+              f"Poisson grid of this chain is {POISSON_DX_NM:g} nm near the tip, so the {2 * TIP_R_NM:g} nm rod is resolved "
+              f"as its minimum 2-cell ({2 * POISSON_DX_NM:g} nm) column. FDTD pump maps are computed with the same shape.")
 # the script's defaults (not imported: it calls matplotlib.use("Agg") and imports pyplot at import time)
 HEIGHTS_NM = (10, 15, 25, 45, 80, 130, 200, 270, 330, 370)
 X_LIST = (-7.5, -5.0, -2.5, 0.0, 2.5, 5.0, 7.5)
@@ -47,6 +62,8 @@ DEFAULT_SERIES = {"det1", "det2", "det3", "det4", "det3_d1", "far", "meas+", "me
 NARROW_PX = 620                      # plots narrower than this get a compact layout (legend below, short titles)
 DEV_NARROW_PX = 680                  # device diagram narrower than this: panels stacked, short caption
 DEV_MIN_H = 520                      # below this the Device tab scrolls instead of shrinking the diagram
+STEP_TITLES = {"fdtd": "① FDTD height maps", "sim": "② Simulation", "demod": "③ Demodulation"}
+CHAIN_SIDE_PX = 720                  # run tab narrower than this: job-chain steps above the run grid
 
 
 def plural(n: int, word: str) -> str:
@@ -57,6 +74,86 @@ def run_seconds(t_end_ps: float):
     """(low, high) wall time of one PulseSim incl. setup: measured 2 s per 0.5 ps run and 17–20 s per 4 ps run here,
     32–40 s per 4 ps run in the original logs."""
     return 0.5 + 4.2 * t_end_ps, 2.0 + 12.0 * t_end_ps
+
+
+def sim_estimate(remaining: int, t_end_ps: float, workers: int):
+    """(cores used, (lo, hi) wall time on them, (lo, hi) on one core) for `remaining` PulseSim runs."""
+    lo, hi = run_seconds(t_end_ps)
+    k = max(1, min(int(workers), remaining))
+    spawn = 3.0 if k > 1 else 0.0              # starting the worker processes (numpy / scipy imports)
+    par = (estimate_s(lo, remaining, k) + 3 + spawn, estimate_s(hi, remaining, k) + 6 + spawn)
+    return k, par, (remaining * lo + 3, remaining * hi + 6)
+
+
+def fdtd_estimate(n: int, workers: int):
+    """(cores used, low, high wall time) of n FDTD height maps, one height per core."""
+    k = max(1, min(int(workers), n))
+    spawn = 3.0 if k > 1 else 0.0
+    return k, estimate_s(FDTD_SECONDS[0], n, k) + spawn, estimate_s(FDTD_SECONDS[1], n, k) + spawn
+
+
+def on_cores(k: int) -> str:
+    return "on one core" if k <= 1 else f"on {k} cores"
+
+
+def shape_code(v) -> str:
+    """'rod' | 'cone' from a form label or a stored value; None (runs from before the option) is the library's cone."""
+    return "rod" if "rod" in str(v or "cone").lower() else "cone"
+
+
+def shape_text(code) -> str:
+    return "straight rod" if code == "rod" else "cone"
+
+
+def shape_detail(code) -> str:
+    """'straight rod, 2R = 80 nm' / 'cone, R = 40 nm, 15°'."""
+    return (f"straight rod, 2R = {2 * TIP_R_NM:g} nm" if code == "rod" else
+            f"cone, R = {TIP_R_NM:g} nm, {TIP_HALF_DEG:g}° half-angle")
+
+
+def job_shape(job) -> str:
+    """Tip shape of a simulate / FDTD-heights job (jobs from before the option ran the cone)."""
+    return shape_code((job.spec.get("kwargs") or {}).get("tip_shape"))
+
+
+def _latest_json(folder, pred):
+    """The newest gui_run*.json in `folder` whose spec satisfies pred, else None."""
+    best = None
+    for p in Path(folder).glob("gui_run*.json") if Path(folder).is_dir() else ():
+        js = read_json(p)
+        if js and pred(js):
+            m = p.stat().st_mtime
+            if best is None or m > best[0]:
+                best = (m, js)
+    return best[1] if best else None
+
+
+def sim_run_json(d):
+    """gui_run json of the latest simulate job in `d` (run_tip_positions:simulate or parallel:tip_simulate)."""
+    return _latest_json(d, lambda js: js.get("func") in ("simulate", "tip_simulate"))
+
+
+def run_meta(d) -> dict:
+    """meta.json (or the first demod json), completed from the simulate job's arguments: the parallel workers each
+    write the meta.json of their own single (X, h) run and the full one comes only at the end, so a stopped run leaves
+    a one-run meta.json. Adds "tip_shape" (the cone for runs from before the option)."""
+    d = Path(d)
+    demods = demod_files(d)
+    meta = dict(read_json(d / "meta.json") or (read_json(demods[0]) if demods else None) or {})
+    js = sim_run_json(d)
+    if js:
+        kw = js.get("kwargs") or {}
+        meta.update({k: kw[k] for k in ("P_avg_mW", "T", "V_bias", "V_tip", "t_end_ps", "fdtd") if k in kw})
+        if "degenerate" in kw:
+            meta["degenerate"] = bool(kw["degenerate"])
+        if kw.get("x_list"):
+            meta["X"] = [float(x) for x in kw["x_list"]]
+        if kw.get("heights"):
+            meta["heights_nm"] = list(kw["heights"])
+        meta["tip_shape"] = shape_code(kw.get("tip_shape"))
+    elif meta:
+        meta["tip_shape"] = "cone"
+    return meta
 
 
 def _dur(s: float) -> str:
@@ -124,28 +221,66 @@ def is_committed(d: Path) -> bool:
 
 def fdtd_ref_for(folder: Path) -> Path:
     """The no-tip reference the ratio maps in `folder` were computed with (its gui_run.json), else notip.npz."""
-    for name in ("gui_run.json", "gui_run_fdtd_heights_summary.json"):
+    for name in ("gui_run.json", "gui_run_fdtd_heights.json", "gui_run_fdtd_heights_summary.json"):
         ref = ((read_json(Path(folder) / name) or {}).get("kwargs") or {}).get("ref")
         if ref:
             return paths.absolute(ref)
     return FDTD_REF
 
 
-def quarantine_ratio(folder: Path):
-    """A run_fdtd_heights height killed while being written leaves a broken ratio_h*.npz that both scripts would
-    treat as done: rename the newest one to *.npz.partial when its zip is damaged. Returns the bad name or None."""
-    files = sorted(Path(folder).glob("ratio_h*.npz"), key=lambda p: p.stat().st_mtime) if Path(folder).is_dir() else []
-    if not files:
-        return None
-    f = files[-1]
-    try:
-        with zipfile.ZipFile(f) as z:
-            if z.testzip() is None:
-                return None
-    except (zipfile.BadZipFile, OSError):
-        pass
-    f.rename(f.with_suffix(".npz.partial"))
-    return f.name
+def _is_fdtd_heights(spec) -> bool:
+    """A job spec that computes ratio_h*.npz maps (the script itself or the parallel helper)."""
+    s = str(spec.get("script", ""))
+    return s.endswith("run_fdtd_heights.py") or (s.endswith("parallel.py") and spec.get("func") == "fdtd_heights")
+
+
+def fdtd_shape_of(folder):
+    """Tip shape the ratio maps in `folder` were computed with: the FDTD job's tip_shape, the cone for maps from before
+    the option (run_fdtd_heights.py, the committed results/fdtd_pump/heights); None for an empty folder."""
+    js = _latest_json(folder, _is_fdtd_heights)
+    if js:
+        return shape_code((js.get("kwargs") or {}).get("tip_shape"))
+    folder = Path(folder)
+    return "cone" if is_committed(folder) or any(folder.glob("ratio_h*.npz")) else None
+
+
+def _recent(folder, pattern, since):
+    """Files matching pattern in folder written at or after `since` (epoch; None: only the newest one)."""
+    files = sorted(Path(folder).glob(pattern), key=lambda p: p.stat().st_mtime) if Path(folder).is_dir() else []
+    if since is None:
+        return files[-1:]
+    return [f for f in files if f.stat().st_mtime >= since - 2]
+
+
+def quarantine_ratio(folder: Path, since=None):
+    """A height killed while its ratio_h*.npz was being written leaves a broken file that both scripts would treat as
+    done: rename every damaged one written since `since` (several heights run at once) to *.npz.partial.
+    Returns the bad names."""
+    bad = []
+    for f in _recent(folder, "ratio_h*.npz", since):
+        try:
+            with zipfile.ZipFile(f) as z:
+                if z.testzip() is None:
+                    continue
+        except (zipfile.BadZipFile, OSError):
+            pass
+        f.rename(f.with_suffix(".npz.partial"))
+        bad.append(f.name)
+    return bad
+
+
+def quarantine_npz(out: Path, since=None):
+    """The same for the X*_h*.npz of a stopped simulation (renamed to *.npz.broken). Returns [(name, new name)]."""
+    bad = []
+    for f in _recent(out, "X*_h*.npz", since):
+        try:
+            with np.load(f) as z:
+                z["Q_tip"], z["t"]
+        except Exception:
+            b = f.with_name(f.name + ".broken")
+            f.rename(b)
+            bad.append((f.name, b.name))
+    return bad
 
 
 class _HomeOnBlur(QObject):
@@ -177,22 +312,25 @@ def measured():
 
 
 def sim_specs():
-    S, G = "Pump and bias (simulate)", "Scan grid (simulate)"
+    S, TP, G = "Pump and bias (simulate)", "Tip (simulate)", "Scan grid (simulate)"
     return [
-        FieldSpec("P_avg_mW", 2.0, "float", "Average pump power", "mW",
-                  "80 MHz repetition rate, 3 µm spot, 820 nm. The repository has results for 2 mW and 30 mW", S, minimum=0.0),
+        FieldSpec("P_avg_mW", 2.0, "float", "Pump power", "mW",
+                  "Average pump power P_avg; 80 MHz repetition rate, 3 µm spot, 820 nm. The repository has results for "
+                  "2 mW and 30 mW", S, minimum=0.0),
         FieldSpec("V_bias", 25.0, "float", "Gap bias V_bias", "V", "The anode is on the −x side", S),
-        FieldSpec("V_tip", 0.0, "float", "Tip potential V_tip", "V",
-                  "Relative to the gap midpoint; 0 = grounded tip. P2mW_sym_Vtip12 / P2mW_sym_Vtipm12 use +12.5 / −12.5 V", S),
         FieldSpec("T", 300.0, "float", "Temperature T", "K", "Carrier and lattice temperature (sets kT/q diffusion and N_c)", S,
                   minimum=1.0),
-        FieldSpec("degenerate", True, "bool", "Degenerate diffusion (Fermi–Dirac)", "",
-                  "Generalised Einstein relation; off = classical Boltzmann diffusion", S),
+        FieldSpec("degenerate", True, "bool", "Degenerate diffusion", "",
+                  "Fermi–Dirac statistics (generalised Einstein relation); off = classical Boltzmann diffusion", S),
+        FieldSpec("tip_shape", TIP_SHAPES["rod"], "choice", "Tip shape", "", SHAPE_HELP, TP,
+                  choices=(TIP_SHAPES["rod"], TIP_SHAPES["cone"])),
+        FieldSpec("V_tip", 0.0, "float", "Tip potential V_tip", "V",
+                  "Relative to the gap midpoint; 0 = grounded tip. P2mW_sym_Vtip12 / P2mW_sym_Vtipm12 use +12.5 / −12.5 V", TP),
         FieldSpec("x_list", X_LIST, "tuple", "Beam positions X", "µm",
                   "Beam centre relative to the tip, comma-separated; file names use X{X:+.1f}", G),
         FieldSpec("heights", HEIGHTS_NM, "tuple", "Tip heights h", "nm",
                   "Tip–sample distances over the tapping cycle, one full run per height; file names use int(h)", G),
-        FieldSpec("t_end_ps", 4.0, "float", "Simulated time t_end", "ps",
+        FieldSpec("t_end_ps", 4.0, "float", "Time span t_end", "ps",
                   "dt = 0.5 fs, recorded every 5 fs; the run time scales with t_end", G, minimum=0.05),
     ]
 
@@ -200,12 +338,15 @@ def sim_specs():
 def demod_specs():
     D = "Demodulation (demod)"
     return [
-        FieldSpec("A_nm", 180.0, "float", "Tapping amplitude A", "nm",
-                  "h(θ) = h_min + A(1 + cos θ); h_min + 2A should not exceed the largest simulated height", D, minimum=0.0),
-        FieldSpec("h_min_nm", 10.0, "float", "Lowest height h_min", "nm", "Bottom of the tapping cycle", D, minimum=0.0),
+        FieldSpec("A_nm", 180.0, "float", "Amplitude A", "nm",
+                  "Tapping amplitude: h(θ) = h_min + A(1 + cos θ); h_min + 2A should not exceed the largest simulated "
+                  "height", D, minimum=0.0),
+        FieldSpec("h_min_nm", 10.0, "float", "Bottom h_min", "nm", "Lowest tip height, the bottom of the tapping cycle", D,
+                  minimum=0.0),
         FieldSpec("f_cut_thz", 2.2, "float", "Detector cut-off", "THz", "Steep 8th-order Butterworth low-pass", D, minimum=0.01),
-        FieldSpec("deriv", "2", "choice", "Detected derivative order", "",
-                  "2 = radiated field ∝ d²S/dt² (current convention); 1 = the old first-order convention", D,
+        FieldSpec("deriv", "2", "choice", "Derivative order", "",
+                  "Order k of the detected d^kS_n/dt^k: 2 = radiated field ∝ d²S/dt² (current convention); 1 = the old "
+                  "first-order convention", D,
                   choices=("2", "1")),
         FieldSpec("band", (0.3, 2.0), "tuple", "Amplitude band", "THz", "Frequency band (f_lo, f_hi) of band_metric", D,
                   advanced=True),
@@ -295,21 +436,22 @@ class _FigTabs(QTabWidget):
 
 
 class RunGrid(QWidget):
-    """X × h matrix of the simulate runs: finished / running / pending."""
+    """X × h matrix of the simulate runs: finished / running (several at once on several cores) / pending."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.xs, self.hs, self.done, self.running = [], [], set(), None
+        self.xs, self.hs, self.done, self.running = [], [], set(), set()
         self.setMinimumSize(250, 150)
 
-    def set_state(self, xs, hs, done, running=None):
-        self.xs, self.hs, self.done, self.running = list(xs), list(hs), set(done), running
+    def set_state(self, xs, hs, done, running=()):
+        self.xs, self.hs, self.done, self.running = list(xs), list(hs), set(done), set(running)
         self.updateGeometry()
         self.update()
 
     def _legend(self, t):
+        run = f"Running {len(self.running)}" if len(self.running) > 1 else "Running"
         return ((f"Done {len(self.done)}/{len(self.xs) * len(self.hs)}", t.accent, None),
-                ("Running", t.accent_soft, t.warning), ("Pending", t.surface2, t.muted))
+                (run, t.accent_soft, t.warning), ("Pending", t.surface2, t.muted))
 
     def sizeHint(self):
         f = self.font()
@@ -344,7 +486,7 @@ class RunGrid(QWidget):
                 if (i, j) in self.done:
                     p.setPen(Qt.PenStyle.NoPen)
                     p.setBrush(QColor(t.accent))
-                elif (i, j) == self.running:
+                elif (i, j) in self.running:
                     p.setPen(QPen(QColor(t.warning), 1.5))
                     p.setBrush(QColor(t.accent_soft))
                 else:
@@ -381,9 +523,10 @@ class _Step(QFrame):
         self.badge = label("—", "badge")
         self.badge.setMinimumWidth(52)
         self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.name = label(title)
+        self.name = label(title, wrap=True)      # "② Simulation · straight rod tip · 16 cores" wraps in narrow panes
+        self.name.setMinimumWidth(90)
         self.info = label("", "muted")
-        lay.addWidget(self.badge)
+        lay.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignVCenter)      # no taller badge when the name wraps
         lay.addWidget(self.name, 1)
         lay.addWidget(self.info)
 
@@ -410,7 +553,7 @@ class TipPositionsPage(Page):
     title = "Tip-position chain"
     subtitle = ("Route 2: one PulseSim per beam position X and tip height h (tip as an equipotential body, optional FDTD "
                 "pump shadow) records the tip charge Q_tip(t); demodulation along h(θ) = h_min + A(1 + cos θ) gives S_n(t) "
-                "for comparison with the measured ±25 V scans. Default: 70 runs, ≈ 25–60 min.")
+                "for comparison with the measured ±25 V scans. Default: 70 runs, spread over several cores.")
 
     def __init__(self):
         super().__init__()
@@ -419,6 +562,7 @@ class TipPositionsPage(Page):
         self.meta: dict = {}
         self.demod: dict | None = None
         self.n_expected = self.n_present = 0
+        self.meta_ok = True            # meta.json on disk describes the whole run (see show_result)
         self._wave = None              # (key, data, det)
         self._wave_gen = 0
         self._fdtd_extra: list[str] = []
@@ -428,10 +572,19 @@ class TipPositionsPage(Page):
         self._dev_timer.setSingleShot(True)
         self._dev_timer.setInterval(300)
         self._dev_timer.timeout.connect(self._redraw_device)
+        self._n_runs = None            # runs the cores control last followed
+        self._par_cores: dict[str, int] = {}     # job id → cores its pool really uses ("@@PAR start" line)
         jm = JobManager.instance()
 
         self.demod_btn = button("Demodulate only", self.redemod)
         self.header.add_action(self.demod_btn)
+        self.cores = CoresSpin()
+        self.cores.spin.setToolTip(
+            f"How many (X, h) runs are simulated at the same time, one core each. This Mac has {self.cores.spin.maximum()} "
+            "cores; the default leaves two for the desktop. A single run always uses one core (its sparse solver is "
+            "single-threaded). FDTD height maps computed first use the same number of cores, one height each.")
+        self.cores.changed.connect(self._update_plan)
+        self.header.add_action(self.cores)
         self.run_btn = button("  Simulate + demodulate", self.run, "primary")
         self.header.add_action(self.run_btn)
 
@@ -476,6 +629,9 @@ class TipPositionsPage(Page):
         self.form.changed.connect(self._update_plan)
         self.form.changed.connect(self._home_tuples)
         self.form.changed.connect(self._schedule_device)
+        cb = self.form.rows["tip_shape"].editor       # its long item must not widen the form column (it elides instead)
+        cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        cb.setMinimumContentsLength(8)
         self._blur = _HomeOnBlur(self)
         for k in ("x_list", "heights"):
             self.form.rows[k].editor.installEventFilter(self._blur)
@@ -489,8 +645,8 @@ class TipPositionsPage(Page):
         fl.addWidget(label("Pump shadow maps from FDTD (fdtd)", "cardTitle"))
         row = QHBoxLayout()
         self.fdtd_combo = QComboBox()
-        self.fdtd_combo.setToolTip("none = symmetric Gaussian pump; or a folder with ratio_h<h>.npz maps "
-                                   "(output of scripts/run_fdtd_heights.py)")
+        self.fdtd_combo.setToolTip("none = symmetric Gaussian pump; or a folder with ratio_h<h>.npz maps (FDTD with the "
+                                   "tip at each height, scripts/run_fdtd_heights.py) and the tip shape they were computed with")
         self.fdtd_combo.currentIndexChanged.connect(self._update_plan)
         self.fdtd_combo.currentIndexChanged.connect(self._schedule_device)
         row.addWidget(self.fdtd_combo, 1)
@@ -548,7 +704,8 @@ class TipPositionsPage(Page):
         pg.setVerticalSpacing(6)
         pg.addWidget(label("Run plan (what “Simulate + demodulate” will do)", "cardTitle"), 0, 0, 1, 2)
         self.plan = {}
-        for i, (k, text) in enumerate((("size", "Size"), ("time", "Estimated time"), ("pump", "Pump"), ("out", "Output"))):
+        rows = (("size", "Size"), ("time", "Estimated time"), ("tip", "Tip"), ("pump", "Pump"), ("out", "Output"))
+        for i, (k, text) in enumerate(rows):
             pg.addWidget(label(text, "muted"), i + 1, 0, Qt.AlignmentFlag.AlignTop)
             v = label("", wrap=True, selectable=True)
             v.setTextFormat(Qt.TextFormat.RichText)
@@ -556,7 +713,7 @@ class TipPositionsPage(Page):
             self.plan[k] = v
         self.plan_warn = label("", wrap=True)
         self.plan_warn.setTextFormat(Qt.TextFormat.RichText)
-        pg.addWidget(self.plan_warn, 5, 0, 1, 2)
+        pg.addWidget(self.plan_warn, len(rows) + 1, 0, 1, 2)
         pg.setColumnStretch(1, 1)
         rl.addWidget(plan)
 
@@ -568,8 +725,7 @@ class TipPositionsPage(Page):
         col.setSpacing(4)
         col.addWidget(label("Current job chain", "cardTitle"))
         self.steps = {}
-        for k, title in (("fdtd", "① FDTD height maps · run_fdtd_heights"), ("sim", "② Simulation · simulate"),
-                         ("demod", "③ Demodulation · demod")):
+        for k, title in STEP_TITLES.items():
             st = _Step(title)
             st.clicked.connect(lambda k=k: self._focus_step(k))
             col.addWidget(st)
@@ -581,7 +737,6 @@ class TipPositionsPage(Page):
         self.grid_w = RunGrid()
         cl.addWidget(self.grid_w)
         self.chain_card.setVisible(False)
-        self.chain_card.installEventFilter(self)
         rl.addWidget(self.chain_card)
 
         self.panel = RunPanel()
@@ -593,6 +748,7 @@ class TipPositionsPage(Page):
         sc.setFrameShape(QFrame.Shape.NoFrame)
         sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         sc.setWidget(w)
+        sc.viewport().installEventFilter(self)   # steps above the run grid when the tab is narrow
         return sc
 
     def _build_results_tab(self):
@@ -794,8 +950,11 @@ class TipPositionsPage(Page):
 
     def eventFilter(self, obj, ev):
         if ev.type() == QEvent.Type.Resize:
-            if obj is self.chain_card:
-                d = QBoxLayout.Direction.TopToBottom if obj.width() < 560 else QBoxLayout.Direction.LeftToRight
+            if isinstance(getattr(self, "run_tab", None), QScrollArea) and obj is self.run_tab.viewport():
+                # side by side the steps and the grid need ~720 px; the card's own width cannot decide (it never gets
+                # narrower than that minimum, the scroll area would just clip it)
+                d = (QBoxLayout.Direction.TopToBottom if obj.width() < CHAIN_SIDE_PX
+                     else QBoxLayout.Direction.LeftToRight)
                 if self._chain_lay.direction() != d:
                     self._chain_lay.setDirection(d)
             elif obj is self.split and not self._user_split:
@@ -857,11 +1016,14 @@ class TipPositionsPage(Page):
         A, hm, Vt = float(v["A_nm"]), float(v["h_min_nm"]), float(v["V_tip"])
         dev = device_from_pulse(float(v["V_bias"]), P_avg_mW=float(v["P_avg_mW"]), x_list=xs, V_tip=Vt,
                                 tip_h_um=max(hs[0] if hs else hm, 0.0) / 1000)
+        dev.tip_shape = shape_code(v["tip_shape"])
+        dev.tip_radius_um = TIP_R_NM / 1000
+        dev.tip_half_angle = TIP_HALF_DEG
         stacked, narrow = self._narrow["dev"] = self._dev_layout()
         pump = "FDTD pump maps (tip shadow)" if self._fdtd_value() != "none" else "symmetric Gaussian pump"
         top = hm + 2 * A
         tap = [f"tapping h = {hm:g} … {top:g} nm", f"(clipped at {hs[-1]:g} nm)" if hs and top > hs[-1] + 1e-9 else "",
-               f"A = {A:g} nm · V_tip = {Vt:g} V"]
+               f"A = {A:g} nm"]                     # V_tip and the tip shape are labelled right of the tip
         dev.model = (f"tip-position chain · {pump}" if narrow else
                      f"tip-position chain: hydrodynamic carriers + Poisson, tip as an equipotential body · {pump}")
 
@@ -872,7 +1034,7 @@ class TipPositionsPage(Page):
                 ax.set_subplotspec(gs[0])
                 az.set_subplotspec(gs[1])
             x1, z1 = az.get_xlim()[1], az.get_ylim()[1]
-            az.text(0.07 * x1, 0.58 * z1, "\n".join(s for s in tap if s), ha="left", va="center", fontsize=7.5,
+            az.text(-0.07 * x1, 0.58 * z1, "\n".join(s for s in tap if s), ha="right", va="center", fontsize=7.5,
                     color=C_INK, zorder=7)
         self.dev_plot.plot(draw)
 
@@ -884,6 +1046,7 @@ class TipPositionsPage(Page):
         v = self.form.values()
         sim = {k: v[k] for k in ("P_avg_mW", "degenerate", "T", "V_bias", "V_tip", "t_end_ps")}
         sim["degenerate"] = bool(sim["degenerate"])
+        sim["tip_shape"] = shape_code(v["tip_shape"])
         sim["heights"] = list(v["heights"])
         sim["x_list"] = [float(x) for x in v["x_list"]]
         dem = dict(A_nm=float(v["A_nm"]), h_min_nm=float(v["h_min_nm"]), f_cut_thz=float(v["f_cut_thz"]),
@@ -951,19 +1114,36 @@ class TipPositionsPage(Page):
 
     @staticmethod
     def _active_fdtd_jobs(folder: Path):
+        """Queued / running jobs computing ratio maps into `folder` (the script, or parallel.fdtd_heights)."""
         out = []
         for j in JobManager.instance().active():
-            if j.kind == "fdtd_heights" and j.spec.get("script", "").endswith("run_fdtd_heights.py"):
+            if j.kind == "fdtd_heights" and _is_fdtd_heights(j.spec):
                 o = j.spec.get("kwargs", {}).get("out", "results/fdtd_pump/heights")
                 if paths.absolute(o).resolve() == folder.resolve():
                     out.append(j)
         return out
 
     def _covering_fdtd_job(self, folder: Path, missing):
-        """The queued/running run_fdtd_heights job into `folder` that will produce every missing map, else None."""
+        """The queued/running FDTD heights job into `folder` that will produce every missing map, else None."""
         running = self._active_fdtd_jobs(folder)
         covered = {int(h) for j in running for h in j.spec.get("kwargs", {}).get("heights", HEIGHTS_NM)}
         return running[-1] if running and all(int(h) in covered for h in missing) else None
+
+    def _fdtd_state(self, folder: Path, hs, shape: str) -> dict:
+        """What the FDTD maps in `folder` need before a `shape` simulation over heights hs:
+        missing  heights without ratio_h*.npz;  fshape  tip shape of the maps (of the job writing them if one is
+        active; None: empty folder);  mismatch  computed with the other shape;  covering  an active job that will
+        produce every missing map (same shape);  new  the maps must go to a new folder (repository folder, or other
+        shape: never mix shapes in one folder);  todo  heights to compute (empty: nothing to do / covered)."""
+        missing = self._missing_ratio(folder, hs)
+        active = self._active_fdtd_jobs(folder)
+        fshape = job_shape(active[-1]) if active else fdtd_shape_of(folder)
+        mismatch = fshape is not None and fshape != shape
+        covering = self._covering_fdtd_job(folder, missing) if (missing and not mismatch) else None
+        new = mismatch or (bool(missing) and is_committed(folder))
+        todo = [] if covering is not None or not (missing or mismatch) else list(hs) if new else list(missing)
+        return dict(missing=missing, active=active, fshape=fshape, mismatch=mismatch, covering=covering, new=new,
+                    todo=todo)
 
     @staticmethod
     def _busy(folder: Path):
@@ -988,10 +1168,14 @@ class TipPositionsPage(Page):
             self.dev_note.setText(warn(f"⚠ {e}. The diagram shows their default values."))
             return
         xs, hs = sim["x_list"], sim["heights"]
+        shape = sim["tip_shape"]
         total = len(xs) * len(hs)
         out = self._out_dir()
         present = npz_count(out, xs, hs) if out and out.is_dir() else 0
         remaining = total - present
+        if remaining != self._n_runs:          # set_runs re-enters through cores.changed with the same count
+            self._n_runs = remaining
+            self.cores.set_runs(max(1, remaining))
         xr = f"{fx(min(xs))} … {fx(max(xs))} µm" if xs else "—"
         hr = f"{min(hs):g}–{max(hs):g} nm" if hs else "—"
         size = (f"{plural(len(xs), 'beam position')} ({xr}) × {plural(len(hs), 'height')} ({hr}) = "
@@ -1000,7 +1184,10 @@ class TipPositionsPage(Page):
             size += f"; {present} already in the output folder are skipped, <b>{remaining} remaining</b>"
         self.plan["size"].setText(size)
         lo, hi = run_seconds(sim["t_end_ps"])
-        tl, th = remaining * lo + 3, remaining * hi + 6
+        k, (tl, th), (sl, sh) = sim_estimate(remaining, sim["t_end_ps"], self.cores.value())
+        self.plan["tip"].setText(
+            f"{shape_detail(shape)}" + (f" (resolved as a {2 * POISSON_DX_NM:g} nm column on the {POISSON_DX_NM:g} nm "
+                                        "Poisson grid)" if shape == "rod" else ""))
 
         fdtd = self._fdtd_value()
         extra = ""
@@ -1009,9 +1196,15 @@ class TipPositionsPage(Page):
             self.fdtd_status.setText("<span>Symmetric Gaussian pump, no FDTD tip maps.</span>")
         else:
             folder = paths.absolute(fdtd)
-            missing = self._missing_ratio(folder, hs)
-            running = self._covering_fdtd_job(folder, missing) is not None if missing else False
-            if not missing:
+            st = self._fdtd_state(folder, hs, shape)
+            missing, running = st["missing"], st["covering"] is not None
+            made = f" ({shape_text(st['fshape'])} tip)" if st["fshape"] else ""
+            if st["mismatch"]:
+                s = warn(f"⚠ These maps were computed with a {shape_text(st['fshape'])} tip; this run uses a "
+                         f"{shape_text(shape)} tip. On run you are asked to compute {shape_text(shape)} maps first "
+                         "(into a new folder)" + (", to use these anyway" if not missing else "") + " or to use none.")
+                short = warn(f"⚠ maps made with a {shape_text(st['fshape'])} tip, you will be asked before running")
+            elif not missing:
                 s = short = ok(f"✓ ratio_h*.npz ready for all {plural(len(hs), 'selected height')}")
             else:
                 hl = ", ".join(f"{h:g}" for h in missing[:6]) + (" …" if len(missing) > 6 else "")
@@ -1024,15 +1217,20 @@ class TipPositionsPage(Page):
                 short = warn(f"⚠ {len(missing)}/{len(hs)} ratio maps missing, " + (
                     "queued behind the running FDTD job" if running else
                     "you will be asked before running: queue the FDTD maps, or use none"))
-                if not running:
-                    n_fdtd = len(hs) if is_committed(folder) else len(missing)
-                    fl, fh = n_fdtd * FDTD_SECONDS[0], n_fdtd * FDTD_SECONDS[1]
-                    tl, th = tl + fl, th + fh
-                    extra = f", incl. FDTD height maps ≈ {fmt_range(fl, fh)}"
+            if st["todo"]:
+                n_fdtd = len(st["todo"])
+                kf, fl, fh = fdtd_estimate(n_fdtd, self.cores.value())
+                tl, th = tl + fl, th + fh
+                sl, sh = sl + n_fdtd * FDTD_SECONDS[0], sh + n_fdtd * FDTD_SECONDS[1]
+                extra = f"; incl. {plural(n_fdtd, 'FDTD height map')} ≈ {fmt_range(fl, fh)} {on_cores(kf)}"
             self.fdtd_status.setText(s)
-            self.plan["pump"].setText(f"FDTD tip maps {paths.rel(folder)} — " + short)
+            self.plan["pump"].setText(f"FDTD tip maps {paths.rel(folder)}{made} — " + short)
         per = f"≈ {lo:.0f}–{hi:.0f} s per run" if remaining else "nothing to simulate"
-        self.plan["time"].setText(f"<b>≈ {fmt_range(tl, th)}</b> ({per}{extra}) + demodulation ≈ 1–5 s")
+        if k > 1:
+            self.plan["time"].setText(f"<b>≈ {fmt_range(tl, th)}</b> {on_cores(k)} (≈ {fmt_range(sl, sh)} on one core; "
+                                      f"{per}{extra}) + demodulation ≈ 1–5 s")
+        else:
+            self.plan["time"].setText(f"<b>≈ {fmt_range(tl, th)}</b> on one core ({per}{extra}) + demodulation ≈ 1–5 s")
         if out is None:
             self.plan["out"].setText("results/gui_runs/tip_&lt;time&gt; (a new folder for every run)")
         else:
@@ -1047,8 +1245,9 @@ class TipPositionsPage(Page):
         self.plan_warn.setText("<br>".join(lines))
         self.plan_warn.setVisible(bool(lines))
         self.dev_note.setText(
-            f"<b>{total} PulseSim runs</b> ({len(xs)} X × {len(hs)} h), ≈ {fmt_range(tl, th)}. The tip stays at x = 0; the "
-            "beam centre moves to each X (green markers). The nm-scale apex gap is exaggerated in (b)."
+            f"<b>{total} PulseSim runs</b> ({len(xs)} X × {len(hs)} h), ≈ {fmt_range(tl, th)} {on_cores(k)}; "
+            f"{shape_detail(shape)} tip. The tip stays at x = 0; the beam centre moves to each X (green markers). "
+            "The nm-scale apex gap is exaggerated in (b)."
             + ("" if not errs else "<br>" + "<br>".join(f"<span style='color:{t.danger}'>✕ {e}</span>" for e in errs)))
 
     def _refresh_fdtd_choices(self):
@@ -1065,8 +1264,10 @@ class TipPositionsPage(Page):
                 continue
             seen.add(r)
             n = len(list(p.glob("ratio_h*.npz"))) if p.is_dir() else 0
-            self.fdtd_combo.addItem(f"{r} · {plural(n, 'map')}", r)
-            self.fdtd_combo.setItemData(self.fdtd_combo.count() - 1, f"{r}\n{n} ratio_h*.npz", Qt.ItemDataRole.ToolTipRole)
+            sh = fdtd_shape_of(p) if p.is_dir() else None
+            self.fdtd_combo.addItem(f"{r} · {plural(n, 'map')}" + (f" · {shape_text(sh)}" if sh else ""), r)
+            self.fdtd_combo.setItemData(self.fdtd_combo.count() - 1, f"{r}\n{n} ratio_h*.npz"
+                                        + (f", {shape_detail(sh)} tip" if sh else ""), Qt.ItemDataRole.ToolTipRole)
         i = self.fdtd_combo.findData(cur)
         self.fdtd_combo.setCurrentIndex(max(0, i))
         self.fdtd_combo.blockSignals(False)
@@ -1119,38 +1320,56 @@ class TipPositionsPage(Page):
         c = m.clickedButton()
         return "go" if c is b_go else "new" if c is b_new else "cancel"
 
-    def _ask_fdtd(self, folder: Path, missing, sim_time: str, target: Path, todo, ref: Path) -> str:
-        """'fdtd' | 'none' | 'cancel' when ratio maps are missing (`todo` heights would be computed into `target`)."""
-        hl = ", ".join(f"{h:g}" for h in missing)
+    def _ask_fdtd(self, folder: Path, st: dict, shape: str, sim_time: str, target: Path, ref: Path, workers: int) -> str:
+        """'fdtd' | 'keep' | 'none' | 'cancel' when ratio maps are missing or were computed with the other tip shape
+        (st = _fdtd_state; its `todo` heights would be computed into `target` on `workers` cores)."""
+        missing, todo = st["missing"], st["todo"]
         m = QMessageBox(self)
         m.setIcon(QMessageBox.Icon.Warning)
-        m.setWindowTitle("FDTD tip maps missing")
-        m.setText(f"{paths.rel(folder)} has no ratio_h*.npz for {plural(len(missing), 'height')} (h = {hl} nm).")
-        info = ("In fdtd mode run_tip_positions.py waits for these files indefinitely and prints nothing, so they must be "
-                "computed first.\n\n")
-        b_fdtd = None
+        if st["mismatch"]:
+            m.setWindowTitle("FDTD tip maps of another tip shape")
+            m.setText(f"The maps in {paths.rel(folder)} were computed with a {shape_text(st['fshape'])} tip; this run "
+                      f"uses a {shape_text(shape)} tip.")
+            info = ("The pump shadow depends on the tip shape, so the maps should match it."
+                    + (f" Besides, ratio_h*.npz are missing for {plural(len(missing), 'height')}." if missing else "")
+                    + "\n\n")
+        else:
+            m.setWindowTitle("FDTD tip maps missing")
+            m.setText(f"{paths.rel(folder)} has no ratio_h*.npz for {plural(len(missing), 'height')} "
+                      f"(h = {', '.join(f'{h:g}' for h in missing)} nm).")
+            info = ("In fdtd mode run_tip_positions.py waits for these files indefinitely and prints nothing, so they must "
+                    "be computed first.\n\n")
+        b_fdtd = b_keep = None
         n = len(todo)
         if ref.exists():
             where = paths.rel(target)
             if target != folder:
-                where = (f"the new folder {paths.rel(target)} ({paths.rel(folder)} is a repository result folder whose "
-                         f"committed summary.json run_fdtd_heights would overwrite, so all {n} heights are computed in the "
-                         f"new folder instead)")
-            info += (f"• Compute the FDTD maps first: queue scripts/run_fdtd_heights.py ({n} heights × 75–90 s ≈ "
-                     f"{fmt_range(n * FDTD_SECONDS[0], n * FDTD_SECONDS[1])}) writing to {where}; then summary.json is "
-                     f"rebuilt from all ratio maps and simulation + demodulation start (simulation ≈ {sim_time}).\n")
+                why = ("maps of one tip shape per folder" if st["mismatch"] else
+                       f"{paths.rel(folder)} is a repository result folder and stays untouched")
+                where = f"the new folder {paths.rel(target)} ({why}, so all {n} heights are computed there)"
+            k, lo, hi = fdtd_estimate(n, workers)
+            info += (f"• Compute {shape_text(shape)}-tip FDTD maps first: {plural(n, 'height')} {on_cores(k)} "
+                     f"(75–90 s each) ≈ {fmt_range(lo, hi)}, writing to {where}; then summary.json is rebuilt from all "
+                     f"ratio maps and simulation + demodulation start (simulation ≈ {sim_time}).\n")
         else:
             info += (f"• The FDTD maps cannot be computed first: the reference field {paths.rel(ref)} is missing. Run the "
                      f"no-tip FDTD on the Pump FDTD (optics) page first.\n")
+        if st["mismatch"] and not missing:
+            info += f"• Use these {shape_text(st['fshape'])}-tip maps anyway.\n"
         info += "• Use none: symmetric Gaussian pump (no shadowing of the pump by the tip)."
         m.setInformativeText(info)
         if ref.exists():
-            b_fdtd = m.addButton("Compute FDTD maps first", QMessageBox.ButtonRole.AcceptRole)
+            b_fdtd = m.addButton(f"Compute {shape_text(shape)} maps first" if st["mismatch"] else "Compute FDTD maps first",
+                                 QMessageBox.ButtonRole.AcceptRole)
+        if st["mismatch"] and not missing:
+            b_keep = m.addButton("Use these maps", QMessageBox.ButtonRole.ActionRole)
         b_none = m.addButton("Use none", QMessageBox.ButtonRole.ActionRole)
         m.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
         m.exec()
         c = m.clickedButton()
-        return "fdtd" if (b_fdtd is not None and c is b_fdtd) else "none" if c is b_none else "cancel"
+        if c is None:
+            return "cancel"
+        return "fdtd" if c is b_fdtd else "keep" if c is b_keep else "none" if c is b_none else "cancel"
 
     # ------------------------------------------------------------------ run
     @staticmethod
@@ -1166,6 +1385,8 @@ class TipPositionsPage(Page):
             out.append(f"degenerate: {bool(meta['degenerate'])} → {sim['degenerate']}")
         if (meta.get("fdtd") or "none") != fdtd:
             out.append(f"fdtd: {meta.get('fdtd') or 'none'} → {fdtd}")
+        if shape_code(meta.get("tip_shape")) != sim["tip_shape"]:
+            out.append(f"tip shape: {shape_text(shape_code(meta.get('tip_shape')))} → {shape_text(sim['tip_shape'])}")
         return out
 
     def run(self):
@@ -1190,7 +1411,7 @@ class TipPositionsPage(Page):
             return
         present = npz_count(out, xs, hs) if out.is_dir() else 0
         if present:
-            diffs = self._meta_diff(read_json(out / "meta.json"), sim, fdtd)
+            diffs = self._meta_diff(run_meta(out), sim, fdtd)
             c = self._ask_existing(out, diffs, present, total - present)
             if c == "cancel":
                 return
@@ -1203,45 +1424,43 @@ class TipPositionsPage(Page):
                                                    "overwrites its meta.json and the demodulation its JSON and PNG. Continue?"):
             return
         remaining = total - present
-        lo, hi = run_seconds(sim["t_end_ps"])
-        sim_time = fmt_range(remaining * lo + 3, remaining * hi + 6)
+        shape = sim["tip_shape"]
+        k, (tl, th), _ = sim_estimate(remaining, sim["t_end_ps"], self.cores.value())
+        sim_time = f"{fmt_range(tl, th)} {on_cores(k)}"
 
         jm = JobManager.instance()
         fdtd_job = None
         asked = False
         if fdtd != "none":
             folder = paths.absolute(fdtd)
-            missing = self._missing_ratio(folder, hs)
-            running = self._active_fdtd_jobs(folder)
-            covering = self._covering_fdtd_job(folder, missing) if missing else None
-            if covering is not None:
-                fdtd_job = covering              # wait for the FDTD job that is already producing these maps
-            elif missing:
+            st = self._fdtd_state(folder, hs, shape)
+            if st["covering"] is not None:
+                fdtd_job = st["covering"]        # wait for the FDTD job that is already producing these maps
+            elif st["todo"]:
                 asked = True
-                # never let run_fdtd_heights rewrite a committed summary.json: compute into a fresh GUI folder instead
-                target = paths.new_run_dir("fdtd_heights") if is_committed(folder) else folder
-                todo = list(hs) if target != folder else list(missing)
+                # never rewrite a committed summary.json, never mix tip shapes in one folder: a fresh GUI folder instead
+                target = paths.new_run_dir("fdtd_heights") if st["new"] else folder
+                todo = st["todo"]
                 ref = fdtd_ref_for(folder)
-                c = self._ask_fdtd(folder, missing, sim_time, target, todo, ref)
+                c = self._ask_fdtd(folder, st, shape, sim_time, target, ref, self.cores.value())
                 if c == "cancel":
                     return
                 if c == "none":
                     fdtd = "none"
                     self._set_fdtd("none")
-                else:
+                elif c == "fdtd":
+                    kf = max(1, min(self.cores.value(), len(todo)))
+                    running = st["active"]
                     fdtd_job = jm.submit(
-                        f"FDTD height maps · {plural(len(todo), 'height')} · {target.name}", "fdtd_heights",
-                        "scripts/run_fdtd_heights.py",
-                        "main", kwargs=dict(out=paths.rel(target), heights=todo, ref=paths.rel(ref)),
-                        out=target, progress={"type": "count", "pattern": r"^h = \S+ nm: ", "total": len(todo)},
+                        f"FDTD height maps · {shape_text(shape)} tip · {plural(len(todo), 'height')} {on_cores(kf)} · "
+                        f"{target.name}", "fdtd_heights", PAR_SCRIPT, "fdtd_heights",
+                        kwargs=dict(out=paths.rel(target), heights=todo, ref=paths.rel(ref), tip_shape=shape, workers=kf),
+                        out=target, progress=dict(PAR_PROGRESS, total=len(todo)),
                         after=running[-1] if (running and target == folder) else None)
-                    jm.submit(f"FDTD height maps · rebuild summary.json · {target.name}", "fdtd_heights", "ltemsim_gui/gui_tasks.py",
-                              "fdtd_heights_summary", kwargs=dict(out=paths.rel(target), ref=paths.rel(ref)),
-                              out=target, after=fdtd_job)
                     if target != folder:
                         fdtd = paths.rel(target)
                         self._set_fdtd(fdtd)
-        if not asked and hi * remaining > 15 * 60 and not self._confirm(
+        if not asked and th > 15 * 60 and not self._confirm(
                 "Start a long run?", f"This runs {remaining} PulseSim simulations, ≈ {sim_time}.\nResults go to "
                                      f"{paths.rel(out)}. You can stop at any time in the Job center; finished npz files are "
                                      "kept and the run can be resumed later.\n\nContinue?"):
@@ -1249,10 +1468,13 @@ class TipPositionsPage(Page):
 
         rel = paths.rel(out)
         pump = "FDTD maps" if fdtd != "none" else "symmetric pump"
+        # the (X, h) runs in a process pool (parallel.tip_simulate injects tip_shape into PulseConfig, so it is used
+        # with one core too); it skips existing npz and writes the full meta.json at the end
         sim_job = jm.submit(
-            f"Tip-position chain · simulate · {sim['P_avg_mW']:g} mW · V_tip {sim['V_tip']:g} V · {pump} · "
-            f"{len(xs)}×{len(hs)}", "tip_sim", SCRIPT, "simulate", kwargs=dict(out=rel, fdtd=fdtd, **sim), out=out,
-            progress={"type": "count", "pattern": r"^X=[+-]\d+\.\d h=", "total": max(1, remaining)}, after=fdtd_job)
+            f"Tip-position chain · simulate · {sim['P_avg_mW']:g} mW · V_tip {sim['V_tip']:g} V · {shape_text(shape)} tip · "
+            f"{pump} · {len(xs)}×{len(hs)} {on_cores(k)}", "tip_sim", PAR_SCRIPT, "tip_simulate",
+            kwargs=dict(workers=k, out=rel, fdtd=fdtd, **sim), out=out,
+            progress=dict(PAR_PROGRESS, total=max(1, remaining)), after=fdtd_job)
         demod_job = jm.submit(
             f"Tip-position chain · demodulate · A {dem['A_nm']:g} / h_min {dem['h_min_nm']:g} nm · {out.name}", "tip_demod",
             SCRIPT, "demod", kwargs=dict(out=rel, **dem), out=out, after=sim_job)
@@ -1299,12 +1521,27 @@ class TipPositionsPage(Page):
                 pass
         self.chain = {k: j for k, j in chain.items() if j is not None}
         sim = self.chain.get("sim")
-        if sim is not None:
-            sim.output.connect(self._on_sim_output)
         first = next((j for j in self.chain.values() if j.active), None) or list(self.chain.values())[-1]
         self.panel.attach(first)
         self.last_line.setText("")
+        if sim is not None:
+            sim.output.connect(self._on_sim_output)
+            for line in sim.lines[-400:]:          # an adopted job: its pool size and last finished run so far
+                self._parse_sim_line(sim, line)
         self._update_chain()
+
+    @staticmethod
+    def _step_title(key, job):
+        """Step name plus what the job does, e.g. '② Simulation · straight rod tip · 16 cores'."""
+        kw = job.spec.get("kwargs") or {}
+        bits = []
+        if key in ("fdtd", "sim") and (_is_fdtd_heights(job.spec) or job.spec.get("func") in ("simulate", "tip_simulate")):
+            bits.append(f"{shape_text(job_shape(job))} tip")
+        if key == "fdtd" and kw.get("heights"):
+            bits.append(plural(len(kw["heights"]), "height"))
+        if str(job.spec.get("script", "")).endswith("parallel.py") and kw.get("workers"):
+            bits.append(plural(int(kw["workers"]), "core"))
+        return " · ".join([STEP_TITLES[key]] + bits)
 
     def _chain_jobs(self):
         return [j for j in self.chain.values()]
@@ -1322,6 +1559,7 @@ class TipPositionsPage(Page):
             j = self.chain.get(k)
             st.setVisible(j is not None)
             if j is not None:
+                st.title = self._step_title(k, j)
                 st.set_job(j, j is self.panel.job)
         self._update_grid()
 
@@ -1334,15 +1572,30 @@ class TipPositionsPage(Page):
         out = paths.absolute(kw.get("out", ""))
         xs, hs = kw.get("x_list", X_LIST), kw.get("heights", HEIGHTS_NM)
         done = {(i, k) for i, X in enumerate(xs) for k, h in enumerate(hs) if (out / npz_name(X, h)).exists()}
-        running = None
+        running = []
         if j.status == RUNNING:
-            running = next(((i, k) for i in range(len(xs)) for k in range(len(hs)) if (i, k) not in done), None)
+            # the pool takes the runs in grid order (X-major) and starts the next one as soon as one finishes, so the
+            # runs in flight are the first `cores` pending cells
+            n_par = self._par_cores.get(j.id) or (int(kw.get("workers") or 1) if j.spec.get("func") == "tip_simulate" else 1)
+            pending = [(i, k) for i in range(len(xs)) for k in range(len(hs)) if (i, k) not in done]
+            running = pending[:max(1, n_par)]
         self.grid_w.set_state(xs, hs, done, running)
 
+    def _parse_sim_line(self, job, line) -> bool:
+        """Pool size and finished-run lines of a simulate job; True if a run finished."""
+        m = PAR_START_RE.match(line)
+        if m:
+            self._par_cores[job.id] = int(m.group(2))
+            return True
+        m = TAIL_RE.match(line) or RUN_RE.match(line)
+        if m:
+            self.last_line.setText("Last finished: " + (m.group(1) if m.re is TAIL_RE else line).strip())
+            return True
+        return bool(PAR_RE.match(line))
+
     def _on_sim_output(self, text):
-        hits = [l for l in text.split("\n") if RUN_RE.match(l)]
-        if hits:
-            self.last_line.setText("Last finished: " + hits[-1])
+        job = self.chain.get("sim")
+        if job is not None and any([self._parse_sim_line(job, l) for l in text.split("\n")]):
             self._update_grid()
 
     def _on_job_changed(self, job):
@@ -1365,10 +1618,11 @@ class TipPositionsPage(Page):
                 self.show_result(self.result_dir, switch=False, prefer=self._selected_demod_name())
             return
         if job is self.chain.get("sim") and job.status in (CANCELLED, FAILED) and job.started:
-            self._quarantine_partial(job)
+            out = paths.absolute(job.spec.get("kwargs", {}).get("out", ""))
+            run_async(quarantine_npz, out, job.started, on_done=lambda bad, o=out: self._npz_quarantined(o, bad))
         if job is self.chain.get("fdtd") and job.status in (CANCELLED, FAILED) and job.started:
             folder = paths.absolute(job.spec.get("kwargs", {}).get("out", ""))
-            run_async(quarantine_ratio, folder, on_done=self._ratio_quarantined)
+            run_async(quarantine_ratio, folder, job.started, on_done=self._ratio_quarantined)
         self._update_chain()
         if job is self.chain.get("demod") and job.status == FINISHED and job.out:
             kw = job.spec.get("kwargs", {})
@@ -1379,28 +1633,21 @@ class TipPositionsPage(Page):
 
     def _ratio_quarantined(self, bad):
         if bad:
-            self.last_line.setText(f"⚠ The FDTD map {bad} was not completely written when the job stopped and was renamed to "
-                                   "*.npz.partial; this height is recomputed next time.")
+            self.last_line.setText(f"⚠ The FDTD {'map' if len(bad) == 1 else 'maps'} {', '.join(bad)} "
+                                   f"{'was' if len(bad) == 1 else 'were'} not completely written when the job stopped and "
+                                   "renamed to *.npz.partial; recomputed next time.")
         self._refresh_fdtd_choices()
 
-    def _quarantine_partial(self, job):
-        """A run stopped inside np.savez_compressed leaves a truncated npz that simulate would skip forever on resume:
-        rename the newest one to *.broken if it cannot be read."""
-        out = paths.absolute(job.spec.get("kwargs", {}).get("out", ""))
-        files = sorted(out.glob("X*_h*.npz"), key=lambda p: p.stat().st_mtime) if out.is_dir() else []
-        if not files:
-            return None
-        f = files[-1]
-        try:
-            with np.load(f) as z:
-                z["Q_tip"], z["t"]
-            return None
-        except Exception:
-            bad = f.with_name(f.name + ".broken")
-            f.rename(bad)
-            self.last_line.setText(f"⚠ {f.name} was not completely written when the job stopped and was renamed to "
-                                   f"{bad.name}; it is recomputed when you resume.")
-            return bad
+    def _npz_quarantined(self, out, bad):
+        """A run stopped inside np.savez_compressed leaves a truncated npz that simulate would skip forever on resume
+        (quarantine_npz renamed every unreadable one written by the stopped job)."""
+        if bad:
+            names = ", ".join(a for a, _ in bad)
+            self.last_line.setText(f"⚠ {names} {'was' if len(bad) == 1 else 'were'} not completely written when the job "
+                                   "stopped and renamed to *.npz.broken; recomputed when you resume.")
+            self._update_grid()
+            if self.result_dir is not None and self.result_dir.resolve() == Path(out).resolve():
+                self.show_result(self.result_dir, switch=False, prefer=self._selected_demod_name())
 
     def _adopt_active_chain(self):
         """Re-attach to a tip chain started earlier (e.g. before this page existed, or re-run from the job center)."""
@@ -1426,12 +1673,16 @@ class TipPositionsPage(Page):
             d = d.parent
         self.result_dir = d
         demods = demod_files(d)
-        meta = read_json(d / "meta.json") or (read_json(demods[0]) if demods else None) or {}
+        meta = run_meta(d)
         self.meta = meta
         xs, hs = meta.get("X") or [], meta.get("heights_nm") or []
         self.n_expected = len(xs) * len(hs)
         self.n_present = npz_count(d, xs, hs) if self.n_expected else len(list(d.glob("X*_h*.npz")))
         complete = self.n_expected > 0 and self.n_present == self.n_expected
+        disk = read_json(d / "meta.json") or {}
+        # a parallel run stopped right after its last (X, h) run leaves the one-run meta.json of a worker
+        self.meta_ok = not disk or ([float(x) for x in disk.get("X") or []] == [float(x) for x in xs]
+                                    and [float(h) for h in disk.get("heights_nm") or []] == [float(h) for h in hs])
 
         busy = bool(self._busy(d))
         state = (f"raw npz {self.n_present}/{self.n_expected}" if self.n_expected else "no meta.json")
@@ -1447,7 +1698,12 @@ class TipPositionsPage(Page):
         self.tiles["Vb"].set(f"{Vb:g} V" if Vb is not None else "—", hint)
         self.tiles["Vb"].setToolTip("Anode at −x; T = carrier temperature; degenerate = Fermi–Dirac diffusion")
         Vt = meta.get("V_tip")
-        self.tiles["Vt"].set((f"{Vt:+g} V" if Vt else "0 V") if Vt is not None else "—", "vs. gap midpoint")
+        shape = shape_code(meta.get("tip_shape"))
+        self.tiles["Vt"].set((f"{Vt:+g} V" if Vt else "0 V") if Vt is not None else "—",
+                             f"{shape_text(shape)} tip" if meta else "")
+        self.tiles["Vt"].setToolTip(f"Tip potential relative to the gap midpoint (0 = grounded); {shape_detail(shape)} tip"
+                                    + (" (runs from before the tip-shape option used the cone)" if shape == "cone" else "")
+                                    if meta else "")
         fd = meta.get("fdtd")
         sym = fd in (None, "none")
         self.tiles["pump"].set("—" if not meta else ("none" if sym else "FDTD"),
@@ -1476,8 +1732,14 @@ class TipPositionsPage(Page):
         self.demod_combo.setEnabled(bool(demods))
         self.demod_combo.blockSignals(False)
 
+        # a GUI run stopped before its first (X, h) run finished
+        stopped_early = (self.n_present == 0 and self.n_expected > 0 and not busy and not is_committed(d)
+                         and sim_run_json(d) is not None)
         if not meta and not demods:
             note = "This folder has no meta.json and no demodulation results (demod_A*_h*.json)."
+        elif stopped_early:
+            note = (f"The simulation stopped before any run finished (raw npz 0/{self.n_expected}). “Resume this folder” "
+                    "starts it again with the same parameters.")
         elif not demods and not self.n_present:
             note = ("This folder only has meta.json: there are no demodulation results, and the raw X*_h*.npz are not in "
                     "the repository (git-ignored). To see results, use “Load into form” and run “Simulate + demodulate”.")
@@ -1489,6 +1751,9 @@ class TipPositionsPage(Page):
             note = (f"Raw data incomplete ({self.n_present}/{self.n_expected}): the simulation is still running or was "
                     "interrupted." + ("" if busy else " “Resume this folder” computes the rest with the same parameters "
                                                      "(existing npz files are skipped)."))
+        elif not self.meta_ok and not busy:
+            note = ("All raw npz are present, but the run stopped before writing the full meta.json. “Resume this folder” "
+                    "→ “Simulate + demodulate” rewrites it without recomputing anything.")
         elif not demods:
             note = "The simulation is complete but not demodulated yet: click “Re-demodulate with form settings”."
         else:
@@ -1496,8 +1761,8 @@ class TipPositionsPage(Page):
         self.res_note.setText(note)
         self.res_note.setVisible(bool(note))
         self.btn_params.setEnabled(bool(meta))
-        self.btn_resume.setVisible(bool(meta) and not complete and self.n_expected > 0 and not is_committed(d) and not busy
-                                   and self.n_present > 0)
+        self.btn_resume.setVisible(bool(meta) and (not complete or not self.meta_ok) and self.n_expected > 0
+                                   and not is_committed(d) and not busy and (self.n_present > 0 or stopped_early))
         self.btn_folder.setEnabled(d.exists())
         self._wave = None if (self._wave and self._wave[0][0] != str(d)) else self._wave
         self._on_demod_selected()
@@ -1593,7 +1858,8 @@ class TipPositionsPage(Page):
             ax.grid(True, alpha=0.35)
             pump = "FDTD tip map" if meta.get("fdtd") not in (None, "none") else "symmetric pump"
             fig.suptitle(f"{meta.get('P_avg_mW', 0):g} mW, V_bias = {meta.get('V_bias', 0):g} V, "
-                         f"V_tip = {meta.get('V_tip', 0):g} V, {pump}" + ("\n" if narrow else ";  ")
+                         f"V_tip = {meta.get('V_tip', 0):g} V, {shape_text(shape_code(meta.get('tip_shape')))} tip, {pump}"
+                         + ("\n" if narrow else ";  ")
                          + f"A = {js.get('A_nm', 0):g} nm, h_min = {js.get('h_min_nm', 0):g} nm", fontsize=8.5 if narrow else 10)
             h, l = ax.get_legend_handles_labels()
             if h and narrow:                 # a legend at the side would leave no room for the axes
@@ -1740,7 +2006,8 @@ class TipPositionsPage(Page):
 
     def _can_redemod(self):
         d = self.result_dir
-        return (d is not None and self.n_expected > 0 and self.n_present == self.n_expected and not self._busy(d))
+        return (d is not None and self.n_expected > 0 and self.n_present == self.n_expected and self.meta_ok
+                and not self._busy(d))
 
     def _update_demod_btn(self):
         d = self.result_dir
@@ -1755,6 +2022,9 @@ class TipPositionsPage(Page):
         elif self.n_present == 0:
             tip = (f"{paths.rel(d)} has no raw X*_h*.npz (git-ignored in the repository) and cannot be re-demodulated. "
                    "Simulate again first (Load into form → Simulate + demodulate).")
+        elif self.n_present == self.n_expected:
+            tip = ("meta.json describes only one run (the parallel run stopped before writing the full one): use “Resume "
+                   "this folder” → “Simulate + demodulate”, which rewrites it without recomputing anything")
         else:
             tip = (f"The raw data in {paths.rel(d)} is incomplete ({self.n_present}/{self.n_expected}); finish the "
                    "remaining simulations first")
@@ -1774,6 +2044,7 @@ class TipPositionsPage(Page):
         if not m:
             return
         vals = {k: m[k] for k in ("P_avg_mW", "V_bias", "V_tip", "T", "degenerate", "t_end_ps") if k in m}
+        vals["tip_shape"] = TIP_SHAPES[shape_code(m.get("tip_shape"))]
         if "heights_nm" in m:
             vals["heights"] = tuple(m["heights_nm"])
         if "X" in m:
@@ -1804,7 +2075,7 @@ class TipPositionsPage(Page):
         dirs += sorted((p for p in paths.GUI_RUNS.glob("tip_*") if p.is_dir()), reverse=True)
         for d in dirs:
             demods = demod_files(d)
-            meta = read_json(d / "meta.json") or (read_json(demods[0]) if demods else None) or {}
+            meta = run_meta(d)
             xs, hs = meta.get("X") or [], meta.get("heights_nm") or []
             n_exp = len(xs) * len(hs)
             n = npz_count(d, xs, hs) if n_exp else 0
@@ -1812,6 +2083,7 @@ class TipPositionsPage(Page):
             if meta:
                 bits.append(f"{meta.get('P_avg_mW', 0):g} mW")
                 bits.append(f"V_tip {meta.get('V_tip', 0):g} V")
+                bits.append(f"{shape_text(shape_code(meta.get('tip_shape')))} tip")
                 bits.append("symmetric pump" if meta.get("fdtd") in (None, "none") else "FDTD maps")
                 bits.append(f"{len(xs)} X × {len(hs)} h")
             bits.append("demod: " + (", ".join(p.stem.replace("demod_", "") for p in demods) if demods else "none"))

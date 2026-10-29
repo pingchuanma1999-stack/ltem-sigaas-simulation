@@ -51,6 +51,11 @@ def meta_name(out, spec: dict, base="gui_run", ext=".json") -> str:
 
 def load_script(script: str):
     path = (ROOT / script).resolve()
+    pkg = Path(__file__).resolve().parent
+    if path.parent == pkg:
+        # GUI task modules are imported as package modules (ltemsim_gui.parallel, ...): relative imports work and
+        # process-pool workers can unpickle their functions by that importable name
+        return importlib.import_module(f"{pkg.name}.{path.stem}")
     spec = importlib.util.spec_from_file_location(path.stem, path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[path.stem] = mod
@@ -61,6 +66,10 @@ def load_script(script: str):
 def main(spec_path: str) -> int:
     with open(spec_path) as fh:
         spec = json.load(fh)
+    try:
+        os.setpgrp()            # own process group: Stop reaches parallel worker processes too
+    except (AttributeError, OSError):
+        pass
     os.chdir(ROOT)
     for p in (str(ROOT / "scripts"), str(ROOT)):
         if p not in sys.path:

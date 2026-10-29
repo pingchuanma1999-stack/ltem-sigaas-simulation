@@ -27,6 +27,7 @@ from ..jobs import FINISHED, JobManager
 from ..paramspec import FieldSpec
 from ..theme import ThemeManager
 from ..widgets.common import MetricTile, Page, button, card, error_box, label, reveal
+from ..widgets.cores import CoresSpin, estimate_s
 from ..widgets.device import FieldView, device_from_pulse, draw_device
 from ..widgets.imageview import ImageView
 from ..widgets.mpl import PlotWidget
@@ -44,6 +45,8 @@ T_END_MIN = 0.5
 DEV_NARROW = 640                 # px: below this canvas width (or below 1.5 × its height) the device panels are stacked
 DEFAULT_RUN = "P2mW_notipmap_degen"
 CHAIN_SCRIPT = "scripts/run_pulse_chain.py"
+PAR_SCRIPT = "ltemsim_gui/parallel.py"           # pulse_chain(workers=…, **main_kwargs): the X runs on several cores
+CHAIN_JOBS = ((CHAIN_SCRIPT, "main"), (PAR_SCRIPT, "pulse_chain"))
 X_RE = re.compile(r"^X([+-]?\d+(?:\.\d+)?)\.npz$")
 # values the script used before they were written to summary.json (older runs)
 LEGACY_DEFAULTS = {"w_um": 3.0, "V_bias": 25.0, "T": 300.0, "degenerate": False}
@@ -64,13 +67,14 @@ def chain_specs() -> list[FieldSpec]:
         S("T", 300.0, "float", "Carrier temperature T", "K",
           "Sets the diffusion kT/q and N_c. Physically T_e ≈ 600–800 K is expected; at 1500 K the carriers are "
           "no longer degenerate.", "Transport", minimum=1.0),
-        S("degenerate", False, "bool", "Degenerate diffusion (Fermi–Dirac)", "",
-          "Generalised Einstein relation D = μ(kT/q)·F₁/₂(η)/F₋₁/₂(η); it matters only in the dense core. "
+        S("degenerate", False, "bool", "Degenerate diffusion", "",
+          "Fermi–Dirac statistics in the diffusion: generalised Einstein relation D = μ(kT/q)·F₁/₂(η)/F₋₁/₂(η); "
+          "it matters only in the dense core. "
           "Off by default in the script (classical diffusion).", "Transport"),
         S("x_list", X_DEFAULT, "tuple", "Beam positions X", "µm",
           "Spot centre relative to the tip, comma-separated, in steps of 0.1 µm (result files are named "
-          "X{X:+.1f}.npz). Each X is a complete single-pulse simulation (≈ 15–55 s at t_end = 4 ps, depending on "
-          "the machine). Only the X = 0 run reports its time progress.", "Beam scan"),
+          "X{X:+.1f}.npz). Each X is a complete single-pulse simulation on one core (≈ 15–55 s at t_end = 4 ps, "
+          "depending on the machine); several X run at the same time (Cores, top right).", "Beam scan"),
         S("t_end_ps", 4.0, "float", "Simulated time t_end", "ps",
           f"Explicit time step 0.5 fs; the run time scales with t_end. At least {T_END_MIN:g} ps: the script "
           "low-passes every trace with a 2.2 THz Gaussian (83-sample kernel ≈ 0.41 ps), and shorter runs make the "
@@ -120,14 +124,22 @@ def run_files(d) -> dict[float, Path]:
     return dict(sorted(out.items()))
 
 
+def is_chain_spec(spec: dict) -> bool:
+    return (spec.get("script"), spec.get("func", "main")) in CHAIN_JOBS
+
+
 def chain_spec(d: Path) -> dict:
-    """The GUI spec of the chain job that wrote into `d`: gui_run.json, or gui_run_main.json when another job
-    owned the folder first. Specs of other scripts are ignored."""
-    for name in ("gui_run.json", "gui_run_main.json"):
-        spec = read_json(Path(d) / name)
-        if spec.get("script") == CHAIN_SCRIPT:
-            return spec
-    return {}
+    """The GUI spec of the newest chain job (sequential or parallel) that wrote into `d`: gui_run.json, or
+    gui_run_<func>.json when another job owned the folder first. Specs of other jobs are ignored."""
+    best, key = {}, None
+    for name in ("gui_run.json", "gui_run_main.json", "gui_run_pulse_chain.json"):
+        p = Path(d) / name
+        spec = read_json(p)
+        if is_chain_spec(spec):
+            k = (str(spec.get("started", "")), p.stat().st_mtime)
+            if key is None or k > key:
+                best, key = spec, k
+    return best
 
 
 def run_settings(d: Path) -> dict:
@@ -421,13 +433,15 @@ def trace_unit(key: str):
     return "", 0
 
 
-def estimate(n_x: int, w_um: float, max_abs_x: float, x_fine, t_end_ps: float):
-    """(typical, low, high, typical per X) seconds for a chain run; wall time ∝ Nx · t_end. Nx ≈ 2·x_fine/0.1 + 82
-    (242 for the default x_fine = 8 µm, 470 for w = 7 µm); +2 s per X for the PulseSim setup."""
+def estimate(n_x: int, w_um: float, max_abs_x: float, x_fine, t_end_ps: float, workers: int = 1):
+    """(typical, low, high wall time, typical per X on one core) in seconds for a chain run of n_x positions on
+    `workers` cores. Per X ∝ Nx · t_end with Nx ≈ 2·x_fine/0.1 + 82 (242 for the default x_fine = 8 µm, 470 for
+    w = 7 µm), +2 s for the PulseSim setup; concurrent runs slow each other down a little (cores.estimate_s)."""
     xf = x_fine if x_fine else auto_x_fine(w_um, (max_abs_x,))
     nx = 2.0 * xf / 0.1 + 82.0
     per = SEC_PER_X * (nx / 242.0) * (t_end_ps / 4.0) + 2.0
-    return n_x * per, n_x * per * EST_RANGE[0], n_x * per * EST_RANGE[1], per
+    tot, lo, hi = (estimate_s(per * f, n_x, workers) for f in (1.0, EST_RANGE[0], EST_RANGE[1]))
+    return tot, lo, hi, per
 
 
 def fmt_minutes(s: float) -> str:
@@ -670,7 +684,7 @@ class PulseChainPage(Page):
     title = "Single-pulse chain"
     subtitle = ("One pump pulse: Gaussian spot (optionally × FDTD tip map) → electron/hole hydrodynamics + Poisson → "
                 "quasi-static near field above the tip → finite-dipole scattering and tapping demodulation (n = 1–4), "
-                "scanned over the beam–tip offset X and compared with the measurement.")
+                "scanned over the beam–tip offset X.")
 
     def __init__(self):
         super().__init__()
@@ -695,6 +709,13 @@ class PulseChainPage(Page):
         self._field_log = False             # log-scale choice for the field quantities (E, V)
         self._field_quiet = False
 
+        self._n_runs = None
+        self.cores = CoresSpin()
+        self.cores.spin.setToolTip(f"How many beam positions X are simulated at the same time, one core each. This "
+                                   f"Mac has {self.cores.spin.maximum()} cores; the default leaves two for the "
+                                   "desktop. A single X always runs on one core.")
+        self.cores.changed.connect(self._update_estimate)
+        self.header.add_action(self.cores)
         self.run_btn = button("  Run chain", self.run, "primary")
         self.header.add_action(self.run_btn)
 
@@ -785,7 +806,7 @@ class PulseChainPage(Page):
                      "map is an upper bound of the shadowing. The main results in the docs (route 1) use no tip map.",
                      "muted", wrap=True)
         gl.addWidget(hint)
-        gen = button("Make a new tip map on the Pump FDTD (optics) page →", lambda: nav.navigate("fdtd"), "flat")
+        gen = button("Make a new tip map on the Pump FDTD page →", lambda: nav.navigate("fdtd"), "flat")
         gen.setStyleSheet("text-align: left; padding-left: 0;")
         gl.addWidget(gen)
         il.addWidget(g)
@@ -1229,13 +1250,25 @@ class PulseChainPage(Page):
             self.est_text.setText(err.replace("\n", " "))
             return
         xs = kw["x_list"]
-        tot, lo, hi, per = estimate(len(xs), kw["w_um"], max(abs(x) for x in xs), kw["x_fine"], kw["t_end_ps"])
+        n = len(xs)
+        if n != self._n_runs:              # set_runs re-enters through cores.changed; n is then unchanged
+            self._n_runs = n
+            self.cores.set_runs(n)
+        k = self.workers(n)
+        tot, lo, hi, per = estimate(n, kw["w_um"], max(abs(x) for x in xs), kw["x_fine"], kw["t_end_ps"], k)
         self.est_title.setText(f"Estimated time ≈ {fmt_minutes(tot)}")
-        txt = (f"{len(xs)} position{'s' if len(xs) != 1 else ''} × ≈ {per:.0f} s (≈ {per * EST_RANGE[0]:.0f}–"
-               f"{per * EST_RANGE[1]:.0f} s each, depending on the machine). Range {fmt_minutes(lo)} – {fmt_minutes(hi)}.")
-        if 0.0 not in xs:
-            txt += " The X list has no 0, so the progress is counted per X only."
+        pos = f"{n} position{'s' if n != 1 else ''}"
+        per_txt = f"≈ {per:.0f} s per X ({per * EST_RANGE[0]:.0f}–{per * EST_RANGE[1]:.0f} s depending on the machine)"
+        if k > 1:
+            txt = (f"{pos} on {k} cores ≈ {fmt_minutes(tot)} (≈ {fmt_minutes(n * per)} on one core); {per_txt}, "
+                   f"range {fmt_minutes(lo)} – {fmt_minutes(hi)}.")
+        else:
+            txt = f"{pos} on one core, {per_txt}; range {fmt_minutes(lo)} – {fmt_minutes(hi)}."
         self.est_text.setText(txt)
+
+    def workers(self, n_runs: int) -> int:
+        """Cores used for n_runs positions (never more than there are positions)."""
+        return max(1, min(self.cores.value(), n_runs))
 
     def run(self):
         kw, err = self._parse_form()
@@ -1273,13 +1306,15 @@ class PulseChainPage(Page):
             if r != QMessageBox.StandardButton.Yes:
                 return
         xs = kw["x_list"]
-        progress = {"type": "count", "pattern": r"^X=[+-]\d", "total": len(xs), "sub": r"t=([0-9.]+) ps",
-                    "sub_total": kw["t_end_ps"]}
+        k = self.workers(len(xs))
         title = (f"Pulse chain · {kw['P_avg_mW']:g} mW, w = {kw['w_um']:g} µm, {kw['V_bias']:+g} V, T = {kw['T']:g} K"
                  + (", degenerate" if kw["degenerate"] else "") + (", tip map" if fdtd != "none" else "")
-                 + f" · {len(xs)} X")
+                 + f" · {len(xs)} X on {k} core{'s' if k > 1 else ''}")
+        # the X runs go to k worker processes, then the script's main() runs with their results injected (summary and
+        # figure as in a sequential run); the progress includes the time progress of the runs in flight, also on one core
+        progress = {"type": "count", "pattern": r"^@@PAR \d+/\d+ done", "total": len(xs)}
         self.job = JobManager.instance().submit(
-            title, "pulse", CHAIN_SCRIPT, "main", kwargs=dict(out=paths.rel(out), fdtd=fdtd, **kw),
+            title, "pulse", PAR_SCRIPT, "pulse_chain", kwargs=dict(workers=k, out=paths.rel(out), fdtd=fdtd, **kw),
             out=out, progress=progress)
         self.panel.attach(self.job)
         self.tabs.setCurrentWidget(self.run_tab)
@@ -2039,6 +2074,9 @@ class PulseChainPage(Page):
                 mtime = (d / "summary.json" if done else d).stat().st_mtime
                 xs = st.get("x_list") or tuple(run_files(d))
                 xtxt = f"{n_x} X: " + ", ".join(f"{x:+g}" for x in xs) if xs else "no X data"
+                spec = chain_spec(d)
+                if spec.get("func") == "pulse_chain":
+                    xtxt += f" (on {(spec.get('kwargs') or {}).get('workers') or 'several'} cores)"
                 it.setToolTip(0, f"{paths.rel(d)}\n{xtxt}\nmodified {time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime))}")
                 for c in range(1, len(vals)):
                     it.setTextAlignment(c, Qt.AlignmentFlag.AlignCenter)
