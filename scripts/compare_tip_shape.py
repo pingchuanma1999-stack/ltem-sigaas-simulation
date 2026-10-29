@@ -34,8 +34,9 @@ plt.rcParams.update({"axes.unicode_minus": False, "axes.spines.top": False, "axe
 
 DEFAULT_PAIRS = (("2 mW, grounded tip, symmetric pump", "P2mW_sym", "P2mW_sym_rod"),
                  ("2 mW, tip at anode potential (+12.5 V)", "P2mW_sym_Vtip12", "P2mW_sym_Vtip12_rod"),
-                 ("2 mW, grounded tip, FDTD pump map", "P2mW_tipmap", "P2mW_tipmap_rod"),
-                 ("30 mW, grounded tip, symmetric pump", "P30mW_sym", "P30mW_sym_rod"))
+                 ("2 mW, grounded tip, FDTD pump map (beam → +x)", "P2mW_tipmap", "P2mW_tipmap_rod"),
+                 ("30 mW, grounded tip, FDTD pump map (beam → +x)", "P30mW_tipmap", "P30mW_tipmap_rod"),
+                 ("2 mW, rod map mirrored (beam → −x, shadow on −X)", "P2mW_tipmap", "P2mW_tipmap_rod_mirror"))
 
 measured = load_measured(os.path.join(ROOT, "data", "measured_tip_scan.csv"))
 
@@ -82,33 +83,25 @@ def table(pairs):
 
 def figure(pairs, out):
     pairs = [p for p in pairs if load(p[2]) is not None]
-    n = len(pairs)
-    fig, axs = plt.subplots(2, n, figsize=(5.2 * n, 8.6), constrained_layout=True, squeeze=False)
+    n = len(pairs); ncol = min(3, n); nrow = (n + ncol - 1) // ncol
+    fig, axs = plt.subplots(nrow, ncol, figsize=(5.4 * ncol, 4.6 * nrow), constrained_layout=True, squeeze=False)
     for j, (label, cone, rod) in enumerate(pairs):
         sc, sr = load(cone), load(rod)
         X = np.array(sr["X"])
-        ax = axs[0, j]
+        ax = axs[j // ncol, j % ncol]
         if sc is not None:
             ax.plot(sc["X"], sc["rms_norm"]["det3"], "^--", color=C["blue"], ms=7, lw=1.6, mfc="white", label="cone tip (15°), n = 3")
+        ax.plot(X, sr["rms_norm"]["det1"], "o-", color=C["amber"], ms=4.5, lw=1.1, label="rod tip, n = 1")
         ax.plot(X, sr["rms_norm"]["det3"], "^-", color=C["orange"], ms=7, lw=2.0, label="straight-rod tip (2R = 80 nm), n = 3")
         plot_measured(ax)
-        ax.set_title(f"({'abcd'[j]}) {label}")
+        ax.set_title(f"({'abcdefgh'[j]}) {label}", fontsize=11.5)
         ax.set_xlabel("X = spot − tip (µm);  anode at −x")
-        if j == 0:
+        if j % ncol == 0:
             ax.set_ylabel("band-limited amplitude (0.3–2 THz), normalised")
         ax.set_ylim(0, 1.12); ax.set_xticks(X)
         ax.legend(loc="upper left")
-        ax = axs[1, j]
-        for h in (1, 2, 3, 4):
-            ax.plot(X, sr["rms_norm"][f"det{h}"], MARK[h] + "-", color=HARM[h], ms=6, lw=1.6, label=f"rod, n = {h}")
-        ax.plot(X, sr["rms_norm"]["far"], "x:", color=C["grey"], ms=7, lw=1.4, label="rod, far field dJ/dt")
-        plot_measured(ax)
-        ax.set_title(f"({'abcdefgh'[n + j]}) rod tip, harmonics 1–4")
-        ax.set_xlabel("X (µm)")
-        if j == 0:
-            ax.set_ylabel("normalised amplitude")
-        ax.set_ylim(0, 1.12); ax.set_xticks(X)
-        ax.legend(loc="upper left", ncol=2)
+    for k in range(n, nrow * ncol):
+        axs[k // ncol, k % ncol].axis("off")
     fig.suptitle("Per-tip-position chain: straight-rod tip vs cone tip vs measurement (A = 180 nm, h_min = 10 nm, 3 µm spot, 25 V)", fontsize=13)
     fig.savefig(out, dpi=140)
     return out
