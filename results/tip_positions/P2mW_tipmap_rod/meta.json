@@ -1,0 +1,22 @@
+{
+ "P_avg_mW": 2.0,
+ "degenerate": true,
+ "T": 300,
+ "V_bias": 25,
+ "V_tip": 0,
+ "heights_nm": [
+  10
+ ],
+ "X": [
+  -7.5,
+  -5.0,
+  -2.5,
+  0.0,
+  2.5,
+  5.0,
+  7.5
+ ],
+ "fdtd": "results/fdtd_pump/heights_rod",
+ "t_end_ps": 4.0,
+ "tip_shape": "rod"
+}
