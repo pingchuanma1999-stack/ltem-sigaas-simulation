@@ -46,6 +46,8 @@ class FDTDConfig:
     tip_radius: float = 40e-9
     tip_half_angle_deg: float = 15.0
     tip_gap: float = 20e-9          # apex–surface distance
+    tip_shape: str = "cone"         # "cone": apex sphere + cone of tip_half_angle_deg; "rod": apex sphere + straight
+                                    #   shank of width 2 * tip_radius (half-angle unused)
     tip_x: float = 0.0
     eps_inf_tip: float = 1.0
     omega_p_tip: float = 1.86e16    # rad/s   (single-frequency Drude fit, see docs)
@@ -105,6 +107,10 @@ def run(cfg: FDTDConfig, verbose=True) -> FDTDResult:
         th = np.radians(cfg.tip_half_angle_deg)
         zc_apex = cfg.tip_gap + R
         sphere = (X - cfg.tip_x) ** 2 + (Z - zc_apex) ** 2 <= R ** 2
+        if cfg.tip_shape == "rod":
+            return sphere | ((Z >= zc_apex) & (np.abs(X - cfg.tip_x) <= R))
+        if cfg.tip_shape != "cone":
+            raise ValueError("tip_shape must be 'cone' or 'rod'")
         z_t = zc_apex + R * np.sin(th)
         cone = (Z >= z_t) & (np.abs(X - cfg.tip_x) <= R * np.cos(th) + (Z - z_t) * np.tan(th))
         return sphere | cone

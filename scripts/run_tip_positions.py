@@ -32,10 +32,10 @@ def load_ratio_file(path):
 
 
 def simulate(out, fdtd="none", P_avg_mW=2.0, degenerate=1.0, T=300.0, V_bias=25.0, V_tip=0.0, heights=HEIGHTS_NM,
-             x_list=X_LIST, t_end_ps=4.0):
+             x_list=X_LIST, t_end_ps=4.0, tip_shape="cone"):
     os.makedirs(out, exist_ok=True)
     meta = dict(P_avg_mW=P_avg_mW, degenerate=bool(degenerate), T=T, V_bias=V_bias, V_tip=V_tip, heights_nm=list(heights),
-                X=list(x_list), fdtd=fdtd, t_end_ps=t_end_ps)
+                X=list(x_list), fdtd=fdtd, t_end_ps=t_end_ps, tip_shape=tip_shape)
     json.dump(meta, open(os.path.join(out, "meta.json"), "w"), indent=1)
     for X in x_list:
         for h in heights:
@@ -50,7 +50,7 @@ def simulate(out, fdtd="none", P_avg_mW=2.0, degenerate=1.0, T=300.0, V_bias=25.
                 time.sleep(1)
                 ratio_map = load_ratio_file(rf)
             cfg = PulseConfig(P_avg_mW=P_avg_mW, x_beam_um=X, t_end_ps=t_end_ps, degenerate_diffusion=bool(degenerate), T=T,
-                              V_bias=V_bias, tip_in_poisson=True, tip_height_nm=h, V_tip=V_tip)
+                              V_bias=V_bias, tip_in_poisson=True, tip_height_nm=h, V_tip=V_tip, tip_shape=tip_shape)
             sim = PulseSim(cfg, verbose=False)
             N = sim.generation_profile(ratio_map)
             t0 = time.time()
@@ -117,7 +117,8 @@ def demod(out, A_nm=180.0, h_min_nm=10.0, harmonics=(1, 2, 3, 4), f_cut_thz=2.2,
         xm = m["X_um"] if Vb == 25 else -np.asarray(m["X_um"])
         ax.errorbar(xm, m["rms"], yerr=m["rms_err"], fmt=mk, color=col, capsize=3, label=f"measured {Vb:+d} V" + ("" if Vb == 25 else " (X→−X)"))
     ax.set_xlabel("X (µm)"); ax.set_ylabel("band-limited amplitude (0.3-2 THz), normalised"); ax.set_title("(c) amplitude vs X"); ax.legend(fontsize=7)
-    fig.suptitle(f"per-tip-position chain: {meta['P_avg_mW']:g} mW, {meta['V_bias']:g} V, V_tip = {meta['V_tip']:g} V, "
+    shape = {"rod": "straight-rod tip (2R = 80 nm)", "cone": "cone tip (15°)"}[meta.get("tip_shape", "cone")]
+    fig.suptitle(f"per-tip-position chain: {meta['P_avg_mW']:g} mW, {meta['V_bias']:g} V, V_tip = {meta['V_tip']:g} V, {shape}, "
                  f"{'FDTD tip map' if meta['fdtd'] not in (None, 'none') else 'symmetric pump'}, A = {A_nm:g} nm, h_min = {h_min_nm:g} nm")
     fig.savefig(os.path.join(out, f"tip_positions_A{A_nm:g}.png"), dpi=130)
     return summ
@@ -128,7 +129,7 @@ if __name__ == "__main__":
     kw = {}
     for a in sys.argv[2:]:
         k, v = a.split("=")
-        if k in ("out", "fdtd"):
+        if k in ("out", "fdtd", "tip_shape"):
             kw[k] = v
         elif k in ("heights", "x_list"):
             kw[k] = tuple(float(x) for x in v.split(","))

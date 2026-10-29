@@ -213,3 +213,41 @@ Same analysis as for the measured ±25 V traces (FFT phase in 0.25–1.6 THz, fi
   only near V_tip ≈ 4 V (E/O ≈ 0.7), where one member of the pair is 4× weaker. The measured mirror pairs are
   ≈ 90° apart with equal amplitudes, which needs a term in quadrature (differing by one time derivative) — not
   present in the chain. Table: `results/tip_positions/waveform_phase_table.txt`.
+
+## Straight-rod tip (2026-10-29, `tip_shape="rod"` in `FDTDConfig` / `PulseConfig`; `scripts/compare_tip_shape.py`, `scripts/fig_fdtd_tip_shape.py`)
+
+The rod is the apex sphere (R = 40 nm) plus a straight shank of width 2R = 80 nm (the Poisson grid resolves it as one
+0.1 µm column; the cone widens to a 7.65 µm half-width at the top of the 30 µm air box). Same settings as the cone runs
+otherwise (3 µm spot, degenerate diffusion 300 K, anode at −x, A = 180 nm, h_min = 10 nm, band-limited amplitude).
+
+Band-limited amplitude, n = 3, normalised (X = −7.5 … +7.5 µm):
+
+| variant | cone | rod |
+|---|---|---|
+| 2 mW, grounded tip, symmetric pump | 0.39 / 1.00 / 0.46 / 0.13 / 0.26 / 0.88 / 0.42 | 0.40 / 1.00 / 0.47 / 0.13 / 0.26 / 0.88 / 0.42 |
+| 2 mW, V_tip = +12.5 V, symmetric pump | 0.06 / 0.57 / 0.54 / 0.53 / 0.74 / 1.00 / 0.29 | 0.06 / 0.57 / 0.54 / 0.54 / 0.75 / 1.00 / 0.29 |
+| 30 mW, grounded tip, symmetric pump, X = ±5 only | −5 : +5 = 1.00 : 0.76 | 1.00 : 0.76 |
+| 2 mW, FDTD pump map of the same shape (beam → +x) | 0.43 / 1.00 / 0.45 / 0.18 / 0.37 / 0.48 / 0.28 | 0.48 / 1.00 / 0.47 / 0.18 / 0.39 / 0.58 / 0.31 |
+| 30 mW, FDTD pump map (beam → +x) | 0.86 / 1.00 / 0.46 / 0.17 / 0.25 / 0.90 / 0.42 | 0.83 / 1.00 / 0.46 / 0.25 / 0.24 / 0.96 / 0.49 |
+| 2 mW, rod map mirrored (beam → −x, shadow on −X) | — | 0.35 / 0.75 / 0.66 / 0.37 / 0.41 / 1.00 / 0.58 |
+| measured +25 V | – / ≈0 / – / 0.24 / 0.59 / 1.00 / 0.15 | |
+
+* **Carrier/Poisson stage: no difference.** With the tip as an equipotential body, the rod and the cone give the same
+  demodulated scans to 1 % (normalised) and 1–3 % (absolute, rod slightly larger); the raw induced charge Q_tip(t) at
+  X = +5, h = 10 nm differs by 0.6 %. The (X, h)-dependent part of the induced charge comes from the apex region; the
+  shank (142 vs 1500 tip cells) contributes a nearly height-independent charge that the harmonic demodulation removes.
+  This also holds for the DC tip potential (V_tip = +12.5 V): the one-sidedness it produces comes from the apex field.
+* **Pump FDTD: smaller but not vanishing shadow.** Absorbed fraction with the rod 0.635 (h = 10 nm) … 0.659 (370 nm),
+  with the wedge 0.45 … 0.52, no tip 0.73 (`results/fdtd_pump/fdtd_tip_shape.png`). In 2-D the rod is still a metal
+  sheet along y, so the +x side stays shadowed (column generation 0.03–0.06 at x = 0.5–1.5 µm vs 0.01–0.03 for the
+  wedge); the shadow ends by x ≈ 3 µm instead of beyond 4 µm, and the −x reflection bands off the flat shank are
+  stronger (up to 5–6× vs 3×). A real 80 nm cylinder shadows only an ~80 nm stripe of the ~2 µm (y) spot, so the 2-D
+  rod map remains an upper bound; a BOR/3-D FDTD is needed for the real number.
+* **Through the chain** the rod map restores part of the X = +5 lobe at 2 mW (0.58 vs 0.48 with the wedge map, 0.88
+  without a map); at 30 mW the density cap flattens the spot and the two maps give the same scan.
+* **Shadow side.** The maps assume the beam travelling toward +x, which shadows the X > 0 (anode-side) positions —
+  the side the measurement finds strongest. The user's experimental hypothesis (Oct 23) is that the tip shadows the
+  pump at −X, i.e. the beam travels toward −x. With the rod map mirrored the scan becomes 0.35 / 0.75 / 0.66 / 0.37 /
+  0.41 / 1.00 / 0.58: the anode side wins (as measured), the cathode lobe is reduced to 0.75 (measured ≈ 0) and the
+  centre and ±2.5 positions are lifted by the reflection bands. The beam direction relative to the electrodes must be
+  recorded.

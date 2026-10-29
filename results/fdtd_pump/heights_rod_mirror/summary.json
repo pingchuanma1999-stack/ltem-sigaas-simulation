@@ -1,0 +1,44 @@
+{
+ "10": {
+  "absorbed_fraction": 0.6352250297637737,
+  "surface_ratio_under_apex": 0.9411082980712203
+ },
+ "15": {
+  "absorbed_fraction": 0.6372896937237312,
+  "surface_ratio_under_apex": 1.0898285651686452
+ },
+ "25": {
+  "absorbed_fraction": 0.6358354171942782,
+  "surface_ratio_under_apex": 0.9246939412537849
+ },
+ "45": {
+  "absorbed_fraction": 0.6375956431998945,
+  "surface_ratio_under_apex": 0.9953716221581874
+ },
+ "80": {
+  "absorbed_fraction": 0.6371112390980945,
+  "surface_ratio_under_apex": 0.9234274408826565
+ },
+ "130": {
+  "absorbed_fraction": 0.6378919451736145,
+  "surface_ratio_under_apex": 0.8989856936251786
+ },
+ "200": {
+  "absorbed_fraction": 0.6413319010366255,
+  "surface_ratio_under_apex": 0.8632888368207877
+ },
+ "270": {
+  "absorbed_fraction": 0.6480173139071871,
+  "surface_ratio_under_apex": 0.8611119984361384
+ },
+ "330": {
+  "absorbed_fraction": 0.6549041745880496,
+  "surface_ratio_under_apex": 0.8772640866790715
+ },
+ "370": {
+  "absorbed_fraction": 0.6586003717660374,
+  "surface_ratio_under_apex": 0.8919785601909859
+ },
+ "tip_shape": "rod",
+ "note": "x-mirrored copy of heights_rod: beam travelling toward -x (shadow on the -x side of the tip)"
+}

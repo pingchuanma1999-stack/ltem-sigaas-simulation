@@ -9,9 +9,9 @@ from ltemsim.optics_fdtd import FDTDConfig, run
 HEIGHTS_NM = (10, 15, 25, 45, 80, 130, 200, 270, 330, 370)
 
 
-def main(out="results/fdtd_pump/heights", heights=HEIGHTS_NM, ref="results/fdtd_pump/notip.npz"):
+def main(out="results/fdtd_pump/heights", heights=HEIGHTS_NM, ref="results/fdtd_pump/notip.npz", tip_shape="cone"):
     os.makedirs(out, exist_ok=True)
-    base = dict(dx=15e-9, x_half=4.0e-6, z_min=-3.0e-6, z_max=2.5e-6, z_source=2.2e-6)
+    base = dict(dx=15e-9, x_half=4.0e-6, z_min=-3.0e-6, z_max=2.5e-6, z_source=2.2e-6, tip_shape=tip_shape)
     rn = np.load(ref, allow_pickle=True)
     Qn = rn["Q"]
     summary = {}
@@ -27,6 +27,7 @@ def main(out="results/fdtd_pump/heights", heights=HEIGHTS_NM, ref="results/fdtd_
         k0 = np.argmin(np.abs(r.z + 0.02e-6)); i0 = np.argmin(np.abs(r.x))
         summary[int(h)] = dict(absorbed_fraction=float(r.absorbed_energy / rn["launched"]), surface_ratio_under_apex=float(ratio[i0, k0]))
         print(f"h = {h} nm: absorbed {summary[int(h)]['absorbed_fraction']:.3f}, ratio under apex {summary[int(h)]['surface_ratio_under_apex']:.2f}, {time.time()-t0:.0f}s", flush=True)
+    summary["tip_shape"] = tip_shape
     with open(os.path.join(out, "summary.json"), "w") as fh:
         json.dump(summary, fh, indent=1)
 

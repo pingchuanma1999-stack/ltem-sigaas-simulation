@@ -46,6 +46,33 @@ python scripts/sweep.py power          # P_avg = 0.5 ... 8 mW
 
 Every `Params` field can be given on the command line as `name=value`.
 
+## Desktop GUI (桌面界面)
+
+`ltemsim_gui/` is a PySide6 desktop app around the solver and scripts: parameter forms with the
+units/ranges/sources from `params.py`, background runs with live progress and logs, an interactive
+solution explorer (2-D maps, line cuts, depth profiles, tip scans, multi-solution comparison), result
+pages for the single-pulse chain / pump FDTD / tip-position chain / sweeps, a results browser, the
+measured-data editor and a task center. GUI runs write to `results/gui_runs/<kind>_<time>/` and never
+overwrite the committed results unless you choose a folder.
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements-gui.txt   # numpy >= 2 is required
+.venv/bin/python -m ltemsim_gui                                          # start the GUI
+.venv/bin/python tools/make_macos_app.py                                 # build ~/Applications/LTEM Sim.app
+```
+
+The `.app` is a thin launcher for this checkout (code changes apply on the next start); rebuild it if
+the folder moves. Log: `~/Library/Logs/LTEMSim.log`.
+
+Multi-core: one steady-state solve runs on one core (96 % of its time is SciPy's single-threaded sparse LU;
+UMFPACK/MUMPS gave ≤ 1.2× for these 52k-unknown 2-D Jacobians), so the GUI runs the independent solves
+of a job in parallel instead (`ltemsim_gui/parallel.py`: sweep values, pulse-chain beam positions,
+tip-chain (X, h) runs, the three pump-FDTD runs, FDTD tip heights). Results are identical to the
+sequential scripts. On an 18-core M5 Pro, 18 concurrent coarse solves give 10× the throughput of one.
+
+Tip shape: `FDTDConfig.tip_shape` and `PulseConfig.tip_shape` take `"cone"` (default, as in the committed
+results) or `"rod"` — the apex sphere plus a straight shank of width 2R. The GUI uses the rod by default.
+
 ## Geometry and conventions
 
 * x along the bias field, z vertical, GaAs at z < 0; thin Au electrodes on the

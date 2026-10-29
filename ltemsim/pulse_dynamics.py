@@ -87,6 +87,7 @@ class PulseConfig:
     tip_height_nm: float = 100.0      # apex-surface distance
     tip_half_angle_deg: float = 15.0
     tip_apex_radius_um: float = 0.04
+    tip_shape: str = "cone"           # "cone" (half-angle above) or "rod": straight shank of width 2 * tip_apex_radius_um
     V_tip: float = 0.0                # tip potential relative to the gap midpoint (V); 0 = grounded tip, symmetric bias
     applied_vertical: bool = True     # False: drop the vertical component of the applied (electrode) field -> isolates field-line bending
     # run
@@ -200,8 +201,13 @@ class PulseSim:
         zb = g.ze[:-1]                                     # bottom edge of each cell row (um)
         rows = np.where((zb >= h - 1e-9) & (np.arange(g.Nz) >= g.ks))[0]
         cells = []
+        if cfg.tip_shape not in ("cone", "rod"):
+            raise ValueError("tip_shape must be 'cone' or 'rod'")
         for k in rows:
-            half = max(R, R + (g.zc[k] - h - R) * np.tan(th)) if g.zc[k] > h + R else R
+            if cfg.tip_shape == "rod":
+                half = R
+            else:
+                half = max(R, R + (g.zc[k] - h - R) * np.tan(th)) if g.zc[k] > h + R else R
             half = max(half, 0.5 * g.dx[np.argmin(np.abs(g.xc - cfg.tip_x_um))] + 1e-9)
             cols = np.where(np.abs(g.xc - cfg.tip_x_um) <= half)[0]
             cells.append(k * g.Nx + cols)
