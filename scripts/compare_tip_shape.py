@@ -103,7 +103,7 @@ def figure(pairs, out):
             ax.plot(X, sr["rms_norm"][f"det{h}"], MARK[h] + "-", color=HARM[h], ms=6, lw=1.6, label=f"rod, n = {h}")
         ax.plot(X, sr["rms_norm"]["far"], "x:", color=C["grey"], ms=7, lw=1.4, label="rod, far field dJ/dt")
         plot_measured(ax)
-        ax.set_title(f"({'efgh'[j]}) rod tip, harmonics 1–4")
+        ax.set_title(f"({'abcdefgh'[n + j]}) rod tip, harmonics 1–4")
         ax.set_xlabel("X (µm)")
         if j == 0:
             ax.set_ylabel("normalised amplitude")
