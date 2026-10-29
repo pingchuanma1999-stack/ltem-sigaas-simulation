@@ -1,6 +1,6 @@
 # Straight-rod tip vs cone tip (per-tip-position chain)
 
-## 2 mW, grounded tip, symmetric pump
+## 2 mW, grounded tip, symmetric pump (no FDTD map)
 | run | X = -7.5 | X = -5 | X = -2.5 | X = +0 | X = +2.5 | X = +5 | X = +7.5 | abs. max (n=3) |
 |---|---|---|---|---|---|---|---|---|
 | cone, n = 1 | 0.61 | 1.00 | 0.44 | 0.13 | 0.24 | 0.87 | 0.62 | |
@@ -15,7 +15,7 @@
 | rod, far field dJ/dt | 0.76 | 1.00 | 0.99 | 0.95 | 0.97 | 0.99 | 0.79 | |
 | rod / cone, absolute n = 3 maximum |  |  |  |  |  |  |  | 1.03 |
 
-## 2 mW, tip at anode potential (+12.5 V)
+## 2 mW, tip at the anode potential (V_tip = +12.5 V), symmetric pump
 | run | X = -7.5 | X = -5 | X = -2.5 | X = +0 | X = +2.5 | X = +5 | X = +7.5 | abs. max (n=3) |
 |---|---|---|---|---|---|---|---|---|
 | cone, n = 1 | 0.04 | 0.45 | 0.41 | 0.44 | 0.64 | 1.00 | 0.46 | |
@@ -60,7 +60,7 @@
 | rod, far field dJ/dt | 0.75 | 0.74 | 0.95 | 0.96 | 0.97 | 1.00 | 0.68 | |
 | rod / cone, absolute n = 3 maximum |  |  |  |  |  |  |  | 1.01 |
 
-## 2 mW, rod map mirrored (beam → −x, shadow on −X)
+## 2 mW, rod FDTD map mirrored: beam → −x, shadow on −X (dashed: cone map, beam → +x)
 | run | X = -7.5 | X = -5 | X = -2.5 | X = +0 | X = +2.5 | X = +5 | X = +7.5 | abs. max (n=3) |
 |---|---|---|---|---|---|---|---|---|
 | cone, n = 1 | 0.67 | 1.00 | 0.46 | 0.18 | 0.49 | 0.59 | 0.46 | |
@@ -68,5 +68,11 @@
 | cone, n = 3 | 0.43 | 1.00 | 0.45 | 0.18 | 0.37 | 0.48 | 0.28 | 4.659e+14 |
 | cone, n = 4 | 0.42 | 1.00 | 0.53 | 0.21 | 0.42 | 0.53 | 0.27 | |
 | cone, far field dJ/dt | 0.68 | 0.81 | 0.78 | 0.95 | 1.00 | 0.82 | 0.60 | |
+| rod, n = 1 | 0.55 | 0.79 | 0.75 | 0.38 | 0.37 | 1.00 | 0.81 | |
+| rod, n = 2 | 0.39 | 0.75 | 0.70 | 0.39 | 0.41 | 1.00 | 0.65 | |
+| rod, n = 3 | 0.35 | 0.75 | 0.66 | 0.37 | 0.41 | 1.00 | 0.58 | 4.273e+14 |
+| rod, n = 4 | 0.34 | 0.78 | 0.69 | 0.36 | 0.38 | 1.00 | 0.55 | |
+| rod, far field dJ/dt | 0.58 | 0.81 | 1.00 | 0.91 | 0.79 | 0.81 | 0.74 | |
+| rod / cone, absolute n = 3 maximum |  |  |  |  |  |  |  | 0.92 |
 measured +25 V: X = +0: 0.24 ± 0.08, X = +2.5: 0.59 ± 0.07, X = +5: 1.00 ± 0.08, X = +7.5: 0.15 ± 0.04
 measured -25 V: X = +7.5: 0.15 ± 0.05, X = +5: 0.45 ± 0.04, X = +2.5: 0.52 ± 0.10, X = +0: 0.33 ± 0.10, X = -2.5: 0.20 ± 0.10, X = -5: 0.32 ± 0.10  (X → −X)

@@ -32,11 +32,11 @@ plt.rcParams.update({"axes.unicode_minus": False, "axes.spines.top": False, "axe
                      "font.size": 11.5, "axes.titlesize": 12.5, "axes.labelsize": 11.5, "legend.fontsize": 9.5,
                      "savefig.facecolor": "white", "figure.facecolor": "white", "axes.facecolor": "white"})
 
-DEFAULT_PAIRS = (("2 mW, grounded tip, symmetric pump", "P2mW_sym", "P2mW_sym_rod"),
-                 ("2 mW, tip at anode potential (+12.5 V)", "P2mW_sym_Vtip12", "P2mW_sym_Vtip12_rod"),
-                 ("2 mW, grounded tip, FDTD pump map (beam → +x)", "P2mW_tipmap", "P2mW_tipmap_rod"),
-                 ("30 mW, grounded tip, FDTD pump map (beam → +x)", "P30mW_tipmap", "P30mW_tipmap_rod"),
-                 ("2 mW, rod map mirrored (beam → −x, shadow on −X)", "P2mW_tipmap", "P2mW_tipmap_rod_mirror"))
+DEFAULT_PAIRS = (("2 mW, grounded tip,\nsymmetric pump (no FDTD map)", "P2mW_sym", "P2mW_sym_rod"),
+                 ("2 mW, tip at the anode potential\n(V_tip = +12.5 V), symmetric pump", "P2mW_sym_Vtip12", "P2mW_sym_Vtip12_rod"),
+                 ("2 mW, grounded tip,\nFDTD pump map (beam → +x)", "P2mW_tipmap", "P2mW_tipmap_rod"),
+                 ("30 mW, grounded tip,\nFDTD pump map (beam → +x)", "P30mW_tipmap", "P30mW_tipmap_rod"),
+                 ("2 mW, rod FDTD map mirrored: beam → −x,\nshadow on −X (dashed: cone map, beam → +x)", "P2mW_tipmap", "P2mW_tipmap_rod_mirror"))
 
 measured = load_measured(os.path.join(ROOT, "data", "measured_tip_scan.csv"))
 
@@ -60,7 +60,7 @@ def table(pairs):
         sc, sr = load(cone), load(rod)
         if sc is None and sr is None:
             continue
-        lines.append(f"\n## {label}")
+        lines.append(f"\n## {label.replace(chr(10), ' ')}")
         X = (sr or sc)["X"]
         lines.append("| run | " + " | ".join(f"X = {x:+g}" for x in X) + " | abs. max (n=3) |")
         lines.append("|---|" + "---|" * (len(X) + 1))
@@ -99,9 +99,13 @@ def figure(pairs, out):
         if j % ncol == 0:
             ax.set_ylabel("band-limited amplitude (0.3–2 THz), normalised")
         ax.set_ylim(0, 1.12); ax.set_xticks(X)
-        ax.legend(loc="upper left")
+    handles, labels = axs[0, 0].get_legend_handles_labels()
     for k in range(n, nrow * ncol):
         axs[k // ncol, k % ncol].axis("off")
+    if n < nrow * ncol:                       # legend in the empty slot
+        axs[-1, -1].legend(handles, labels, loc="center", fontsize=11.5, labelspacing=1.1)
+    else:
+        fig.legend(handles, labels, loc="outside lower center", ncol=5, fontsize=10.5)
     fig.suptitle("Per-tip-position chain: straight-rod tip vs cone tip vs measurement (A = 180 nm, h_min = 10 nm, 3 µm spot, 25 V)", fontsize=13)
     fig.savefig(out, dpi=140)
     return out
