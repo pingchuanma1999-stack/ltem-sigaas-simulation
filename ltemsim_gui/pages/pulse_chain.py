@@ -6,14 +6,16 @@ near field above the tip -> FDM tip scattering + tapping demodulation, scanned o
 from __future__ import annotations
 
 import csv
+import functools
 import json
 import re
+import threading
 import time
 from pathlib import Path
 
 import matplotlib
 import numpy as np
-from PySide6.QtCore import QRect, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QRect, QSize, Qt, QTimer
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFrame,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLayout, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSplitter,
@@ -25,6 +27,7 @@ from ..jobs import FINISHED, JobManager
 from ..paramspec import FieldSpec
 from ..theme import ThemeManager
 from ..widgets.common import MetricTile, Page, button, card, error_box, label, reveal
+from ..widgets.device import FieldView, device_from_pulse, draw_device
 from ..widgets.imageview import ImageView
 from ..widgets.mpl import PlotWidget
 from ..widgets.paramform import ParamForm
@@ -38,6 +41,7 @@ EST_RANGE = (0.45, 1.8)          # this machine: ~13 s per X (1.7 ms/step); repo
 # lowpass() convolves with an 83-sample kernel (mode="same" returns max(len) samples); traces shorter than that
 # (t_end < 0.415 ps at 5 fs sampling) make the script's overview figure fail with a shape mismatch
 T_END_MIN = 0.5
+DEV_NARROW = 640                 # px: below this canvas width (or below 1.5 × its height) the device panels are stacked
 DEFAULT_RUN = "P2mW_notipmap_degen"
 CHAIN_SCRIPT = "scripts/run_pulse_chain.py"
 X_RE = re.compile(r"^X([+-]?\d+(?:\.\d+)?)\.npz$")
@@ -48,33 +52,50 @@ LEGACY_DEFAULTS = {"w_um": 3.0, "V_bias": 25.0, "T": 300.0, "degenerate": False}
 def chain_specs() -> list[FieldSpec]:
     S = FieldSpec
     return [
-        S("P_avg_mW", 2.0, "float", "平均功率 P_avg", "mW",
-          "80 MHz 下的平均泵浦功率。每脉冲载流子密度在 n_sat = 2×10¹⁹ cm⁻³ 处软饱和（吸收饱和）。",
-          "激发与偏压", minimum=1e-6),
-        S("V_bias", 25.0, "float", "偏压 V_bias", "V",
-          "间隙偏压，阳极在 −x。0 V 给出与偏压无关的偶项；负值为反向极性。", "激发与偏压"),
-        S("w_um", 3.0, "float", "光斑半径 w (1/e²)", "µm",
-          "沿 x 的 1/e² 强度半径。实测形状要求有效半径 3–4 µm；w = 7 µm 时每个 X 约慢一倍。", "激发与偏压", minimum=0.2),
-        S("T", 300.0, "float", "载流子温度 T", "K",
-          "设定扩散 kT/q 与 N_c。物理上预期 T_e ≈ 600–800 K；1500 K 时已不简并。", "输运", minimum=1.0),
-        S("degenerate", False, "bool", "简并扩散 (Fermi–Dirac)", "",
-          "广义 Einstein 关系 D = μ(kT/q)·F₁/₂(η)/F₋₁/₂(η)，只在高密度核心起作用。脚本默认关闭（经典扩散）。", "输运"),
-        S("x_list", X_DEFAULT, "tuple", "光束位置 X 列表", "µm",
-          "光斑中心相对针尖的位置，逗号分隔，精度 0.1 µm（结果文件名为 X{X:+.1f}.npz）。"
-          "每个 X 是一次完整的单脉冲模拟（t_end = 4 ps 时约 15–55 s，视机器而定）。只有 X = 0 那一次会输出时间进度。", "扫描"),
-        S("t_end_ps", 4.0, "float", "模拟时长 t_end", "ps",
-          f"显式时间步 0.5 fs；耗时与 t_end 成正比。至少 {T_END_MIN:g} ps：脚本对每条曲线做 2.2 THz 高斯低通"
-          "（卷积核 83 个采样 ≈ 0.41 ps），更短的时长会在作总览图时出错。", "扫描", minimum=T_END_MIN),
-        S("x_fine", "", "str", "细网格半宽 x_fine", "µm",
-          "0.1 µm 细网格覆盖 |x| ≤ x_fine。留空 = 自动 max(8, 2w + max|X| − 4)，保证每个 X 的光斑都在细网格内。",
-          "扫描", advanced=True),
-        S("A_nm", 180.0, "float", "轻敲振幅 A", "nm",
-          "h(θ) = h_min + A(1 + cos θ)，实验约 180 nm。只影响解调，可事后用「重新解调」改。", "针尖解调", minimum=1.0),
-        S("h_min_nm", 0.0, "float", "最小高度 h_min", "nm", "轻敲周期中的最小针尖高度。", "针尖解调",
-          advanced=True, minimum=0.0),
-        S("harmonics", (1, 2, 3, 4), "tuple", "解调谐波 n", "",
-          "Pizzuto FDM 约定下的锁相谐波。必须包含 2 和 3（脚本的进度输出和总览图要用）。", "针尖解调", advanced=True),
+        S("P_avg_mW", 2.0, "float", "Average power P_avg", "mW",
+          "Average pump power at 80 MHz. The per-pulse carrier density saturates softly at n_sat = 2×10¹⁹ cm⁻³ "
+          "(absorption saturation).", "Pump and bias", minimum=1e-6),
+        S("V_bias", 25.0, "float", "Bias V_bias", "V",
+          "Gap bias with the anode at −x. 0 V gives the bias-independent even term; negative values reverse the "
+          "polarity.", "Pump and bias"),
+        S("w_um", 3.0, "float", "Spot radius w (1/e²)", "µm",
+          "1/e² intensity radius along x. The measured shape needs an effective radius of 3–4 µm; with w = 7 µm "
+          "each X takes about twice as long.", "Pump and bias", minimum=0.2),
+        S("T", 300.0, "float", "Carrier temperature T", "K",
+          "Sets the diffusion kT/q and N_c. Physically T_e ≈ 600–800 K is expected; at 1500 K the carriers are "
+          "no longer degenerate.", "Transport", minimum=1.0),
+        S("degenerate", False, "bool", "Degenerate diffusion (Fermi–Dirac)", "",
+          "Generalised Einstein relation D = μ(kT/q)·F₁/₂(η)/F₋₁/₂(η); it matters only in the dense core. "
+          "Off by default in the script (classical diffusion).", "Transport"),
+        S("x_list", X_DEFAULT, "tuple", "Beam positions X", "µm",
+          "Spot centre relative to the tip, comma-separated, in steps of 0.1 µm (result files are named "
+          "X{X:+.1f}.npz). Each X is a complete single-pulse simulation (≈ 15–55 s at t_end = 4 ps, depending on "
+          "the machine). Only the X = 0 run reports its time progress.", "Beam scan"),
+        S("t_end_ps", 4.0, "float", "Simulated time t_end", "ps",
+          f"Explicit time step 0.5 fs; the run time scales with t_end. At least {T_END_MIN:g} ps: the script "
+          "low-passes every trace with a 2.2 THz Gaussian (83-sample kernel ≈ 0.41 ps), and shorter runs make the "
+          "overview figure fail.", "Beam scan", minimum=T_END_MIN),
+        S("x_fine", "", "str", "Fine-grid half-width x_fine", "µm",
+          "The 0.1 µm fine grid covers |x| ≤ x_fine. Empty = automatic, max(8, 2w + max|X| − 4), which keeps "
+          "the spot inside the fine grid at every X.", "Beam scan", advanced=True),
+        S("A_nm", 180.0, "float", "Tapping amplitude A", "nm",
+          "h(θ) = h_min + A(1 + cos θ); about 180 nm in the experiment. Affects only the demodulation, which can "
+          "be redone later under Redemodulation.", "Tip demodulation", minimum=1.0),
+        S("h_min_nm", 0.0, "float", "Minimum height h_min", "nm", "Lowest tip height in the tapping cycle.",
+          "Tip demodulation", advanced=True, minimum=0.0),
+        S("harmonics", (1, 2, 3, 4), "tuple", "Demodulation harmonics n", "",
+          "Lock-in harmonics in Pizzuto's FDM convention. Must include 2 and 3 (the script's progress output and "
+          "overview figure use them).", "Tip demodulation", advanced=True),
     ]
+
+
+def _stack_panels(w: int, h: int) -> bool:
+    return w < DEV_NARROW or w < 1.5 * h
+
+
+def auto_x_fine(w_um: float, xs) -> float:
+    """The script's default fine-grid half-width (older runs used a fixed 8 µm)."""
+    return max(8.0, 2.0 * w_um + max((abs(x) for x in xs), default=0.0) - 4.0)
 
 
 # ----------------------------------------------------------------------------- data helpers
@@ -156,16 +177,16 @@ def describe_run(st: dict) -> str:
     if "T" in st:
         parts.append(f"T = {st['T']:g} K{star('T')}")
     if "degenerate" in st:
-        parts.append(("简并扩散" if st["degenerate"] else "经典扩散") + star("degenerate"))
+        parts.append(("degenerate diffusion" if st["degenerate"] else "classical diffusion") + star("degenerate"))
     if "fdtd_ratio" in st:
-        parts.append("FDTD 针尖图" if st["fdtd_ratio"] else "无针尖图")
+        parts.append("FDTD tip map" if st["fdtd_ratio"] else "no tip map")
     if "A_nm" in st:
         parts.append(f"A = {st['A_nm']:g} nm" + (f", h_min = {st['h_min_nm']:g} nm" if st.get("h_min_nm") else ""))
     if "t_end_ps" in st:
         parts.append(f"t_end = {st['t_end_ps']:g} ps")
     if st.get("x_list"):
         xs = st["x_list"]
-        parts.append(f"X = {xs[0]:+g} µm" if len(xs) == 1 else f"{len(xs)} 个 X ({min(xs):+g} … {max(xs):+g} µm)")
+        parts.append(f"X = {xs[0]:+g} µm" if len(xs) == 1 else f"{len(xs)} positions X ({min(xs):+g} … {max(xs):+g} µm)")
     return " · ".join(parts)
 
 
@@ -248,6 +269,92 @@ def band_table(files: dict, A_nm=180.0, h_min_nm=0.0, harmonics=(1, 2, 3, 4), de
     return dict(X=np.array(Xs), n={n: np.array(v) for n, v in tab.items()}, far=np.array(far))
 
 
+# ----------------------------------------------------------------------------- applied field / generation maps
+_FIELD_CACHE: dict = {}
+_FIELD_LOCK = threading.Lock()
+
+
+def applied_field(V_bias: float, x_fine: float) -> dict:
+    """Bare-gap bias field on the chain's own grid (worker thread, cached per V_bias / x_fine): the Poisson
+    solution with the electrodes only, before the pulse. Its GaAs rows are PulseSim.Ex_app / Ez_app; the air
+    rows are kept so the map shows the whole cross-section. Fields in kV/cm, potential in V, arrays [z, x]."""
+    key = (round(float(V_bias), 6), round(float(x_fine), 6))
+    with _FIELD_LOCK:
+        hit = _FIELD_CACHE.get(key)
+    if hit is not None:
+        return hit
+    from ltemsim.pulse_dynamics import PulseConfig, PulseSim
+    sim = PulseSim(PulseConfig(V_bias=float(V_bias), x_fine=float(x_fine)), verbose=False)
+    g = sim.grid
+    psi = sim.solve_poisson(sim.b_applied, np.zeros(sim.top.N_all), applied=True)
+    Ex, Ez = sim.pois.field(psi)
+    k = sim.mat.sc.E0 * 1e-3                                   # scaled field -> kV/cm
+    cols = np.where(sim.top.electrode_mask)[0]
+    left, right = cols[g.xc[cols] < 0], cols[g.xc[cols] > 0]
+    electrodes = []
+    if left.size:
+        electrodes.append((float(g.xe[0]), float(g.xe[left.max() + 1])))
+    if right.size:
+        electrodes.append((float(g.xe[right.min()]), float(g.xe[-1])))
+    gap = (electrodes[0][1] if left.size else -sim.p.gap / 2, electrodes[-1][0] if right.size else sim.p.gap / 2)
+    out = dict(xe=g.xe.copy(), ze=g.ze.copy(), xc=g.xc.copy(), ks=int(g.ks), Ex=Ex * k, Ez=Ez * k,
+               V=(psi.reshape(g.Nz, g.Nx) - sim.mat.psi_eq) * sim.mat.sc.VT, electrodes=electrodes, gap=gap,
+               V_bias=float(V_bias), x_fine=float(x_fine))
+    with _FIELD_LOCK:
+        if len(_FIELD_CACHE) >= 12:
+            _FIELD_CACHE.pop(next(iter(_FIELD_CACHE)))
+        _FIELD_CACHE[key] = out
+    return out
+
+
+def load_generation(files: dict) -> dict:
+    """{X: (N, xc, zc)}: generation maps (pairs/cm³ per pulse, GaAs rows [z, x]) stored in X*.npz."""
+    out = {}
+    for X, p in files.items():
+        try:
+            with np.load(p) as d:
+                if {"N", "xc", "zc"} <= set(d.files):
+                    out[X] = (np.asarray(d["N"], float), np.asarray(d["xc"], float), np.asarray(d["zc"], float))
+        except Exception:           # unreadable / truncated file of an interrupted run
+            continue
+    return out
+
+
+@functools.lru_cache(maxsize=32)
+def grid_nx(x_fine: float) -> int:
+    """Number of x cells of the chain's grid (build_grid is cheap: no Poisson setup)."""
+    from ltemsim.pulse_dynamics import PulseConfig, build_grid
+    return int(build_grid(PulseConfig(x_fine=float(x_fine))).Nx)
+
+
+def _grid_matches(x_fine: float, xc) -> bool:
+    from ltemsim.pulse_dynamics import PulseConfig, build_grid
+    g = build_grid(PulseConfig(x_fine=float(x_fine)))
+    return g.xc.shape == np.shape(xc) and np.allclose(g.xc, xc, atol=1e-6)
+
+
+def _x_fine_from_xc(xc) -> float | None:
+    """Half-width of the 0.1 µm fine region of a stored grid."""
+    xc = np.asarray(xc, float)
+    fine = np.where(np.abs(np.diff(xc) - 0.1) < 1e-6)[0]
+    if fine.size == 0:
+        return None
+    return round(max(abs(xc[fine[0]]), abs(xc[fine[-1] + 1])) + 0.05, 4)
+
+
+def chain_field(V_bias: float, x_fine: float, files: dict) -> dict:
+    """Worker: a run's generation maps and the applied field on the grid they were computed on. Runs from before
+    the automatic x_fine used 8 µm, so the grid is recovered from the stored cell centres when the guess fails."""
+    gen = load_generation(files)
+    if gen:
+        xc = next(iter(gen.values()))[1]
+        if not _grid_matches(x_fine, xc):
+            alt = _x_fine_from_xc(xc)
+            if alt and _grid_matches(alt, xc):
+                x_fine = alt
+    return dict(field=applied_field(V_bias, x_fine), gen=gen, x_fine=float(x_fine))
+
+
 def redemod_name(A_nm, h_min_nm, ltem) -> str:
     return f"redemod_A{A_nm:g}_h{h_min_nm:g}{'_ltemfactor' if ltem else ''}.json"
 
@@ -256,7 +363,7 @@ def redemod_label(p: Path) -> str:
     m = re.match(r"redemod_A([\d.]+)_h([\d.]+)(_ltemfactor)?\.json$", p.name)
     if not m:
         return p.name
-    return f"A = {m.group(1)} nm, h_min = {m.group(2)} nm" + ("，LTEM (1−β) 因子" if m.group(3) else "")
+    return f"A = {m.group(1)} nm, h_min = {m.group(2)} nm" + (", LTEM (1−β) factor" if m.group(3) else "")
 
 
 def load_redemod(p: Path):
@@ -292,9 +399,11 @@ def metric_order(k):
 def metric_desc(k) -> str:
     m = re.match(r"(d?)S(\d)(_dt)?$", k)
     if m:
-        return f"dS{m.group(2)}/dt，第 {m.group(2)} 次谐波（探测波形）" if m.group(1) else f"S{m.group(2)}，第 {m.group(2)} 次谐波解调近场"
-    return {"dJx_dt": "远场参考 dJx/dt", "dJz_dt": "dJz/dt", "E_loc_mid": "裸近场 E_loc（h_min + A 处）",
-            "Jx": "横向电流 Jx", "Jz": "纵向电流 Jz", "Ex_center": "光斑中心表面 E_x", "n_center": "针尖下方表面密度"}.get(k, k)
+        n = m.group(2)
+        return f"dS{n}/dt, harmonic {n} (detected waveform)" if m.group(1) else f"S{n}, demodulated near field, harmonic {n}"
+    return {"dJx_dt": "far-field reference dJx/dt", "dJz_dt": "dJz/dt", "E_loc_mid": "bare near field E_loc at h_min + A",
+            "Jx": "lateral current Jx", "Jz": "vertical current Jz", "Ex_center": "surface E_x at the spot centre",
+            "n_center": "surface density below the tip"}.get(k, k)
 
 
 def trace_unit(key: str):
@@ -315,7 +424,7 @@ def trace_unit(key: str):
 def estimate(n_x: int, w_um: float, max_abs_x: float, x_fine, t_end_ps: float):
     """(typical, low, high, typical per X) seconds for a chain run; wall time ∝ Nx · t_end. Nx ≈ 2·x_fine/0.1 + 82
     (242 for the default x_fine = 8 µm, 470 for w = 7 µm); +2 s per X for the PulseSim setup."""
-    xf = x_fine if x_fine else max(8.0, 2.0 * w_um + max_abs_x - 4.0)
+    xf = x_fine if x_fine else auto_x_fine(w_um, (max_abs_x,))
     nx = 2.0 * xf / 0.1 + 82.0
     per = SEC_PER_X * (nx / 242.0) * (t_end_ps / 4.0) + 2.0
     return n_x * per, n_x * per * EST_RANGE[0], n_x * per * EST_RANGE[1], per
@@ -369,7 +478,8 @@ def _fit_table(tw: QTableWidget, rows_visible: int):
     h = tw.horizontalHeader()
     h.setMinimumSectionSize(46)
     h.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-    tw.setToolTip("列：光束位置 X (µm)，每行按自身最大值归一化；悬停单元格看原始值，最后一列为原始最大值")
+    tw.setToolTip("Columns: beam position X (µm). Each row is normalised to its own maximum; hover a cell for the raw "
+                  "value. The last column is the raw maximum.")
     if tw.columnCount():
         h.setSectionResizeMode(tw.columnCount() - 1, QHeaderView.ResizeMode.ResizeToContents)
     tw.setMinimumHeight(h.sizeHint().height() + min(rows_visible, 2) * tw.verticalHeader().defaultSectionSize() + 6)
@@ -485,6 +595,19 @@ class _Split(QSplitter):
         return self.minimumSizeHint()
 
 
+class _Tabs(QTabWidget):
+    """Tab widget whose preferred size is its minimum. Embedded plots ask for their figure size (≈ 700–900 × 480 px),
+    which made the app's page holder (a resizable QScrollArea that sizes the page by its preferred height for the
+    width) taller than the window, so the bottom of every plot was cut off. The height-for-width of the pages (wrapped
+    labels above a plot) is not passed up for the same reason; inside the tab it still applies."""
+
+    def sizeHint(self):
+        return self.minimumSizeHint()
+
+    def hasHeightForWidth(self):
+        return False
+
+
 def _scrollable(w: QWidget) -> QScrollArea:
     """Tab content that scrolls vertically when the window is too low for its controls plus a usable plot."""
     area = QScrollArea()
@@ -528,8 +651,8 @@ class _TileRow(QWidget):
         self.sync()
 
     def sync(self):
-        self._text.setText("　·　".join(f"{t.lab.text()} <b>{t.val.text()}</b>" for t in self._tiles))
-        self._text.setToolTip("\n".join(f"{t.lab.text()}：{t.val.text()}（{t.hint.text()}）" for t in self._tiles))
+        self._text.setText("&nbsp;&nbsp;·&nbsp;&nbsp;".join(f"{t.lab.text()} <b>{t.val.text()}</b>" for t in self._tiles))
+        self._text.setToolTip("\n".join(f"{t.lab.text()}: {t.val.text()} ({t.hint.text()})" for t in self._tiles))
 
     def compact(self) -> bool:
         return self._text.isVisibleTo(self)
@@ -544,9 +667,10 @@ class _TileRow(QWidget):
 
 # ----------------------------------------------------------------------------- page
 class PulseChainPage(Page):
-    title = "单脉冲发射链"
-    subtitle = ("单个泵浦脉冲：高斯光斑（可乘 FDTD 针尖图）→ 电子/空穴流体动力学 + Poisson → 针尖上方准静态近场 → "
-                "有限偶极子散射与轻敲解调（n = 1–4），扫描光斑-针尖位置 X 并与实测对比。")
+    title = "Single-pulse chain"
+    subtitle = ("One pump pulse: Gaussian spot (optionally × FDTD tip map) → electron/hole hydrodynamics + Poisson → "
+                "quasi-static near field above the tip → finite-dipole scattering and tapping demodulation (n = 1–4), "
+                "scanned over the beam–tip offset X and compared with the measurement.")
 
     def __init__(self):
         super().__init__()
@@ -564,8 +688,14 @@ class PulseChainPage(Page):
         self._gen = 0
         self._shown_once = False
         self._trace_pref = "dS3_dt"
+        self._dev_dirty = True
+        self._dev_narrow = False            # device panels drawn stacked (narrow canvas)
+        self._field_sel = ("", "")          # quantity and view last chosen in the field view
+        self._field_fam = False             # the field view shows a generation map
+        self._field_log = False             # log-scale choice for the field quantities (E, V)
+        self._field_quiet = False
 
-        self.run_btn = button("  运行发射链", self.run, "primary")
+        self.run_btn = button("  Run chain", self.run, "primary")
         self.header.add_action(self.run_btn)
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -576,18 +706,21 @@ class PulseChainPage(Page):
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(8)
         rl.addWidget(self._build_run_bar())
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_run_tab(), "运行")
+        self.tabs = _Tabs()
+        self.dev_tab = self._build_device_tab()
+        self.tabs.addTab(self.dev_tab, "Device")
+        self.run_tab = self._build_run_tab()
+        self.tabs.addTab(self.run_tab, "Run")
         self.res_tab = self._build_results_tab()
-        self.tabs.addTab(self.res_tab, "结果")
+        self.tabs.addTab(self.res_tab, "Results")
         self.wave_tab = self._build_wave_tab()
-        self.tabs.addTab(self.wave_tab, "波形")
+        self.tabs.addTab(self.wave_tab, "Waveforms")
         self.band_tab = self._build_band_tab()
-        self.tabs.addTab(self.band_tab, "频带指标")
+        self.tabs.addTab(self.band_tab, "Band metric")
         self.redemod_tab = self._build_redemod_tab()
-        self.tabs.addTab(self.redemod_tab, "重新解调")
+        self.tabs.addTab(self.redemod_tab, "Redemodulation")
         self.hist_tab = self._build_history_tab()
-        self.tabs.addTab(self.hist_tab, "历史结果")
+        self.tabs.addTab(self.hist_tab, "History")
         self.tabs.currentChanged.connect(self._on_tab)
         rl.addWidget(self.tabs, 1)
         split.addWidget(right)
@@ -600,6 +733,12 @@ class PulseChainPage(Page):
         self._band_timer.setSingleShot(True)
         self._band_timer.setInterval(350)
         self._band_timer.timeout.connect(lambda: self.tabs.currentWidget() is self.band_tab and self.compute_band())
+        self._dev_timer = QTimer(self)                 # the device diagram follows the form, debounced
+        self._dev_timer.setSingleShot(True)
+        self._dev_timer.setInterval(300)
+        self._dev_timer.timeout.connect(self._redraw_device)
+        self.form.changed.connect(self._dev_timer.start)
+        self.dev_plot.canvas.installEventFilter(self)
 
         self._update_estimate()
         self._retheme()
@@ -624,27 +763,29 @@ class PulseChainPage(Page):
         il.setContentsMargins(0, 0, 6, 0)
         il.setSpacing(6)
         self.form = ParamForm(chain_specs(), scroll=False)
-        self.form.rows["x_fine"].editor.setPlaceholderText("自动")
+        self.form.rows["x_fine"].editor.setPlaceholderText("auto")
         self.form.rows["x_list"].editor.setCursorPosition(0)
         self.form.changed.connect(self._update_estimate)
         il.addWidget(self.form)
 
-        g = QGroupBox("泵浦针尖图 (FDTD)")
+        g = QGroupBox("Pump tip map (FDTD)")
         gl = QVBoxLayout(g)
         gl.setContentsMargins(8, 10, 8, 6)
         gl.setSpacing(5)
         row = QHBoxLayout()
         self.fdtd_combo = QComboBox()
         self.fdtd_combo.setMinimumWidth(160)
-        self.fdtd_combo.setToolTip("生成率乘以 Q_tip/Q_notip（裁剪到 0–50，FDTD 区域外为 1）。始终显式传给脚本。")
+        self.fdtd_combo.setToolTip("Multiplies the generation rate by Q_tip/Q_notip (clipped to 0–50, 1 outside the FDTD "
+                                   "box). Always passed to the script explicitly.")
         row.addWidget(self.fdtd_combo, 1)
-        b = button("浏览…", self._browse_fdtd)
+        b = button("Browse…", self._browse_fdtd)
         row.addWidget(b)
         gl.addLayout(row)
-        hint = label("2-D 针尖是无限长的楔形，会挡住 +x 一侧的整束光，因此针尖图是遮挡效应的上限。"
-                     "文档中的主要结果（路线 1）不使用针尖图。", "muted", wrap=True)
+        hint = label("The 2-D tip is an infinitely long wedge that shadows the whole beam on its +x side, so the tip "
+                     "map is an upper bound of the shadowing. The main results in the docs (route 1) use no tip map.",
+                     "muted", wrap=True)
         gl.addWidget(hint)
-        gen = button("去「泵浦 FDTD」生成新的针尖图 →", lambda: nav.navigate("fdtd"), "flat")
+        gen = button("Make a new tip map on the Pump FDTD (optics) page →", lambda: nav.navigate("fdtd"), "flat")
         gen.setStyleSheet("text-align: left; padding-left: 0;")
         gl.addWidget(gen)
         il.addWidget(g)
@@ -656,18 +797,18 @@ class PulseChainPage(Page):
         el = QVBoxLayout(est)
         el.setContentsMargins(12, 8, 12, 8)
         el.setSpacing(2)
-        self.est_title = label("预计耗时 —", "cardTitle")
+        self.est_title = label("Estimated time —", "cardTitle")
         self.est_text = label("", "muted", wrap=True)
         el.addWidget(self.est_title)
         el.addWidget(self.est_text)
         ll.addWidget(est)
 
         orow = QHBoxLayout()
-        orow.addWidget(QLabel("输出文件夹"))
+        orow.addWidget(QLabel("Output folder"))
         self.out_edit = QLineEdit()
-        self.out_edit.setPlaceholderText("自动：results/gui_runs/pulse_<时间>")
+        self.out_edit.setPlaceholderText("auto: results/gui_runs/pulse_<time>")
         orow.addWidget(self.out_edit, 1)
-        b = QPushButton("选择…")
+        b = QPushButton("Choose…")
         b.clicked.connect(self._pick_out)
         orow.addWidget(b)
         ll.addLayout(orow)
@@ -682,14 +823,15 @@ class PulseChainPage(Page):
         bl.setSpacing(6)
         col = QVBoxLayout()
         col.setSpacing(1)
-        self.res_title = label("尚未载入结果", "cardTitle", selectable=True)
+        self.res_title = label("No result loaded", "cardTitle", selectable=True)
         self.res_info = label("", "muted", wrap=True, selectable=True)
         col.addWidget(self.res_title)
         col.addWidget(self.res_info)
         bl.addLayout(col, 1)
-        self.btn_params = button("载入此结果的参数", self._load_result_params, "flat",
-                                 "把该结果的设置填入左侧参数表（GUI 运行可完整恢复，仓库结果按 summary.json）")
-        self.btn_folder = button("打开文件夹", lambda: self.run_dir and reveal(self.run_dir), "flat")
+        self.btn_params = button("Load its parameters", self._load_result_params, "flat",
+                                 "Fill the form on the left with this result's settings (GUI runs are restored "
+                                 "completely, repository runs from summary.json)")
+        self.btn_folder = button("Show in Finder", lambda: self.run_dir and reveal(self.run_dir), "flat")
         bcol = QVBoxLayout()
         bcol.setSpacing(0)
         for b in (self.btn_params, self.btn_folder):
@@ -697,6 +839,20 @@ class PulseChainPage(Page):
         bcol.addStretch(1)
         bl.addLayout(bcol)
         return bar
+
+    def _build_device_tab(self):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(12, 10, 12, 12)
+        lay.setSpacing(6)
+        self.dev_note = label("", "muted", wrap=True)
+        lay.addWidget(self.dev_note)
+        self.dev_plot = PlotWidget(figsize=(9, 4.2))
+        self.dev_plot.setMinimumHeight(380)          # stacked panels on a narrow pane need it; the tab scrolls instead
+        split = _Split()
+        split.addWidget(self.dev_plot)
+        lay.addWidget(split, 1)
+        return _scrollable(w)
 
     def _build_run_tab(self):
         w = QWidget()
@@ -710,41 +866,76 @@ class PulseChainPage(Page):
     def _build_results_tab(self):
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setContentsMargins(8, 8, 8, 8)
+        self.res_sub = _Tabs()
+        self.res_sub.addTab(self._build_amp_tab(), "Amplitude vs X")
+        self.field_tab = self._build_field_tab()
+        self.res_sub.addTab(self.field_tab, "Electric field")
+        self.overview = ImageView()
+        self.res_sub.addTab(self.overview, "Overview figure")
+        self.res_sub.setTabToolTip(2, "pulse_chain.png written by the script")
+        lay.addWidget(self.res_sub, 1)
+        return w
+
+    def _build_amp_tab(self):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(8, 10, 8, 6)
         lay.setSpacing(8)
         self.metric_combo = QComboBox()
         self.metric_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.metric_combo.setMinimumContentsLength(24)
+        self.metric_combo.setMinimumContentsLength(22)
         self.metric_combo.currentIndexChanged.connect(self._metric_changed)
         self.stat_combo = QComboBox()
         self.stat_combo.addItem("RMS", "rms")
-        self.stat_combo.addItem("峰值", "peak")
-        self.stat_combo.setToolTip("summary.json 中 2.2 THz 高斯低通后的 RMS 或峰值（旧指标；推荐对比见「频带指标」）")
+        self.stat_combo.addItem("Peak", "peak")
+        self.stat_combo.setToolTip("RMS or peak of the 2.2 THz Gaussian low-passed trace in summary.json (legacy metric; "
+                                   "the recommended comparison is under Band metric)")
         self.stat_combo.currentIndexChanged.connect(self._metric_changed)
-        self.cb_family = QCheckBox("叠加全部谐波")
+        self.cb_family = QCheckBox("All harmonics")
+        self.cb_family.setToolTip("Overlay the same quantity for every harmonic n")
         self.cb_family.toggled.connect(lambda *_: self.xscan_plot.plot(self._draw_xscan))
-        self.cb_neg = QCheckBox("−25 V 实测 (X → −X)")
+        self.cb_neg = QCheckBox("−25 V data (X → −X)")
+        self.cb_neg.setToolTip("Show the measured −25 V scan mirrored to X → −X")
         self.cb_neg.setChecked(True)
         self.cb_neg.toggled.connect(lambda *_: self.xscan_plot.plot(self._draw_xscan))
-        lay.addLayout(_flow(_group("指标", self.metric_combo, self.stat_combo, spacing=8), self.cb_family, self.cb_neg))
+        lay.addLayout(_flow(_group("Metric", self.metric_combo, self.stat_combo, spacing=8), self.cb_family, self.cb_neg))
 
-        self.m_peak = MetricTile("峰值位置 X", "—", "实测：+5 µm")
-        self.m_ratio = MetricTile("X = +5 / X = −5", "—", "实测：≫ 1")
-        self.m_zero = MetricTile("X = 0（归一化）", "—", "实测：0.24")
-        self.m_dev = MetricTile("与 +25 V 实测的偏差", "—", "实测点上的 RMS 差")
+        self.m_peak = MetricTile("Peak position X", "—", "measured: +5 µm")
+        self.m_ratio = MetricTile("X = +5 / X = −5", "—", "measured: ≫ 1")
+        self.m_zero = MetricTile("X = 0 (normalised)", "—", "measured: 0.24")
+        self.m_dev = MetricTile("Deviation from data", "—", "RMS difference at the measured points")
         for m in (self.m_peak, self.m_ratio, self.m_zero, self.m_dev):
-            m.setToolTip("按左上「指标」所选的量计算；实测指 data/measured_tip_scan.csv 的 +25 V 扫描")
-        self.m_ratio.setToolTip(self.m_ratio.toolTip() + "（+25 V 实测在 X = −5 µm 处 ≈ 0）")
+            m.setToolTip("Computed from the metric selected above; “measured” is the +25 V scan in "
+                         "data/measured_tip_scan.csv")
+        self.m_ratio.setToolTip(self.m_ratio.toolTip() + " (the +25 V data is ≈ 0 at X = −5 µm)")
         self.tiles = _TileRow((self.m_peak, self.m_ratio, self.m_zero, self.m_dev))
         lay.addWidget(self.tiles)
-
-        self.res_sub = QTabWidget()
         self.xscan_plot = PlotWidget()
-        self.res_sub.addTab(self.xscan_plot, "幅度 vs X")
-        self.overview = ImageView()
-        self.res_sub.addTab(self.overview, "总览图 pulse_chain.png")
-        lay.addWidget(self.res_sub, 1)
-        return w
+        self.xscan_plot.setMinimumHeight(280)
+        split = _Split()
+        split.addWidget(self.xscan_plot)
+        lay.addWidget(split, 1)
+        return _scrollable(w)
+
+    def _build_field_tab(self):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(6, 8, 6, 6)
+        lay.setSpacing(6)
+        self.field_note = label("", "muted", wrap=True)
+        self.field_note.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(self.field_note)
+        self.field_view = FieldView()
+        for c in (self.field_view.qty, self.field_view.view, self.field_view.overlay, self.field_view.cmap):
+            c.setMinimumContentsLength(3)            # its two-row bar must fit the ~410 px results pane of a small window
+        self.field_view.qty.currentTextChanged.connect(self._field_qty_changed)
+        self.field_view.log.toggled.connect(self._field_log_toggled)
+        self.field_view.setMinimumHeight(400)        # two-row controls + a usable map; the tab scrolls instead
+        split = _Split()
+        split.addWidget(self.field_view)
+        lay.addWidget(split, 1)
+        return _scrollable(w)
 
     def _build_wave_tab(self):
         w = QWidget()
@@ -755,21 +946,22 @@ class PulseChainPage(Page):
         self.trace_combo.setMinimumWidth(130)
         self.trace_combo.currentIndexChanged.connect(self._trace_changed)
         self.deriv_combo = QComboBox()
-        for txt, k in (("无", 0), ("d/dt", 1), ("d²/dt²", 2)):
+        for txt, k in (("None", 0), ("d/dt", 1), ("d²/dt²", 2)):
             self.deriv_combo.addItem(txt, k)
-        self.deriv_combo.setToolTip("对所选曲线再求时间导数（np.gradient）。探测到的辐射场 ∝ d²S_n/dt²。")
+        self.deriv_combo.setToolTip("Extra time derivative of the selected trace (np.gradient). The detected radiated "
+                                    "field ∝ d²S_n/dt².")
         self.deriv_combo.currentIndexChanged.connect(self._redraw_waves)
         self.filter_combo = QComboBox()
-        self.filter_combo.addItem("高斯低通 2.2 THz", "gauss")
-        self.filter_combo.addItem("Butterworth 8 阶 2.2 THz", "steep")
-        self.filter_combo.addItem("不滤波", "none")
-        self.filter_combo.setToolTip("高斯：ltemsim.tip_demod.lowpass（脚本作图所用）；Butterworth：lowpass_steep（探测器响应，"
-                                     "适合二阶导数）")
+        self.filter_combo.addItem("Gaussian low-pass 2.2 THz", "gauss")
+        self.filter_combo.addItem("Butterworth (8th order) 2.2 THz", "steep")
+        self.filter_combo.addItem("No filter", "none")
+        self.filter_combo.setToolTip("Gaussian: ltemsim.tip_demod.lowpass (used by the script's figures); Butterworth: "
+                                     "lowpass_steep (detector response, suited to second derivatives)")
         self.filter_combo.currentIndexChanged.connect(self._redraw_waves)
-        self.cb_wnorm = QCheckBox("归一化")
+        self.cb_wnorm = QCheckBox("Normalise")
         self.cb_wnorm.toggled.connect(self._redraw_waves)
-        lay.addLayout(_flow(_group("曲线", self.trace_combo), _group("导数", self.deriv_combo),
-                            _group("滤波", self.filter_combo), self.cb_wnorm))
+        lay.addLayout(_flow(_group("Trace", self.trace_combo), _group("Derivative", self.deriv_combo),
+                            _group("Filter", self.filter_combo), self.cb_wnorm))
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setChildrenCollapsible(False)
@@ -777,12 +969,12 @@ class PulseChainPage(Page):
         sl = QVBoxLayout(side)
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(4)
-        sl.addWidget(label("光束位置 X", "cardTitle"))
+        sl.addWidget(label("Beam position X", "cardTitle"))
         self.x_list = QListWidget()
         self.x_list.itemChanged.connect(self._redraw_waves)
         sl.addWidget(self.x_list, 1)
         brow = QHBoxLayout()
-        for txt, on in (("全选", True), ("清空", False)):
+        for txt, on in (("All", True), ("None", False)):
             b = button(txt, lambda _=False, v=on: self._check_all_x(v), "flat")
             brow.addWidget(b)
         sl.addLayout(brow)
@@ -800,10 +992,11 @@ class PulseChainPage(Page):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(6)
-        intro = label("推荐的对比指标：重新解调后 d²S_n/dt² 在频带内的谱幅度（band_metric），参数改动后自动重算。",
-                      "muted", wrap=True)
-        intro.setToolTip("docs/pulse_chain.md：等价于探测器带限波形的 RMS，且与滤波器滚降无关（旧的 2.2 THz 低通 RMS "
-                         "被 5–15 THz 的电流突变泄漏主导）。远场参考为 dJx/dt = d²P/dt²，P = ∫J dt。")
+        intro = label("Recommended comparison metric: the in-band spectral amplitude of the redemodulated d²S_n/dt² "
+                      "(band_metric), recomputed automatically when the settings change.", "muted", wrap=True)
+        intro.setToolTip("docs/pulse_chain.md: equivalent to the RMS of the detector's band-limited waveform and "
+                         "independent of the filter roll-off (the old 2.2 THz low-pass RMS is dominated by 5–15 THz "
+                         "leakage from current jumps). The far-field reference is dJx/dt = d²P/dt² with P = ∫J dt.")
         lay.addWidget(intro)
         self.b_A = _spin(180.0, 1.0, 2000.0, 10.0, 1, "nm")
         self.b_h = _spin(0.0, 0.0, 1000.0, 5.0, 1, "nm")
@@ -812,22 +1005,23 @@ class PulseChainPage(Page):
         self.b_deriv.addItem("dS/dt", 1)
         self.b_lo = _spin(0.3, 0.0, 50.0, 0.1, 2, "THz", 84)
         self.b_hi = _spin(2.0, 0.05, 100.0, 0.1, 2, "THz", 84)
-        lay.addLayout(_flow(_group("A", self.b_A), _group("h_min", self.b_h), _group("波形", self.b_deriv),
-                            _group("频带", self.b_lo, "–", self.b_hi)))
+        lay.addLayout(_flow(_group("A", self.b_A), _group("h_min", self.b_h), _group("Waveform", self.b_deriv),
+                            _group("Band", self.b_lo, "–", self.b_hi)))
         self.b_harm = {}
         for n in (1, 2, 3, 4):
             cb = QCheckBox(f"n = {n}")
             cb.setChecked(True)
             cb.toggled.connect(self._band_params_changed)
             self.b_harm[n] = cb
-        self.b_far = QCheckBox("远场参考 dJx/dt")
+        self.b_far = QCheckBox("Far-field reference dJx/dt")
         self.b_far.setChecked(True)
         self.b_far.toggled.connect(lambda *_: self.band_plot.plot(self._draw_band))
-        self.b_neg = QCheckBox("−25 V 实测 (X → −X)")
+        self.b_neg = QCheckBox("−25 V data (X → −X)")
+        self.b_neg.setToolTip("Show the measured −25 V scan mirrored to X → −X")
         self.b_neg.setChecked(True)
         self.b_neg.toggled.connect(lambda *_: self.band_plot.plot(self._draw_band))
-        self.b_run = button("重新计算", self.compute_band)
-        lay.addLayout(_flow(_group("谐波", *self.b_harm.values(), spacing=10), self.b_far, self.b_neg, self.b_run))
+        self.b_run = button("Recompute", self.compute_band)
+        lay.addLayout(_flow(_group("Harmonics", *self.b_harm.values(), spacing=10), self.b_far, self.b_neg, self.b_run))
         for wdg in (self.b_A, self.b_h, self.b_lo, self.b_hi):
             wdg.valueChanged.connect(self._band_params_changed)
         self.b_deriv.currentIndexChanged.connect(self._band_params_changed)
@@ -856,9 +1050,10 @@ class PulseChainPage(Page):
         lay.setSpacing(6)
         self.r_A = _spin(180.0, 1.0, 2000.0, 10.0, 1, "nm")
         self.r_h = _spin(0.0, 0.0, 1000.0, 5.0, 1, "nm")
-        self.r_ltem = QCheckBox("LTEM (1−β) 因子")
-        self.r_ltem.setToolTip("按 Pizzuto 的 LTEM FDM 再乘 (1 − β)。默认关闭：载流子模拟已给出针尖下方的发射场。")
-        self.r_btn = button("运行重新解调", self._run_redemod)
+        self.r_ltem = QCheckBox("LTEM (1−β) factor")
+        self.r_ltem.setToolTip("Multiply by (1 − β) as in Pizzuto's LTEM FDM. Off by default: the carrier simulation "
+                               "already gives the emitted field below the tip.")
+        self.r_btn = button("Run redemodulation", self._run_redemod)
         lay.addLayout(_flow(_group("A", self.r_A), _group("h_min", self.r_h), self.r_ltem, self.r_btn))
         self.r_hint = label("", "muted", wrap=True)
         lay.addWidget(self.r_hint)
@@ -868,14 +1063,14 @@ class PulseChainPage(Page):
 
         self.r_list = QComboBox()
         self.r_list.setMinimumWidth(200)
-        self.r_list.setToolTip("本结果文件夹中的 redemod_*.json")
+        self.r_list.setToolTip("redemod_*.json files in this result folder")
         self.r_list.currentIndexChanged.connect(lambda *_: self._show_redemod())
         self.r_family = QComboBox()
-        self.r_family.addItem("dS_n/dt RMS（2.2 THz 低通）", "dS{n}dt_rms")
-        self.r_family.addItem("S_n RMS（2.2 THz 低通）", "S{n}_rms")
-        self.r_family.addItem("dS_n/dt 峰值", "dS{n}dt_peak")
+        self.r_family.addItem("RMS of dS_n/dt (2.2 THz low-pass)", "dS{n}dt_rms")
+        self.r_family.addItem("RMS of S_n (2.2 THz low-pass)", "S{n}_rms")
+        self.r_family.addItem("Peak of dS_n/dt", "dS{n}dt_peak")
         self.r_family.currentIndexChanged.connect(lambda *_: self._show_redemod())
-        lay.addLayout(_flow(_group("已有结果", self.r_list), _group("指标", self.r_family)))
+        lay.addLayout(_flow(_group("Saved results", self.r_list), _group("Metric", self.r_family)))
         vs = _Split()
         self.r_plot = PlotWidget()
         self.r_plot.setMinimumHeight(240)
@@ -894,18 +1089,19 @@ class PulseChainPage(Page):
     def _build_history_tab(self):
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setContentsMargins(8, 10, 8, 8)
         row = QHBoxLayout()
-        row.addWidget(label("已有的发射链结果（双击载入，点表头排序）", "cardTitle", wrap=True), 1)
-        for txt, slot in (("载入所选", self._load_selected_history), ("在访达中显示", self._reveal_selected_history),
-                          ("刷新", self.refresh_history)):
+        row.addWidget(label("Chain results (double-click to load, click a header to sort)", "cardTitle", wrap=True), 1)
+        for txt, slot in (("Load selected", self._load_selected_history), ("Show in Finder", self._reveal_selected_history),
+                          ("Refresh", self.refresh_history)):
             row.addWidget(button(txt, slot, "flat"))
         lay.addLayout(row)
         self.hist = QTreeWidget()
-        self.hist.setHeaderLabels(["结果", "P (mW)", "w (µm)", "偏压 (V)", "T (K)", "扩散", "针尖图", "A (nm)"])
-        self.hist.setIndentation(14)
-        for c, tip in enumerate(("", "平均功率 P_avg_mW", "光斑半径 w_um", "V_bias", "载流子温度 T", "简并 / 经典扩散",
-                                 "是否乘了 FDTD 针尖图", "运行时的轻敲振幅 A_nm（旧版运行为 60 nm）")):
+        self.hist.setHeaderLabels(["Result", "P (mW)", "w (µm)", "Bias (V)", "T (K)", "Diffusion", "Tip map", "A (nm)"])
+        self.hist.setIndentation(8)
+        for c, tip in enumerate(("", "Average power P_avg_mW", "Spot radius w_um", "V_bias", "Carrier temperature T",
+                                 "Degenerate or classical diffusion", "Whether the FDTD tip map was applied",
+                                 "Tapping amplitude A_nm of the run (60 nm in older runs)")):
             if tip:
                 self.hist.headerItem().setToolTip(c, tip)
         self.hist.setAlternatingRowColors(True)
@@ -917,7 +1113,8 @@ class PulseChainPage(Page):
         h.setStretchLastSection(False)
         h.setMinimumSectionSize(36)
         lay.addWidget(self.hist, 1)
-        self.hist_note = label("* summary.json 未记录该项（旧版运行），显示的是当时脚本的默认值。", "muted", wrap=True)
+        self.hist_note = label("* Not recorded in summary.json (older run); the script's default at the time is shown.",
+                               "muted", wrap=True)
         lay.addWidget(self.hist_note)
         self.refresh_history()
         return w
@@ -934,16 +1131,16 @@ class PulseChainPage(Page):
                  if self.fdtd_combo.itemData(i) not in (None, "none")]
         self.fdtd_combo.blockSignals(True)
         self.fdtd_combo.clear()
-        self.fdtd_combo.addItem("无针尖图 (none)", "none")
+        self.fdtd_combo.addItem("No tip map (none)", "none")
         seen = set()
         cands = []
         if (paths.ROOT / REPO_RATIO).exists():
-            cands.append((f"仓库 · {REPO_RATIO}", REPO_RATIO))
+            cands.append((f"Repository · {REPO_RATIO}", REPO_RATIO))
         for p in sorted(paths.GUI_RUNS.glob("fdtd_*/ratio.npz"), reverse=True):
-            cands.append((f"GUI 运行 · {p.parent.name}", paths.rel(p)))
+            cands.append((f"GUI run · {p.parent.name}", paths.rel(p)))
         for v in extra:
             if v not in [c[1] for c in cands] and paths.absolute(v).exists():
-                cands.append((f"自选 · {Path(v).parent.name}/{Path(v).name}", v))
+                cands.append((f"Custom · {Path(v).parent.name}/{Path(v).name}", v))
         for txt, v in cands:
             if v not in seen:
                 seen.add(v)
@@ -959,28 +1156,29 @@ class PulseChainPage(Page):
             return
         i = self.fdtd_combo.findData(value)
         if i < 0 and paths.absolute(value).exists():
-            self.fdtd_combo.addItem(f"自选 · {Path(value).parent.name}/{Path(value).name}", value)
+            self.fdtd_combo.addItem(f"Custom · {Path(value).parent.name}/{Path(value).name}", value)
             i = self.fdtd_combo.count() - 1
         self.fdtd_combo.setCurrentIndex(max(0, i))
 
     def _browse_fdtd(self):
-        p, _ = QFileDialog.getOpenFileName(self, "选择 FDTD 针尖比值图 ratio.npz", str(paths.RESULTS), "NumPy (*.npz)")
+        p, _ = QFileDialog.getOpenFileName(self, "Choose an FDTD tip ratio map (ratio.npz)", str(paths.RESULTS),
+                                           "NumPy (*.npz)")
         if not p:
             return
         try:
             with np.load(p) as d:
                 missing = [k for k in ("x", "z", "ratio") if k not in d.files]
         except Exception as e:      # unreadable / not an npz
-            error_box(self, "无法读取", f"无法读取 {p}", str(e))
+            error_box(self, "Cannot read file", f"Could not read {p}", str(e))
             return
         if missing:
-            error_box(self, "不是针尖比值图", f"{Path(p).name} 缺少键 {', '.join(missing)}。\n"
-                      "需要 scripts/run_fdtd_pump.py 输出的 ratio.npz（键 x, z, ratio）。")
+            error_box(self, "Not a tip ratio map", f"{Path(p).name} lacks the key(s) {', '.join(missing)}.\n"
+                      "Expected the ratio.npz written by scripts/run_fdtd_pump.py (keys x, z, ratio).")
             return
         self._select_fdtd(paths.rel(p))
 
     def _pick_out(self):
-        d = QFileDialog.getExistingDirectory(self, "选择输出文件夹", str(paths.RESULTS))
+        d = QFileDialog.getExistingDirectory(self, "Choose output folder", str(paths.RESULTS))
         if d:
             self.out_edit.setText(paths.rel(d))
 
@@ -990,33 +1188,35 @@ class PulseChainPage(Page):
             bad = []
             for n in self.form.invalid_fields():
                 sp = self.form.rows[n].spec
-                bad.append(n + (f"（≥ {sp.minimum:g}）" if sp.minimum is not None else ""))
-            return None, "以下参数的值无法解析或超出范围：\n" + ", ".join(bad)
+                bad.append(n + (f" (≥ {sp.minimum:g})" if sp.minimum is not None else ""))
+            return None, "These parameters cannot be parsed or are out of range:\n" + ", ".join(bad)
         v = self.form.values()
         raw = [float(x) for x in v["x_list"]]
         if not raw:
-            return None, "光束位置 X 列表为空。"
+            return None, "The list of beam positions X is empty."
         off = [x for x in raw if abs(x * 10 - round(x * 10)) > 1e-6]
         if off:
-            return None, (f"X = {', '.join(f'{x:g}' for x in off)} µm 不是 0.1 µm 的整数倍：脚本按 X{{X:+.1f}}.npz "
-                          "命名结果文件，只保留一位小数，会与其他 X 混淆或标错位置。")
+            return None, (f"X = {', '.join(f'{x:g}' for x in off)} µm is not a multiple of 0.1 µm: the script names "
+                          "its result files X{X:+.1f}.npz with one decimal, so the file would clash with another X or "
+                          "carry the wrong position.")
         xs = sorted({round(x, 1) + 0.0 for x in raw})
         if any(n != int(n) for n in v["harmonics"]):
-            return None, "谐波 n 必须是正整数。"
+            return None, "The harmonics n must be positive integers."
         harm = tuple(sorted({int(n) for n in v["harmonics"]}))
         if not harm or min(harm) < 1:
-            return None, "谐波 n 必须是正整数。"
+            return None, "The harmonics n must be positive integers."
         if 2 not in harm or 3 not in harm:
-            return None, "谐波列表必须包含 2 和 3：脚本的逐 X 进度输出用 S2，总览图用 dS3/dt。"
+            return None, ("The harmonics must include 2 and 3: the script's per-X progress output uses S2 and the "
+                          "overview figure uses dS3/dt.")
         xf = str(v["x_fine"]).strip()
         x_fine = None
         if xf:
             try:
                 x_fine = float(xf)
             except ValueError:
-                return None, f"x_fine = “{xf}” 不是数字（留空表示自动）。"
+                return None, f"x_fine = “{xf}” is not a number (leave it empty for automatic)."
             if x_fine <= 0:
-                return None, "x_fine 必须为正数。"
+                return None, "x_fine must be positive."
         kw = dict(P_avg_mW=float(v["P_avg_mW"]), A_nm=float(v["A_nm"]), h_min_nm=float(v["h_min_nm"]),
                   t_end_ps=float(v["t_end_ps"]), harmonics=harm, degenerate=1.0 if v["degenerate"] else 0.0,
                   T=float(v["T"]), V_bias=float(v["V_bias"]), x_list=tuple(xs), w_um=float(v["w_um"]), x_fine=x_fine)
@@ -1025,26 +1225,27 @@ class PulseChainPage(Page):
     def _update_estimate(self, *_):
         kw, err = self._parse_form()
         if kw is None:
-            self.est_title.setText("预计耗时 —")
+            self.est_title.setText("Estimated time —")
             self.est_text.setText(err.replace("\n", " "))
             return
         xs = kw["x_list"]
         tot, lo, hi, per = estimate(len(xs), kw["w_um"], max(abs(x) for x in xs), kw["x_fine"], kw["t_end_ps"])
-        self.est_title.setText(f"预计耗时 ≈ {fmt_minutes(tot)}")
-        txt = (f"{len(xs)} 个 X × ≈ {per:.0f} s（每个 X 约 {per * EST_RANGE[0]:.0f}–{per * EST_RANGE[1]:.0f} s，视机器而定）。"
-               f"范围 {fmt_minutes(lo)} – {fmt_minutes(hi)}。")
+        self.est_title.setText(f"Estimated time ≈ {fmt_minutes(tot)}")
+        txt = (f"{len(xs)} position{'s' if len(xs) != 1 else ''} × ≈ {per:.0f} s (≈ {per * EST_RANGE[0]:.0f}–"
+               f"{per * EST_RANGE[1]:.0f} s each, depending on the machine). Range {fmt_minutes(lo)} – {fmt_minutes(hi)}.")
         if 0.0 not in xs:
-            txt += " X 列表不含 0：运行中只有按 X 计数的进度。"
+            txt += " The X list has no 0, so the progress is counted per X only."
         self.est_text.setText(txt)
 
     def run(self):
         kw, err = self._parse_form()
         if kw is None:
-            error_box(self, "参数无效", err)
+            error_box(self, "Invalid parameters", err)
             return
         fdtd = self.fdtd_combo.currentData() or "none"
         if fdtd != "none" and not paths.absolute(fdtd).exists():
-            error_box(self, "针尖图不存在", f"{fdtd} 不存在。\n请选择其他针尖图、选「无针尖图」，或先在「泵浦 FDTD」页生成。")
+            error_box(self, "Tip map not found", f"{fdtd} does not exist.\nChoose another tip map or “No tip map”, or "
+                      "make one on the Pump FDTD (optics) page first.")
             return
         # folders of chain jobs that are queued or running (a job's folder is created only when it starts)
         busy = {paths.absolute(j.out).resolve() for j in JobManager.instance().active() if j.out}
@@ -1052,8 +1253,8 @@ class PulseChainPage(Page):
         if out:
             out = paths.absolute(out)
             if out.resolve() in busy:
-                error_box(self, "输出文件夹正被占用", f"已有一个排队中或运行中的任务写入 {paths.rel(out)}。\n"
-                          "请等它结束，或换一个输出文件夹（留空则自动新建）。")
+                error_box(self, "Output folder in use", f"A queued or running job already writes into {paths.rel(out)}.\n"
+                          "Wait for it to finish, or choose another output folder (leave it empty for a new one).")
                 return
         else:
             base = out = paths.new_run_dir("pulse")
@@ -1064,21 +1265,24 @@ class PulseChainPage(Page):
         if out.exists() and any(out.iterdir()):
             committed = is_committed(out)
             r = QMessageBox.question(
-                self, "覆盖已有结果？",
-                f"{paths.rel(out)} 已有文件，运行会覆盖其中的 X*.npz、summary.json 和 pulse_chain.png。"
-                + ("\n\n注意：这是仓库中已提交的结果文件夹。" if committed else "") + "\n\n继续吗？")
+                self, "Overwrite existing results?",
+                f"{paths.rel(out)} already contains files; the run overwrites its X*.npz, summary.json and "
+                "pulse_chain.png."
+                + ("\n\nNote: this result folder is committed to the repository." if committed else "")
+                + "\n\nContinue?")
             if r != QMessageBox.StandardButton.Yes:
                 return
         xs = kw["x_list"]
         progress = {"type": "count", "pattern": r"^X=[+-]\d", "total": len(xs), "sub": r"t=([0-9.]+) ps",
                     "sub_total": kw["t_end_ps"]}
-        title = (f"发射链 · {kw['P_avg_mW']:g} mW, w = {kw['w_um']:g} µm, {kw['V_bias']:+g} V, T = {kw['T']:g} K"
-                 + (", 简并" if kw["degenerate"] else "") + (", 针尖图" if fdtd != "none" else "") + f" · {len(xs)} 个 X")
+        title = (f"Pulse chain · {kw['P_avg_mW']:g} mW, w = {kw['w_um']:g} µm, {kw['V_bias']:+g} V, T = {kw['T']:g} K"
+                 + (", degenerate" if kw["degenerate"] else "") + (", tip map" if fdtd != "none" else "")
+                 + f" · {len(xs)} X")
         self.job = JobManager.instance().submit(
             title, "pulse", CHAIN_SCRIPT, "main", kwargs=dict(out=paths.rel(out), fdtd=fdtd, **kw),
             out=out, progress=progress)
         self.panel.attach(self.job)
-        self.tabs.setCurrentIndex(0)
+        self.tabs.setCurrentWidget(self.run_tab)
 
     def _on_finished(self, job):
         if job is not self.job:
@@ -1097,16 +1301,17 @@ class PulseChainPage(Page):
 
     # ================================================================== results
     def _clear_result(self):
-        self.res_title.setText("尚未载入结果")
-        self.res_info.setText("在「历史结果」中双击一个结果，或运行新的发射链。")
+        self.res_title.setText("No result loaded")
+        self.res_info.setText("Double-click a run under History, or run a new chain.")
         self.btn_params.setEnabled(False)
         self.btn_folder.setEnabled(False)
-        self.overview.clear("尚未载入结果")
+        self.overview.clear("No result loaded")
         self.xscan_plot.plot(self._draw_xscan)
         self.wave_plot.plot(self._draw_waves)
         self.band_plot.plot(self._draw_band)
         self.r_plot.plot(self._draw_redemod)
         self._update_redemod_hint()
+        self._set_field(None, "Load a run under History (or run the chain) to see its applied field.")
 
     def show_result(self, d, switch=True):
         d = Path(d)
@@ -1122,18 +1327,19 @@ class PulseChainPage(Page):
         self._band_key = None
         state = ""
         if not d.is_dir():
-            state = "  ·  ⚠ 文件夹不存在"
+            state = "  ·  ⚠ folder does not exist"
         elif not self.summary:
-            state = "  ·  未完成（没有 summary.json）" if self.files else "  ·  ⚠ 没有 summary.json 和 X*.npz"
+            state = "  ·  incomplete (no summary.json)" if self.files else "  ·  ⚠ no summary.json and no X*.npz"
         self.res_title.setText(d.name + state)
         self.res_title.setToolTip(paths.rel(d))
         info = describe_run(self.settings)
+        sep = "  ·  " if info else ""
         if not self.files and d.is_dir():
-            info += ("　·　" if info else "") + "没有 X*.npz（波形、频带指标、重新解调不可用）"
+            info += sep + "no X*.npz (waveforms, band metric and redemodulation unavailable)"
         elif self.files and not self.summary:
-            info += ("　·　" if info else "") + (f"只有 {len(self.files)} 个 X*.npz（X = "
-                                                 + ", ".join(f"{x:+g}" for x in self.files)
-                                                 + " µm）：幅度表和总览图不可用，波形、频带指标、重新解调可用")
+            info += sep + (f"only {len(self.files)} X*.npz (X = " + ", ".join(f"{x:+g}" for x in self.files)
+                           + " µm): amplitude table and overview figure unavailable; waveforms, band metric and "
+                           "redemodulation available")
         elif self.files:
             # a re-run into this folder that was interrupted rewrites X*.npz but not summary.json / pulse_chain.png
             try:
@@ -1142,11 +1348,12 @@ class PulseChainPage(Page):
             except OSError:
                 newer = []
             if newer:
-                info += ("　·　" if info else "") + ("⚠ X = " + ", ".join(f"{x:+g}" for x in newer)
-                                                     + " 的 X*.npz 比 summary.json 新（重新运行被中断？）："
-                                                     "幅度表和总览图可能与波形、频带指标不一致")
+                info += sep + ("⚠ X*.npz for X = " + ", ".join(f"{x:+g}" for x in newer)
+                               + " are newer than summary.json (interrupted re-run?): the amplitude table and overview "
+                               "figure may not match the waveforms and band metric")
         self.res_info.setText(info)
-        self.res_info.setToolTip("* 旧版 summary.json 未记录该项，按当时脚本的默认值" if self.settings.get("_inferred") else "")
+        self.res_info.setToolTip("* not recorded in an older summary.json; the script's default at the time is shown"
+                                 if self.settings.get("_inferred") else "")
         self.btn_params.setEnabled(bool(self.settings) and set(self.settings) != {"_inferred"})
         self.btn_folder.setEnabled(d.exists())
 
@@ -1163,7 +1370,8 @@ class PulseChainPage(Page):
         self.metric_combo.blockSignals(False)
         self._metric_changed()
         if not self.overview.load(d / "pulse_chain.png"):
-            self.overview.clear("没有 pulse_chain.png（运行未完成或被中断）")
+            self.overview.clear("No pulse_chain.png (the run did not finish or was interrupted)")
+        self._load_field()
 
         # waveforms: load the time traces off the GUI thread
         self.x_list.clear()
@@ -1176,7 +1384,7 @@ class PulseChainPage(Page):
         # band metric: computed lazily when its tab is visible
         self.band_plot.plot(self._draw_band)
         self._fill_band_table()
-        self.b_status.setText("" if self.files else "该结果没有 X*.npz，无法计算频带指标。")
+        self.b_status.setText("" if self.files else "This run has no X*.npz, so the band metric cannot be computed.")
         if self.tabs.currentWidget() is self.band_tab:
             self.compute_band()
         # redemodulation
@@ -1194,13 +1402,14 @@ class PulseChainPage(Page):
         m = {}
         if key and s.get(stat, {}).get(key) is not None and s.get("X"):
             m = xscan_metrics(s["X"], s[stat][key])
-        self.m_peak.set(f"{m['peak_X']:+.1f} µm" if "peak_X" in m else "—", "实测：+5 µm")
+        self.m_peak.set(f"{m['peak_X']:+.1f} µm" if "peak_X" in m else "—", "measured: +5 µm")
         r5 = m.get("ratio5")
         self.m_ratio.set("—" if r5 is None else ("∞" if not np.isfinite(r5) else f"{r5:.2f}"),
-                         "实测：≫ 1" if r5 is not None else "需要 X 覆盖 ±5 µm")
-        self.m_zero.set(f"{m['zero']:.2f}" if "zero" in m else "—", "实测：0.24" if "zero" in m else "需要 X 覆盖 0")
+                         "measured: ≫ 1" if r5 is not None else "needs X to cover ±5 µm")
+        self.m_zero.set(f"{m['zero']:.2f}" if "zero" in m else "—", "measured: 0.24" if "zero" in m else "needs X to cover 0")
         self.m_dev.set(f"{m['dev']:.2f}" if "dev" in m else "—",
-                       f"{m['n_meas']} 个实测点上的 RMS 差" if "dev" in m else "需要 ≥ 2 个 X 覆盖实测点")
+                       f"RMS difference at {m['n_meas']} points (+25 V)" if "dev" in m
+                       else "needs ≥ 2 X covering the measured points")
         self.tiles.sync()
         self.xscan_plot.plot(self._draw_xscan)
 
@@ -1258,6 +1467,152 @@ class PulseChainPage(Page):
         ax.set_ylim(bottom=0)
         ax.set_title(f"{'RMS' if stat == 'rms' else 'peak'} of the 2.2 THz low-passed trace (summary.json)", wrap=True)
         _legend_right(ax)
+
+    # ---------------------------------------------------------------- device diagram (follows the form)
+    def _redraw_device(self):
+        if self.tabs.currentWidget() is not self.dev_tab:
+            self._dev_dirty = True          # drawn when the tab is opened
+            return
+        self._dev_dirty = False
+        kw, err = self._parse_form()
+        if kw is None:
+            self.dev_note.setText("Some parameters are invalid, so the diagram still shows the last valid values. "
+                                  + err.replace("\n", " "))
+            if self.dev_plot.redraw is None:
+                self.dev_plot.plot(lambda fig: self._empty(fig, "Fix the highlighted parameters to draw the device"))
+            return
+        xs = kw["x_list"]
+        xf = kw["x_fine"] or auto_x_fine(kw["w_um"], xs)
+        dev = device_from_pulse(kw["V_bias"], kw["w_um"], kw["P_avg_mW"], xs, theta_deg=45.0)
+
+        def draw(fig, d=dev):
+            ax, az = draw_device(fig, d)
+            c = self.dev_plot.canvas
+            self._dev_narrow = _stack_panels(c.width(), c.height())
+            if self._dev_narrow:        # side by side the flat to-scale panel would be tiny: stack the two panels
+                gs = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.15])
+                ax.set_subplotspec(gs[0])
+                az.set_subplotspec(gs[1])
+            else:
+                ax.set_anchor("N")      # the flat to-scale panel lines up with the zoom's top, not its middle
+        self.dev_plot.plot(draw)
+        self.dev_note.setText(f"The model for the values on the left, updated as you edit: tip fixed at x = 0, beam "
+                              f"centre at each of the {len(xs)} positions X, 45° incidence toward +x.")
+        self.dev_note.setToolTip(f"Simulated box 120 µm × (30 µm GaAs + 30 µm air); fine 0.1 µm grid for "
+                                 f"|x| ≤ {xf:g} µm (Nx = {grid_nx(xf)}). The tip enters only through the near field "
+                                 "and the tapping demodulation, not the carrier simulation.")
+
+    def eventFilter(self, obj, ev):
+        # re-arrange the device panels when the canvas crosses the narrow/wide threshold
+        if obj is self.dev_plot.canvas and ev.type() == QEvent.Type.Resize and self.dev_plot.redraw is not None:
+            if _stack_panels(ev.size().width(), ev.size().height()) != self._dev_narrow:
+                self._dev_timer.start()
+        return super().eventFilter(obj, ev)
+
+    # ---------------------------------------------------------------- applied field of the loaded run
+    def _set_field(self, data, message=None):
+        """FieldView.set_fields, keeping the chosen quantity and view when the new data offers them."""
+        fv = self.field_view
+        if fv.data:
+            self._field_sel = (fv.qty.currentText(), fv.view.currentText())
+        self._field_quiet = True
+        try:
+            fv.set_fields(data, message)
+        finally:
+            self._field_quiet = False
+        self._field_fam = False
+        if not data:
+            return
+        self._field_log = fv.log.isChecked()
+        prev_q, prev_v = self._field_sel
+        if prev_v and prev_v != fv.view.currentText() and fv.view.findText(prev_v) >= 0:
+            fv.view.setCurrentText(prev_v)
+        if prev_q and prev_q != fv.qty.currentText() and fv.qty.findText(prev_q) >= 0:
+            fv.qty.setCurrentText(prev_q)
+        self._field_qty_changed()
+
+    def _field_qty_changed(self, *_):
+        """Generation maps span many decades: switch to log scale for them and back to the user's choice for E / V."""
+        fv = self.field_view
+        if self._field_quiet or not fv.data:
+            return
+        fam = fv.qty.currentText().startswith("Generation")
+        if fam == self._field_fam:
+            return
+        self._field_fam = fam
+        fv.log.setChecked(True if fam else self._field_log)
+
+    def _field_log_toggled(self, on):
+        if not self._field_quiet and not self._field_fam:
+            self._field_log = on
+
+    def _load_field(self):
+        d, st = self.run_dir, self.settings
+        if d is None or not set(st) - {"_inferred"}:
+            self._set_field(None, "This folder has no summary.json, GUI run record or X*.npz, so its bias and grid "
+                                  "are unknown.")
+            self.field_note.setText("")
+            return
+        V = float(st.get("V_bias", LEGACY_DEFAULTS["V_bias"]))
+        w = float(st.get("w_um", LEGACY_DEFAULTS["w_um"]))
+        xs = st.get("x_list") or tuple(self.files) or (0.0,)
+        try:
+            xf = float(st["x_fine"]) if st.get("x_fine") not in (None, "") else auto_x_fine(w, xs)
+        except (TypeError, ValueError):
+            xf = auto_x_fine(w, xs)
+        self._set_field(None, "Computing the applied field on this run's grid …")
+        self.field_note.setText("")
+        gen = self._gen
+        run_async(chain_field, V, xf, dict(self.files), on_done=lambda r, g=gen: g == self._gen and self._field_ready(r),
+                  on_error=lambda e, g=gen: g == self._gen and self._field_failed(e))
+
+    def _field_failed(self, err):
+        self._set_field(None, "Could not compute the applied field:\n" + err.splitlines()[0])
+
+    def _field_ready(self, r):
+        f, gens = r["field"], r["gen"]
+        ks, nx, nz = f["ks"], len(f["xc"]), len(f["ze"]) - 1
+        qty, skipped = {}, []
+        for X, (N, xc, _zc) in sorted(gens.items()):
+            if N.shape == (ks, nx) and np.allclose(xc, f["xc"], atol=1e-6):
+                full = np.full((nz, nx), np.nan)          # GaAs rows only; the air stays blank
+                full[:ks] = N
+                qty[f"Generation N, X = {X:+.1f} µm"] = (full, "pairs/cm³ per pulse", False)
+            else:
+                skipped.append(X)
+        V = f["V_bias"]
+        name = self.run_dir.name if self.run_dir else ""
+        if V != 0:
+            data = dict(xe=f["xe"], ze=f["ze"], Ex=f["Ex"], Ez=f["Ez"], V=f["V"], unit="kV/cm", electrodes=f["electrodes"],
+                        gap=f["gap"], quantities=qty, title=f"{name} · applied field before the pulse, {V:+g} V")
+        elif qty:
+            g0, g1 = f["gap"]
+            span = g1 - g0 + 8
+            views = {"Electrode gap": ((g0 - 4, g1 + 4), (-0.175 * span, 0.075 * span)),
+                     "Spot region (±10 µm)": ((-10, 10), (-3, 1)),
+                     "Whole device": ((f["xe"][0], f["xe"][-1]), (f["ze"][0], f["ze"][-1])),
+                     "Near surface (−4…1 µm)": ((g0 - 4, g1 + 4), (-4, 1))}
+            data = dict(xe=f["xe"], ze=f["ze"], quantities=qty, electrodes=f["electrodes"], views=views,
+                        log_default=True, title=f"{name} · V_bias = 0 V: no applied field")
+        else:
+            data = None
+        self._set_field(data, "V_bias = 0 V: both electrodes are at the same potential, so there is no applied field "
+                              "(and this run has no X*.npz with generation maps).")
+        bias = "0 V" if V == 0 else f"{V:+g} V, anode at −x"
+        note = (f"<b>Applied field before the pulse</b> (electrodes only, {bias}); the transient field with space "
+                "charge is in the Overview figure.")
+        if qty:
+            note += " Quantity also lists the generation map N of each X."
+        elif not self.files:
+            note += " No generation maps: this run has no X*.npz."
+        if skipped:
+            note += (" ⚠ Generation maps for X = " + ", ".join(f"{x:+g}" for x in skipped)
+                     + " µm left out: their grid differs from the rebuilt one.")
+        self.field_note.setText(note)
+        self.field_note.setToolTip(f"PulseSim(PulseConfig(V_bias={V:g}, x_fine={r['x_fine']:g})): 0.1 µm cells for "
+                                   f"|x| ≤ {r['x_fine']:g} µm, {nx} × {nz} cells ({ks} rows in GaAs, the rest air). "
+                                   "The GaAs rows are PulseSim.Ex_app / Ez_app, the field the carriers start in. "
+                                   "Generation maps: pairs/cm³ per pulse, as stored in X*.npz.")
 
     # ---------------------------------------------------------------- waveforms
     def _wave_error(self, e):
@@ -1377,20 +1732,21 @@ class PulseChainPage(Page):
 
     def compute_band(self):
         if self.run_dir is None or not self.files:
-            self.b_status.setText("该结果没有 X*.npz，无法计算频带指标。" if self.run_dir else "尚未载入结果。")
+            self.b_status.setText("This run has no X*.npz, so the band metric cannot be computed." if self.run_dir
+                                  else "No result loaded.")
             return
         A, h, harm, deriv, band = self._band_params()
         if not harm:
-            self.b_status.setText("请至少选择一个谐波。")
+            self.b_status.setText("Select at least one harmonic.")
             return
         if band[1] <= band[0]:
-            self.b_status.setText("频带上限必须大于下限。")
+            self.b_status.setText("The upper band edge must be above the lower one.")
             return
         key = (self._gen, A, h, harm, deriv, band)
         if key == self._band_key or key == self._band_want:
             return
         self._band_want = key
-        self.b_status.setText(f"正在计算：{len(self.files)} 个 X 的重新解调与频谱 …")
+        self.b_status.setText(f"Computing: redemodulation and spectra for {len(self.files)} X …")
         self.b_run.setEnabled(False)
         run_async(band_table, dict(self.files), A, h, harm, deriv, band,
                   on_done=lambda r, k=key: self._band_done(k, r), on_error=lambda e, k=key: self._band_failed(k, e))
@@ -1407,14 +1763,14 @@ class PulseChainPage(Page):
         self.band = res
         n_ref = 3 if 3 in res["n"] else key[3][0]
         m = xscan_metrics(res["X"], res["n"][n_ref])
-        parts = [f"n = {n_ref}：峰值 X = {m['peak_X']:+.1f} µm" if "peak_X" in m else f"n = {n_ref}"]
+        parts = [f"n = {n_ref}: peak at X = {m['peak_X']:+.1f} µm" if "peak_X" in m else f"n = {n_ref}"]
         if "ratio5" in m:
             parts.append(f"(+5)/(−5) = {m['ratio5']:.2f}")
         if "zero" in m:
-            parts.append(f"X = 0 处 {m['zero']:.2f}")
+            parts.append(f"{m['zero']:.2f} at X = 0")
         if "dev" in m:
-            parts.append(f"与 +25 V 实测 RMS 偏差 {m['dev']:.2f}")
-        self.b_status.setText("　·　".join(parts))
+            parts.append(f"RMS deviation from the +25 V data {m['dev']:.2f}")
+        self.b_status.setText("  ·  ".join(parts))
         self.band_plot.plot(self._draw_band)
         self._fill_band_table()
 
@@ -1423,7 +1779,7 @@ class PulseChainPage(Page):
             self._band_want = None
             self.b_run.setEnabled(True)
         if key[0] == self._gen:
-            self.b_status.setText("计算失败：" + err.splitlines()[0])
+            self.b_status.setText("Computation failed: " + err.splitlines()[0])
 
     def _draw_band(self, fig):
         if self.run_dir is None:
@@ -1465,10 +1821,10 @@ class PulseChainPage(Page):
             tw.setColumnCount(0)
             return
         X = b["X"]
-        rows = [(f"n = {n}", y) for n, y in b["n"].items()] + [("远场 dJx/dt", b["far"])]
+        rows = [(f"n = {n}", y) for n, y in b["n"].items()] + [("far field dJx/dt", b["far"])]
         tw.setColumnCount(len(X) + 1)
         tw.setRowCount(len(rows))
-        tw.setHorizontalHeaderLabels([f"{x:+g}" for x in X] + ["最大值"])
+        tw.setHorizontalHeaderLabels([f"{x:+g}" for x in X] + ["max"])
         tw.setVerticalHeaderLabels([r[0] for r in rows])
         for i, (_, y) in enumerate(rows):
             mx = np.nanmax(y) if len(y) else np.nan
@@ -1486,19 +1842,21 @@ class PulseChainPage(Page):
     def _update_redemod_hint(self):
         d = self.run_dir
         if d is None:
-            self.r_hint.setText("先载入一个结果。")
+            self.r_hint.setText("Load a result first.")
             self.r_btn.setEnabled(False)
             return
         ok = bool(self.files)
         self.r_btn.setEnabled(ok)
         if not ok:
-            self.r_hint.setText("该结果没有 X*.npz，无法重新解调。")
+            self.r_hint.setText("This run has no X*.npz, so it cannot be redemodulated.")
             return
         n = len(self.files)
-        txt = (f"scripts/redemodulate.py（{n} 个 X，约 {max(1, round(0.3 * n))} s）在结果文件夹中写入 "
-               "redemod_A…_h….json。旧指标（2.2 THz 低通后的 RMS），推荐对比见「频带指标」。")
+        txt = (f"scripts/redemodulate.py ({n} X, ≈ {max(1, round(0.3 * n))} s) writes redemod_A…_h….json into the "
+               "result folder. Legacy metric (RMS after the 2.2 THz low-pass); the recommended comparison is under "
+               "Band metric.")
         if is_committed(d):
-            txt += "\n⚠ 仓库中已提交的结果文件夹：只新增或覆盖这一个 JSON，运行前会再次确认。"
+            txt += ("\n⚠ Result folder committed to the repository: only this one JSON is added or overwritten, and "
+                    "you are asked again before the run.")
         self.r_hint.setText(txt)
 
     def _confirm(self, title, text) -> bool:
@@ -1507,18 +1865,19 @@ class PulseChainPage(Page):
     def _run_redemod(self):
         d = self.run_dir
         if d is None or not self.files:
-            error_box(self, "无法重新解调", "当前结果没有 X*.npz。")
+            error_box(self, "Cannot redemodulate", "The current result has no X*.npz.")
             return
         A, h, ltem = self.r_A.value(), self.r_h.value(), self.r_ltem.isChecked()
         target = d / redemod_name(A, h, ltem)
         warn = []
         if is_committed(d):
-            warn.append(f"{paths.rel(d)} 是仓库中已提交的结果文件夹，脚本会在其中写入 {target.name}（只写这一个文件）。")
+            warn.append(f"{paths.rel(d)} is a result folder committed to the repository; the script writes "
+                        f"{target.name} into it (only this one file).")
         if target.exists():
-            warn.append(f"{target.name} 已存在，将被覆盖。")
-        if warn and not self._confirm("写入结果文件夹？", "\n\n".join(warn) + "\n\n继续吗？"):
+            warn.append(f"{target.name} already exists and will be overwritten.")
+        if warn and not self._confirm("Write into the result folder?", "\n\n".join(warn) + "\n\nContinue?"):
             return
-        title = f"重新解调 · {d.name} · A = {A:g} nm, h_min = {h:g} nm" + ("，LTEM 因子" if ltem else "")
+        title = f"Redemodulation · {d.name} · A = {A:g} nm, h_min = {h:g} nm" + (", LTEM factor" if ltem else "")
         # no out=: the runner would add gui_run_main.json / gui_log_main.txt next to the JSON, and the confirmation
         # above promises that only the one redemod_*.json is written into the run folder
         self.redemod_job = JobManager.instance().submit(
@@ -1544,12 +1903,12 @@ class PulseChainPage(Page):
         for p in files:
             self.r_list.addItem(redemod_label(p), str(p))
             when = time.strftime("%Y-%m-%d %H:%M", time.localtime(p.stat().st_mtime))
-            self.r_list.setItemData(self.r_list.count() - 1, f"{p.name}\n修改于 {when}", Qt.ItemDataRole.ToolTipRole)
+            self.r_list.setItemData(self.r_list.count() - 1, f"{p.name}\nmodified {when}", Qt.ItemDataRole.ToolTipRole)
         if files:
             i = self.r_list.findData(str(select) if select else cur)
             self.r_list.setCurrentIndex(max(i, 0))
         else:
-            self.r_list.addItem("（还没有）", None)
+            self.r_list.addItem("(none yet)", None)
         self.r_list.setEnabled(bool(files))
         self.r_list.blockSignals(False)
         self._show_redemod()
@@ -1580,7 +1939,7 @@ class PulseChainPage(Page):
         o = np.argsort(X)
         tw.setColumnCount(len(X) + 1)
         tw.setRowCount(len(keys))
-        tw.setHorizontalHeaderLabels([f"{x:+g}" for x in X[o]] + ["最大值"])
+        tw.setHorizontalHeaderLabels([f"{x:+g}" for x in X[o]] + ["max"])
         tw.setVerticalHeaderLabels(keys)
         for i, k in enumerate(keys):
             y = np.abs(tab[k])[o]
@@ -1646,13 +2005,14 @@ class PulseChainPage(Page):
         self.hist.clear()
         repo, gui = self._history_dirs()
         R = Qt.ItemDataRole.UserRole
-        for title, dirs in (("仓库 · results/pulse_chain", repo), ("GUI 运行 · gui_runs/pulse_*", gui)):
-            top = QTreeWidgetItem([f"{title}（{len(dirs)}）"])
+        for title, dirs in (("Repository · results/pulse_chain", repo), ("GUI runs · gui_runs/pulse_*", gui)):
+            top = QTreeWidgetItem([f"{title} ({len(dirs)})"])
             top.setFlags(Qt.ItemFlag.ItemIsEnabled)
             f = top.font(0)
             f.setBold(True)
             top.setFont(0, f)
             self.hist.addTopLevelItem(top)
+            top.setFirstColumnSpanned(True)       # the group titles do not widen the name column
             for d in dirs:
                 st = run_settings(d)
                 inf = set(st.get("_inferred", ()))
@@ -1660,15 +2020,15 @@ class PulseChainPage(Page):
                 n_x = len(st.get("x_list") or run_files(d))
                 done = (d / "summary.json").exists()
                 vals = [
-                    (d.name + ("" if done else "（未完成）"), d.name),
+                    (d.name + ("" if done else " (incomplete)"), d.name),
                     (f"{st['P_avg_mW']:g}" if "P_avg_mW" in st else "—", st.get("P_avg_mW")),
                     (f"{st['w_um']:g}{star('w_um')}" if "w_um" in st else "—", st.get("w_um")),
                     ((f"{st['V_bias']:+g}" if st["V_bias"] else "0") + star("V_bias") if "V_bias" in st else "—",
                      st.get("V_bias")),
                     (f"{st['T']:g}{star('T')}" if "T" in st else "—", st.get("T")),
-                    ((("简并" if st["degenerate"] else "经典") + star("degenerate")) if "degenerate" in st else "—",
-                     int(bool(st.get("degenerate")))),
-                    (("有" if st["fdtd_ratio"] else "无") if "fdtd_ratio" in st else "—", int(bool(st.get("fdtd_ratio")))),
+                    ((("degenerate" if st["degenerate"] else "classical") + star("degenerate")) if "degenerate" in st
+                     else "—", int(bool(st.get("degenerate")))),
+                    (("yes" if st["fdtd_ratio"] else "no") if "fdtd_ratio" in st else "—", int(bool(st.get("fdtd_ratio")))),
                     (f"{st['A_nm']:g}" if "A_nm" in st else "—", st.get("A_nm")),
                 ]
                 it = _SortItem([v[0] for v in vals])
@@ -1678,18 +2038,18 @@ class PulseChainPage(Page):
                 it.setData(0, R, str(d))
                 mtime = (d / "summary.json" if done else d).stat().st_mtime
                 xs = st.get("x_list") or tuple(run_files(d))
-                xtxt = f"{n_x} 个 X：" + ", ".join(f"{x:+g}" for x in xs) if xs else "没有 X 数据"
-                it.setToolTip(0, f"{paths.rel(d)}\n{xtxt}\n修改于 {time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime))}")
+                xtxt = f"{n_x} X: " + ", ".join(f"{x:+g}" for x in xs) if xs else "no X data"
+                it.setToolTip(0, f"{paths.rel(d)}\n{xtxt}\nmodified {time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime))}")
                 for c in range(1, len(vals)):
                     it.setTextAlignment(c, Qt.AlignmentFlag.AlignCenter)
                     if "*" in vals[c][0]:
-                        it.setToolTip(c, "summary.json 未记录（旧版运行），按当时脚本的默认值")
+                        it.setToolTip(c, "Not recorded in summary.json (older run); the script's default at the time")
                 if not done:
                     it.setForeground(0, self.hist.palette().placeholderText())
                 top.addChild(it)
             top.setExpanded(True)
             if not dirs:
-                e = QTreeWidgetItem(["还没有结果" if dirs is repo else "还没有 GUI 运行的发射链结果"])
+                e = QTreeWidgetItem(["No results yet" if dirs is repo else "No chain runs from the GUI yet"])
                 e.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 e.setForeground(0, self.hist.palette().placeholderText())
                 top.addChild(e)
@@ -1704,7 +2064,7 @@ class PulseChainPage(Page):
         rows = [tw.topLevelItem(i).child(j) for i in range(tw.topLevelItemCount())
                 for j in range(tw.topLevelItem(i).childCount())]
         for c in range(1, tw.columnCount()):
-            w = max([fm.horizontalAdvance(tw.headerItem().text(c)) + 26] + [fm.horizontalAdvance(r.text(c)) + 14 for r in rows])
+            w = max([fm.horizontalAdvance(tw.headerItem().text(c)) + 25] + [fm.horizontalAdvance(r.text(c)) + 14 for r in rows])
             h.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
             tw.setColumnWidth(c, w)
 
@@ -1745,12 +2105,15 @@ class PulseChainPage(Page):
             self._select_fdtd(fd)
         self._update_estimate()
         if fd not in (None, "", "none") and not paths.absolute(fd).exists():
-            error_box(self, "针尖图不存在", f"该结果使用的针尖图 {fd} 已不存在，左侧已改为「无针尖图」。\n"
-                      "如需复现，请先在「泵浦 FDTD」页重新生成，或用「浏览…」选择其他 ratio.npz。")
+            error_box(self, "Tip map not found", f"The tip map of this run, {fd}, no longer exists; the form now uses "
+                      "“No tip map”.\nTo reproduce the run, make it again on the Pump FDTD (optics) page or pick "
+                      "another ratio.npz with Browse….")
 
     def _on_tab(self, i):
         w = self.tabs.widget(i)
-        if w is self.band_tab and self.files and self._band_key is None:
+        if w is self.dev_tab and self._dev_dirty:
+            self._redraw_device()
+        elif w is self.band_tab and self.files and self._band_key is None:
             self.compute_band()
         elif w is self.hist_tab:
             self.refresh_history()
@@ -1767,6 +2130,8 @@ class PulseChainPage(Page):
             self.refresh_history()
             if self.run_dir is not None:
                 self.refresh_redemod_list()
+        if self._dev_dirty and self.tabs.currentWidget() is self.dev_tab:
+            self._redraw_device()
 
     def open(self, run_dir=None, path=None, **_):
         target = run_dir or path

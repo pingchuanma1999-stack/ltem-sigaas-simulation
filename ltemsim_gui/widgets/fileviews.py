@@ -7,17 +7,19 @@ Typical use::
     w.open_requested.connect(host.show)    # the view asks its host to show another path (thumbnail, link, log ...)
 
 Every view is a `FileView`:
-    `.load(path) -> bool`   False when the file is missing or could not be parsed (a Chinese message is shown in the
-                            view); files above `FileView.ASYNC_BYTES` are parsed in a worker thread, then `.loading`
+    `.load(path) -> bool`   False when the file is missing or could not be parsed (a message is shown in the view);
+                            files above `FileView.ASYNC_BYTES` are parsed in a worker thread, then `.loading`
                             is True until the `loaded(bool ok)` signal fires
     `.path`                 the shown path (Path or None)
     `open_requested(str)`   emitted when the user clicks something that refers to another file or folder
 
 Classes: `ImageFileView`, `JsonView` (`.set_data(obj)`), `CsvView`, `MarkdownView` (`.set_markdown(text, base_dir)`),
-`TextView` (`.set_text(text)`), `NpzView` (`.select(name)`, `.arrays`), `FolderView`, `InfoView` (unknown types),
+`TextView` (`.set_text(text)`), `NpzView` (`.select(name)`, `.arrays`; a steady-state solution.npz also gets a
+COMSOL-style field map, `.show_field(on)`), `FolderView`, `InfoView` (unknown types),
 `CompareView(a, b)` (two images side by side, synchronised zoom).
-Helpers: `preview_for`, `kind_of`, `describe`, `human_size`, `fmt_time`, `FlowLayout`, `FindBox`, `ElideLabel`,
-`segmented(labels)` (tab-bar switch), `compact_plot(PlotWidget)` (minimum height only: PlotWidget styles its toolbar).
+Helpers: `preview_for`, `kind_of`, `describe`, `human_size`, `fmt_time`, `plural`, `FlowLayout`, `FindBox`,
+`ElideLabel`, `segmented(labels)` (tab-bar switch), `compact_plot(PlotWidget)` (minimum height only: PlotWidget
+styles its toolbar).
 """
 from __future__ import annotations
 
@@ -54,13 +56,13 @@ from .mpl import PlotWidget
 
 __all__ = ["FileView", "ImageFileView", "JsonView", "CsvView", "MarkdownView", "TextView", "NpzView", "FolderView",
            "InfoView", "CompareView", "FlowLayout", "FindBox", "ElideLabel", "preview_for", "kind_of", "describe",
-           "human_size", "fmt_time", "segmented", "compact_plot", "IMAGE_EXT", "TEXT_EXT"]
+           "human_size", "fmt_time", "plural", "segmented", "compact_plot", "IMAGE_EXT", "TEXT_EXT"]
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".tif", ".tiff", ".webp"}
 TEXT_EXT = {".txt", ".log", ".m", ".py", ".sh", ".cfg", ".ini", ".toml", ".yaml", ".yml", ".tex", ".dat", ".out",
             ".done", ".rst", ".bib", ".gitignore"}
-KIND_ZH = {"folder": "文件夹", "json": "JSON", "csv": "CSV 表格", "markdown": "Markdown", "npz": "NumPy 数组",
-           "text": "文本", "other": "文件"}
+KIND_TEXT = {"folder": "Folder", "json": "JSON", "csv": "CSV table", "markdown": "Markdown", "npz": "NumPy arrays",
+             "text": "Text", "other": "File"}
 # names of 1-D arrays that are probably coordinates (preferred as plot x axes / image axes)
 COORD_NAMES = ("t", "time", "x", "z", "X", "Z", "xc", "zc", "xe", "ze", "x_um", "X_um", "z_um", "heights_nm",
                "heights", "h", "freq", "y", "r", "P", "V", "P_avg_mW", "V_bias")
@@ -80,6 +82,11 @@ def fmt_time(ts: float, short: bool = False) -> str:
     if short and lt.tm_year == time.localtime().tm_year:
         return time.strftime("%m-%d %H:%M", lt)
     return time.strftime("%Y-%m-%d %H:%M", lt)
+
+
+def plural(n: int, word: str, many: str | None = None) -> str:
+    """'1 file', '3 files' (`many` for irregular plurals)."""
+    return f"{n:,} {word if n == 1 else (many or word + 's')}"
 
 
 def _looks_text(p: Path) -> bool:
@@ -127,18 +134,18 @@ def kind_of(path) -> str:
 
 
 def describe(path) -> str:
-    """Short Chinese type label, e.g. 'PNG 图像', 'JSON', '文件夹'."""
+    """Short type label, e.g. 'PNG image', 'JSON', 'Folder'."""
     p = Path(path)
     k = kind_of(p)
     if k == "image":
-        return f"{p.suffix[1:].upper()} 图像"
+        return f"{p.suffix[1:].upper()} image"
     if k == "npz" and p.suffix.lower() == ".npy":
-        return "NumPy 数组 (.npy)"
+        return "NumPy array (.npy)"
     if k == "npz":
-        return "NumPy 数组包 (.npz)"
+        return "NumPy archive (.npz)"
     if k == "text" and p.suffix:
-        return f"文本 ({p.suffix})"
-    return KIND_ZH.get(k, "文件")
+        return f"Text ({p.suffix})"
+    return KIND_TEXT.get(k, "File")
 
 
 def _alive(obj) -> bool:
@@ -263,22 +270,24 @@ def _decimated_note(ax, n: int):
 
 
 def _explain(err: str) -> str:
-    """Chinese explanation for the usual reasons a result file cannot be read (+ the original message)."""
+    """Plain-language explanation of the usual reasons a result file cannot be read (+ the original message)."""
     first = err.strip().splitlines()[0] if err.strip() else err
     rules = (
         (("BadZipFile", "not a zip file", "Bad magic number", "zlib.error", "CRC-32"),
-         "文件已损坏或不完整（不是有效的 npz / zip 归档，可能是运行中断时只写了一半）"),
+         "The file is damaged or incomplete: not a valid npz / zip archive (perhaps only partly written when a run "
+         "was interrupted)."),
         (("pickled (object) data", "Failed to interpret file"),
-         "不是有效的 NumPy 文件（文件头无法识别；若确为含 Python 对象的 npy，出于安全原因不加载）"),
-        (("Object arrays cannot be loaded",), "包含 Python 对象数组（需要 pickle），出于安全原因不加载"),
-        (("EOFError", "No data left"), "文件为空或被截断"),
-        (("JSONDecodeError",), "不是有效的 JSON（文件可能仍在写入或已损坏）"),
-        (("MemoryError",), "文件过大，内存不足"),
-        (("PermissionError",), "没有读取权限"),
+         "Not a valid NumPy file: the header is not recognised (a .npy holding Python objects is never loaded, "
+         "for safety)."),
+        (("Object arrays cannot be loaded",), "Contains Python object arrays (they need pickle); not loaded, for safety."),
+        (("EOFError", "No data left"), "The file is empty or truncated."),
+        (("JSONDecodeError",), "Not valid JSON: the file may still be being written, or it is damaged."),
+        (("MemoryError",), "The file is too large for the available memory."),
+        (("PermissionError",), "No permission to read the file."),
     )
-    for keys, zh in rules:
+    for keys, why in rules:
         if any(k in err for k in keys):
-            return f"{zh}\n\n{first}"
+            return f"{why}\n\n{first}"
     return first
 
 
@@ -344,7 +353,7 @@ class FindBox(QLineEdit):
     """Search field: Return = next match, Shift+Return = previous. Signal `search(text, backwards)`."""
     search = Signal(str, bool)
 
-    def __init__(self, placeholder="查找…", parent=None):
+    def __init__(self, placeholder="Find…", parent=None):
         super().__init__(parent)
         self.setPlaceholderText(placeholder)
         self.setClearButtonEnabled(True)
@@ -449,6 +458,38 @@ class FlowLayout(QLayout):
         return y - rect.y() + m.bottom()
 
 
+class _WrapBox(QWidget):
+    """Container for a FlowLayout that does not advertise height-for-width. A height-for-width child makes every
+    ancestor height-for-width, and the app's page QScrollArea then sizes the whole page to its *preferred*
+    height (850 px in a 700 px window: the field plot was cut off). Instead the box keeps its minimum height
+    equal to the height of its wrapped rows."""
+
+    def hasHeightForWidth(self):
+        return False
+
+    def sizeHint(self):
+        lay = self.layout()
+        if lay is None:
+            return super().sizeHint()
+        return QSize(lay.sizeHint().width(), max(self.minimumHeight(), lay.minimumSize().height()))
+
+    def _fit(self):
+        lay = self.layout()
+        if lay is not None and self.width() > 0:
+            h = lay.heightForWidth(self.width())
+            if h != self.minimumHeight():
+                self.setMinimumHeight(h)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+
+    def event(self, e):
+        if e.type() == QEvent.Type.LayoutRequest:      # children shown / hidden / resized
+            self._fit()
+        return super().event(e)
+
+
 # ---------------------------------------------------------------------------------------------- base
 class FileView(QWidget):
     """Base class of all previews (see the module docstring for the protocol).
@@ -496,7 +537,7 @@ class FileView(QWidget):
         self._gen += 1
         gen = self._gen
         if not p.exists():
-            self.message(f"文件不存在：\n{paths.rel(p)}")
+            self.message(f"File not found:\n{paths.rel(p)}")
             self.loaded.emit(False)
             return False
         try:
@@ -511,7 +552,7 @@ class FileView(QWidget):
                 return False
             return self._finish(gen, data)
         self.loading = True
-        self.message(f"正在读取 {p.name}" + (f"（{human_size(size)}）" if size else "") + " …")
+        self.message(f"Reading {p.name}" + (f" ({human_size(size)})" if size else "") + " …")
         ref = weakref.ref(self)
         run_async(_read_weak, ref, p, on_done=_weak_call(ref, "_finish", gen),
                   on_error=_weak_call(ref, "_finish_err", gen))
@@ -541,7 +582,7 @@ class FileView(QWidget):
     def _fail(self, msg: str):
         self.loading = False
         name = self.path.name if self.path else ""
-        self.message(f"无法读取 {name}\n\n{_explain(msg)}")
+        self.message(f"Cannot read {name}\n\n{_explain(msg)}")
         self.loaded.emit(False)
 
     def _read(self, p: Path):            # pragma: no cover - abstract
@@ -580,7 +621,7 @@ class ImageFileView(FileView):
         self.view = ImageView()
         if not file_actions:
             for b in self.view.findChildren(QPushButton):
-                if b.text() in ("在访达中显示", "用默认程序打开"):
+                if b.text() in ("Finder", "Open"):             # ImageView's reveal / open buttons
                     b.hide()
         self._set_content(self.view)
 
@@ -603,7 +644,8 @@ class ImageFileView(FileView):
             return False
         need = sz.width() * sz.height() * 4 // 2 ** 20 + 64         # MB: png / tiff decode at full size first
         if need > 2048:
-            self.view.clear(f"图像过大（{sz.width()}×{sz.height()}），无法在应用内预览；请用默认程序打开")
+            self.view.clear(f"The image is too large ({sz.width()}×{sz.height()}) to preview in the app; "
+                            "open it with the default app")
             return False
         r.setScaledSize(sz.scaled(self.MAX_SIDE, self.MAX_SIDE, Qt.AspectRatioMode.KeepAspectRatio))
         old = QImageReader.allocationLimit()
@@ -622,7 +664,7 @@ class ImageFileView(FileView):
         v.empty.hide()
         v.view.show()
         if v.caption is not None:
-            v.caption.setText(f"{p.name}  ·  {sz.width()}×{sz.height()}（缩小显示为 {pm.width()}×{pm.height()}）")
+            v.caption.setText(f"{p.name}  ·  {sz.width()}×{sz.height()} (shown at {pm.width()}×{pm.height()})")
         v.view.resetTransform()
         v.view.fit()
         return True
@@ -648,20 +690,20 @@ class TextView(FileView):
         self.find = FindBox()
         self.find.search.connect(lambda t, back: self.find.set_found(_find_in(self.edit, t, back)))
         h.addWidget(self.find)
-        self.wrap = QCheckBox("自动换行")
+        self.wrap = QCheckBox("Wrap lines")
         self.wrap.toggled.connect(lambda on: self.edit.setLineWrapMode(
             QPlainTextEdit.LineWrapMode.WidgetWidth if on else QPlainTextEdit.LineWrapMode.NoWrap))
         h.addWidget(self.wrap)
         lay.addWidget(bar)
         if log:
             self.edit = LogView(max_lines=0)
-            self.edit.setPlaceholderText("（空文件）")
+            self.edit.setPlaceholderText("(empty file)")
         else:
             self.edit = QPlainTextEdit()
             self.edit.setObjectName("log")
             self.edit.setReadOnly(True)
             self.edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-            self.edit.setPlaceholderText("（空文件）")
+            self.edit.setPlaceholderText("(empty file)")
         lay.addWidget(self.edit, 1)
         self._set_content(w)
 
@@ -682,9 +724,9 @@ class TextView(FileView):
         self.set_text(text)
         n = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
         cap = human_size(self.LOG_TAIL if self.log else self.MAX_BYTES)
-        extra = (f"  ·  文件较大，仅显示{'最后' if self.log else '前'} {cap}（完整内容请用默认程序打开）"
-                 if truncated else "")
-        self.info.setText(f"{n} 行  ·  {human_size(size)}{extra}")
+        extra = (f"  ·  large file: showing only the {'last' if self.log else 'first'} {cap} "
+                 "(open it with the default app for the full text)" if truncated else "")
+        self.info.setText(f"{plural(n, 'line')}  ·  {human_size(size)}{extra}")
         self.info.setToolTip(self.info.text())
 
     def set_text(self, text: str):
@@ -692,7 +734,7 @@ class TextView(FileView):
             self.edit.set_text(text)
         else:
             self.edit.setPlainText(text)
-        self.info.setText(f"{text.count(chr(10)) + 1} 行" if text else "")
+        self.info.setText(plural(text.count(chr(10)) + 1, "line") if text else "")
         self._show_content()
 
 
@@ -752,18 +794,18 @@ class JsonView(FileView):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         bar, h = _toolbar()
-        self.mode = segmented(["树形", "原始文本"])
+        self.mode = segmented(["Tree", "Raw"])
         self.mode.currentChanged.connect(self._on_mode)
         h.addWidget(self.mode)
         self.info = ElideLabel("", "muted")
         h.addWidget(self.info, 1)
-        self.find = FindBox("查找键或值…")
+        self.find = FindBox("Find key or value…")
         self.find.search.connect(self._on_find)
         h.addWidget(self.find)
-        self.b_expand = _flat("展开", self._expand_all, "展开前三层")
-        self.b_collapse = _flat("折叠", lambda: self.tree.collapseAll(), "全部折叠")
-        self.b_copy = _flat("复制", self.copy_value, "复制所选节点的值（对象/数组为 JSON 文本）")
-        self.b_plot = _flat("绘图", self.show_plot, "绘制所选的数值数组 / 矩阵")
+        self.b_expand = _flat("Expand", self._expand_all, "Expand the first three levels")
+        self.b_collapse = _flat("Collapse", lambda: self.tree.collapseAll(), "Collapse all")
+        self.b_copy = _flat("Copy", self.copy_value, "Copy the selected value (objects and arrays as JSON text)")
+        self.b_plot = _flat("Plot", self.show_plot, "Plot the selected numeric array / matrix")
         self.b_plot.setEnabled(False)
         for b in (self.b_expand, self.b_collapse, self.b_copy, self.b_plot):
             h.addWidget(b)
@@ -773,7 +815,7 @@ class JsonView(FileView):
         self.split = QSplitter(Qt.Orientation.Vertical)
         self.split.setChildrenCollapsible(False)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["键", "值", "类型"])
+        self.tree.setHeaderLabels(["Key", "Value", "Type"])
         self.tree.setUniformRowHeights(True)
         self.tree.setAlternatingRowColors(True)
         self.tree.setStyleSheet(ROW_QSS)
@@ -794,20 +836,20 @@ class JsonView(FileView):
         pl.setContentsMargins(0, 6, 0, 0)
         pl.setSpacing(4)
         ph = QHBoxLayout()
-        ph.addWidget(QLabel("横轴"))
+        ph.addWidget(QLabel("x axis"))
         self.x_combo = QComboBox()
         self.x_combo.setMinimumWidth(110)
         self.x_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.x_combo.setMinimumContentsLength(14)
         self.x_combo.currentIndexChanged.connect(lambda *_: self._draw())
         ph.addWidget(self.x_combo)
-        self.logy = QCheckBox("对数 y")
+        self.logy = QCheckBox("Log y")
         self.logy.toggled.connect(lambda *_: self._draw())
         ph.addWidget(self.logy)
         self.plot_title = ElideLabel("", "muted", Qt.TextElideMode.ElideLeft)
         self.plot_title.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         ph.addWidget(self.plot_title, 1)
-        ph.addWidget(_flat("隐藏图表", lambda: self.plot_box.hide()))
+        ph.addWidget(_flat("Hide plot", lambda: self.plot_box.hide()))
         pl.addLayout(ph)
         self.plot = compact_plot(PlotWidget(figsize=(6, 3)))
         pl.addWidget(self.plot, 1)
@@ -851,7 +893,7 @@ class JsonView(FileView):
         elif isinstance(obj, list):
             entries = list(enumerate(obj))
         else:
-            entries = [("(值)", obj)]
+            entries = [("(value)", obj)]
         container = isinstance(obj, (dict, list))
         for i, (k, v) in enumerate(entries):
             if i >= self.MAX_CHILDREN:
@@ -865,8 +907,8 @@ class JsonView(FileView):
             if isinstance(v, dict) and len(v) <= 12:
                 it.setExpanded(True)
         n = len(obj) if isinstance(obj, (dict, list)) else 1
-        kind = "对象" if isinstance(obj, dict) else ("数组" if isinstance(obj, list) else "值")
-        self.info.setText(f"{kind} · {n} 项")
+        kind = "Object" if isinstance(obj, dict) else ("Array" if isinstance(obj, list) else "Value")
+        self.info.setText(f"{kind} · {plural(n, 'item')}")
         if self.mode.currentIndex() == 1:
             self._on_mode(1)
         self._show_content()
@@ -894,7 +936,7 @@ class JsonView(FileView):
         return it
 
     def _more(self, parent, n):
-        it = QTreeWidgetItem([f"… 还有 {n} 项未显示", "", ""])
+        it = QTreeWidgetItem([f"… {n:,} more not shown", "", ""])
         it.setFlags(Qt.ItemFlag.NoItemFlags)
         if parent is None:
             self.tree.addTopLevelItem(it)
@@ -904,33 +946,33 @@ class JsonView(FileView):
     @staticmethod
     def _summary(v, kind=None) -> tuple[str, str]:
         if isinstance(v, dict):
-            return f"{{{len(v)} 个键}}", "对象"
+            return f"{{{plural(len(v), 'key')}}}", "object"
         if isinstance(v, list):
             if not v:
-                return "[]", "数组"
+                return "[]", "array"
             if kind == "list":
                 if len(v) <= 6:
-                    return "[" + ", ".join(_fnum(x) if x is not None else "null" for x in v) + "]", f"数值数组 [{len(v)}]"
+                    return "[" + ", ".join(_fnum(x) if x is not None else "null" for x in v) + "]", f"numbers [{len(v)}]"
                 a = _as_float(v)
                 fin = a[np.isfinite(a)]
                 rng = f"{_fnum(fin.min())} … {_fnum(fin.max())}" if fin.size else "NaN"
-                return rng, f"数值数组 [{len(v)}]"
+                return rng, f"numbers [{len(v)}]"
             if kind == "matrix":
-                return f"{len(v)} × {len(v[0])}", "数值矩阵"
+                return f"{len(v)} × {len(v[0])}", "number matrix"
             if len(v) <= 4 and all(isinstance(x, (str, int, float, bool)) or x is None for x in v):
-                return json.dumps(v, ensure_ascii=False), f"数组 [{len(v)}]"
-            return f"[{len(v)} 项]", "数组"
+                return json.dumps(v, ensure_ascii=False), f"array [{len(v)}]"
+            return f"[{plural(len(v), 'item')}]", "array"
         if isinstance(v, bool):
-            return ("true" if v else "false"), "布尔"
+            return ("true" if v else "false"), "boolean"
         if v is None:
             return "null", "null"
         if isinstance(v, int):
-            return str(v), "整数"
+            return str(v), "integer"
         if isinstance(v, float):
-            return _fnum(v), "数值"
+            return _fnum(v), "number"
         s = str(v)
         one = s.replace("\n", " ⏎ ")
-        return (one[:300] + "…") if len(one) > 300 else one, "字符串"
+        return (one[:300] + "…") if len(one) > 300 else one, "string"
 
     def _value(self, it):
         nid = it.data(0, Qt.ItemDataRole.UserRole)
@@ -998,14 +1040,14 @@ class JsonView(FileView):
             return
         self.tree.setCurrentItem(it)
         m = QMenu(self)
-        m.addAction("复制值", self.copy_value)
-        m.addAction("复制键路径", self._copy_path)
+        m.addAction("Copy value", self.copy_value)
+        m.addAction("Copy key path", self._copy_path)
         v = self._value(it)
         if isinstance(v, (dict, list)) and v:
-            m.addAction("展开全部子项", lambda: self._expand_item(it))
+            m.addAction("Expand all children", lambda: self._expand_item(it))
         if self._kind(it):
             m.addSeparator()
-            m.addAction("绘制此数组", self.show_plot)
+            m.addAction("Plot this array", self.show_plot)
         m.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _expand_item(self, it, depth=4):
@@ -1039,8 +1081,9 @@ class JsonView(FileView):
                 break
         text = "".join(out)[:self.RAW_MAX]
         if cut:
-            total = f"原始文本共 {human_size(len(raw.encode('utf-8', errors='replace')))}，" if raw is not None else ""
-            text += f"\n\n… （已截断：{total}此处只显示格式化后的前 {self.RAW_MAX // 1000} 千字符；完整内容请用默认程序打开）"
+            total = f"the file has {human_size(len(raw.encode('utf-8', errors='replace')))}; " if raw is not None else ""
+            text += (f"\n\n… (truncated: {total}only the first {self.RAW_MAX // 1000}k characters of the formatted "
+                     "text are shown here; open it with the default app for the full content)")
         return text
 
     def _on_mode(self, i):
@@ -1064,7 +1107,7 @@ class JsonView(FileView):
             # walk the data in a worker thread (a 34 MB file took ~1 s per search on the GUI thread)
             self._needle, self._matches, self._mi = needle, [], -1
             self._search_gen += 1
-            self.info.setText("正在查找…")
+            self.info.setText("Searching…")
             run_async(_json_search, self.data, needle,
                       on_done=_weak_call(weakref.ref(self), "_search_done", self._search_gen, back))
             return
@@ -1079,12 +1122,12 @@ class JsonView(FileView):
     def _goto_match(self, back):
         if not self._matches:
             self.find.set_found(False)
-            self.info.setText("无匹配")
+            self.info.setText("No matches")
             return
         self.find.set_found(True)
         self._mi = (self._mi + (-1 if back else 1)) % len(self._matches)
         if self.reveal(self._matches[self._mi]):
-            self.info.setText(f"匹配 {self._mi + 1} / {len(self._matches)}" + ("+" if len(self._matches) >= 2000 else ""))
+            self.info.setText(f"Match {self._mi + 1} / {len(self._matches)}" + ("+" if len(self._matches) >= 2000 else ""))
 
     def _search(self, needle, cap=2000):
         return _json_search(self.data, needle, cap)
@@ -1106,8 +1149,8 @@ class JsonView(FileView):
                     self.tree.setCurrentItem(it)
                 if more is not None:
                     self.tree.scrollToItem(more)
-                self.info.setText(f"{self.path_text(path)} 位于第 {pos + 1} 项，超出树形视图的显示上限"
-                                  f"（每层前 {self.MAX_CHILDREN} 项），可在「原始文本」中查看")
+                self.info.setText(f"{self.path_text(path)} is item {pos + 1:,}, beyond what the tree shows "
+                                  f"(the first {self.MAX_CHILDREN} per level); see it under Raw")
                 return False
             nxt = self.tree.topLevelItem(pos) if it is None else it.child(pos)
             if nxt is None:
@@ -1147,7 +1190,7 @@ class JsonView(FileView):
         cands = self._x_candidates(path, n)
         self.x_combo.blockSignals(True)
         self.x_combo.clear()
-        self.x_combo.addItem("索引", None)
+        self.x_combo.addItem("Index", None)
         for lab, p in cands:
             self.x_combo.addItem(lab, p)
         best = min(range(len(cands)), key=lambda i: _coord_score(str(cands[i][1][-1])), default=None)
@@ -1282,7 +1325,7 @@ class CsvView(FileView):
         self.y_menu = QMenu(self.y_btn)
         self.y_btn.setMenu(self.y_menu)
         h.addWidget(self.y_btn)
-        self.logy = QCheckBox("对数 y")
+        self.logy = QCheckBox("Log y")
         self.logy.toggled.connect(lambda *_: self._draw())
         h.addWidget(self.logy)
         lay.addWidget(bar)
@@ -1337,7 +1380,7 @@ class CsvView(FileView):
         header, body, numeric, cols, truncated = data
         self.header, self.numeric, self.cols = header, numeric, cols
         if not header:
-            self.message("（空表格）")
+            self.message("(empty table)")
             return
         model = _CsvModel(header, body, numeric, cols)
         proxy = QSortFilterProxyModel(self)
@@ -1348,11 +1391,12 @@ class CsvView(FileView):
         self.table.resizeColumnsToContents()
         for c in range(len(header)):
             self.table.setColumnWidth(c, min(max(self.table.columnWidth(c), 70), 220))
-        self.info.setText(f"{len(body)} 行 × {len(header)} 列" + ("  ·  已截断" if truncated else ""))
+        self.info.setText(f"{plural(len(body), 'row')} × {plural(len(header), 'column')}"
+                          + ("  ·  truncated" if truncated else ""))
         num = [i for i, ok in enumerate(numeric) if ok]
         self.x_combo.blockSignals(True)
         self.x_combo.clear()
-        self.x_combo.addItem("行号", -1)
+        self.x_combo.addItem("Row number", -1)
         for i in num:
             self.x_combo.addItem(header[i], i)
         self.y_menu.clear()
@@ -1387,7 +1431,7 @@ class CsvView(FileView):
         if not self.header:
             return
         ys = self.selected_y()
-        self.y_btn.setText((", ".join(self.header[i] for i in ys) if ys else "选择列") + "  ▾")
+        self.y_btn.setText((", ".join(self.header[i] for i in ys) if ys else "Choose columns") + "  ▾")
         xi = self.x_combo.currentData()
         logy = self.logy.isChecked()
         header, cols = self.header, self.cols
@@ -1460,7 +1504,7 @@ class MarkdownView(FileView):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         bar, h = _toolbar()
-        self.mode = segmented(["渲染", "源文本"])
+        self.mode = segmented(["Rendered", "Source"])
         self.mode.currentChanged.connect(lambda i: self.stack.setCurrentIndex(i))
         h.addWidget(self.mode)
         h.addStretch(1)
@@ -1559,7 +1603,7 @@ def _array_info(a: np.ndarray) -> dict:
                 except ValueError:
                     pass
             one = s.replace("\n", " ")
-            info["min"] = ("JSON：" if info["kind"] == "json" else "") + (one[:60] + ("…" if len(one) > 60 else ""))
+            info["min"] = ("JSON: " if info["kind"] == "json" else "") + (one[:60] + ("…" if len(one) > 60 else ""))
         else:
             info["kind"] = "strings"
         return info
@@ -1591,10 +1635,16 @@ class NpzView(FileView):
     1-D: line plot vs index or a same-length 1-D array; 2-D: image (colormap, log, transpose, coordinate axes
     picked from matching 1-D arrays); 0-d: value; strings: text (JSON strings as a tree).
     Files with cell-edge arrays `xe` / `ze` (ltemsim Solution.save: fields stored flattened, index k*Nx + i)
-    show those flat fields as (z, x) maps on the cell centres."""
-    CMAPS = ("自动", "viridis", "magma", "inferno", "plasma", "cividis", "turbo", "RdBu_r", "coolwarm", "gray")
+    show those flat fields as (z, x) maps on the cell centres.
+    A steady-state solution (Solution.save: params_json, psi, xe, ze, ks) also gets a "Field (COMSOL style)" view:
+    |E|, E_x, E_z and the potential on the device cross-section (widgets/device.FieldView), computed from the
+    solution in a worker thread the first time it is shown."""
+    CMAPS = ("auto", "viridis", "magma", "inferno", "plasma", "cividis", "turbo", "RdBu_r", "coolwarm", "gray")
     MAX_IMG = 1600              # pixels per axis drawn; bigger 2-D arrays are strided for display only
     SYNC_UNPACKED = 2 * 1024 * 1024
+    SOLUTION_KEYS = frozenset({"params_json", "psi", "xe", "ze", "ks"})
+    VIEW_MODES = ("Field (COMSOL style)", "Arrays")
+    prefer_field = True         # last choice of the view switch (shared by all previews of this session)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1603,18 +1653,29 @@ class NpzView(FileView):
         self.current: str | None = None
         self.grid: tuple[np.ndarray, np.ndarray] | None = None      # (x centres, z centres) from xe / ze
         self._grid_um = False
+        self.is_solution = False
+        self.field = None                       # device.FieldView, created when first shown
+        self.field_data: dict | None = None
+        self._field_gen = -1                    # file generation the field map was requested for
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         bar, h = _toolbar()
+        self.view_mode = segmented(self.VIEW_MODES)
+        self.view_mode.setToolTip("Field: electric field and potential on the device cross-section, computed from "
+                                  "the solution\nArrays: every array stored in the file")
+        self.view_mode.currentChanged.connect(self._on_view_mode)
+        self.view_mode.hide()
+        h.addWidget(self.view_mode)
         self.summary = ElideLabel("", "muted")
         h.addWidget(self.summary, 1)
         lay.addWidget(bar)
+        self.modes = QStackedWidget()
         self.split = QSplitter(Qt.Orientation.Vertical)
         self.split.setChildrenCollapsible(False)
         self.table = QTreeWidget()
-        self.table.setHeaderLabels(["名称", "形状", "dtype", "最小值", "最大值"])
+        self.table.setHeaderLabels(["Name", "Shape", "dtype", "Min", "Max"])
         self.table.setRootIsDecorated(False)
         self.table.setUniformRowHeights(True)
         self.table.setAlternatingRowColors(True)
@@ -1635,7 +1696,7 @@ class NpzView(FileView):
         vl = QVBoxLayout(viewer)
         vl.setContentsMargins(0, 8, 0, 0)
         vl.setSpacing(4)
-        self.controls = QWidget()
+        self.controls = _WrapBox()
         cl = FlowLayout(self.controls, spacing=8)        # wraps in narrow windows instead of clipping
         self.x_combo, self.row_combo, self.col_combo = QComboBox(), QComboBox(), QComboBox()
         self.cmap = QComboBox()
@@ -1652,17 +1713,18 @@ class NpzView(FileView):
             hl.addWidget(wdg)
             cl.addWidget(box)
             return box
-        self.g_x = pair("横轴", self.x_combo)
-        self.g_row = pair("行坐标", self.row_combo)
-        self.g_col = pair("列坐标", self.col_combo)
-        self.g_cmap = pair("色图", self.cmap)
-        self.g_slice = pair("切片", self.slice)
-        self.as_grid = QCheckBox("按网格 (z, x)")
+        self.g_x = pair("x axis", self.x_combo)
+        self.g_row = pair("Rows", self.row_combo)
+        self.g_col = pair("Columns", self.col_combo)
+        self.g_cmap = pair("Colormap", self.cmap)
+        self.g_slice = pair("Slice", self.slice)
+        self.as_grid = QCheckBox("On grid (z, x)")
         self.as_grid.setChecked(True)
-        self.as_grid.setToolTip("Solution 文件把场按单元展平保存（索引 k·Nx + i）；勾选后用 xe / ze 的单元中心重排为二维图")
-        self.logc = QCheckBox("对数")
-        self.transpose = QCheckBox("转置")
-        self.export_btn = _flat("导出 CSV…", self.export_csv, "把当前显示的数组（全分辨率）保存为 CSV")
+        self.as_grid.setToolTip("Solution files store fields flattened per cell (index k·Nx + i); check to reshape "
+                                "them into 2-D maps on the xe / ze cell centres")
+        self.logc = QCheckBox("Log")
+        self.transpose = QCheckBox("Transpose")
+        self.export_btn = _flat("Export CSV…", self.export_csv, "Save the shown array (full resolution) as CSV")
         for wdg in (self.as_grid, self.logc, self.transpose, self.export_btn):
             cl.addWidget(wdg)
         for c in (self.x_combo, self.row_combo, self.col_combo):
@@ -1689,7 +1751,8 @@ class NpzView(FileView):
         self.split.setStretchFactor(0, 0)
         self.split.setStretchFactor(1, 1)
         self.split.setSizes([200, 500])
-        lay.addWidget(self.split, 1)
+        self.modes.addWidget(self.split)
+        lay.addWidget(self.modes, 1)
         self._set_content(w)
 
     def _needs_async(self, p, size):
@@ -1720,6 +1783,7 @@ class NpzView(FileView):
         self.arrays, self.info, errors = data
         self.current = None
         self.grid = None
+        self.is_solution = False
         xe, ze = self.arrays.get("xe"), self.arrays.get("ze")
         if (xe is not None and ze is not None and xe.ndim == ze.ndim == 1 and xe.size > 2 and ze.size > 2
                 and xe.dtype.kind in "iuf" and ze.dtype.kind in "iuf"):
@@ -1730,23 +1794,23 @@ class NpzView(FileView):
         self.table.clear()
         for k, a in self.arrays.items():
             inf = self.info[k]
-            shape = "标量" if a.ndim == 0 else ("(" + ", ".join(map(str, a.shape)) + ")")
+            shape = "scalar" if a.ndim == 0 else ("(" + ", ".join(map(str, a.shape)) + ")")
             g = self._grid_rows(k)
             if g:
                 shape += f"  → {g} × {a.size // g}"
             it = QTreeWidgetItem([k, shape, str(a.dtype), inf["min"], inf["max"]])
-            it.setToolTip(1, f"按网格重排为 (z, x) = ({g}, {a.size // g})" if g else "")
+            it.setToolTip(1, f"Reshaped on the grid to (z, x) = ({g}, {a.size // g})" if g else "")
             it.setToolTip(3, inf["min"])
             self.table.addTopLevelItem(it)
         for k, e in errors.items():
-            it = QTreeWidgetItem([k, "", "object", "（对象数组，出于安全原因未加载）", ""])
+            it = QTreeWidgetItem([k, "", "object", "(object array, not loaded for safety)", ""])
             it.setToolTip(3, e)
             it.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.table.addTopLevelItem(it)
         self.table.blockSignals(False)
         total = sum(a.nbytes for a in self.arrays.values())
-        self.summary.setText(f"{len(self.arrays)} 个数组  ·  解压后 {human_size(total)}"
-                             + (f"  ·  {len(errors)} 个对象数组未加载" if errors else ""))
+        self.summary.setText(f"{plural(len(self.arrays), 'array')}  ·  {human_size(total)} unpacked"
+                             + (f"  ·  {plural(len(errors), 'object array')} not loaded" if errors else ""))
         # default: the first numeric non-coordinate array, else the first entry
         order = sorted(self.arrays, key=lambda k: (self.info[k]["kind"] != "num" or self.arrays[k].ndim == 0,
                                                    _coord_score(k) < 1000 or k in ("xe", "ze"),
@@ -1754,8 +1818,62 @@ class NpzView(FileView):
         if order:
             self.select(order[0])
         else:
-            self.message("（npz 中没有可读取的数组）" if not errors else
-                         f"npz 中只有对象数组（{', '.join(errors)}），出于安全原因不加载")
+            self.message("(no readable arrays in this npz)" if not errors else
+                         f"This npz holds only object arrays ({', '.join(errors)}); they are not loaded, for safety")
+            return
+        # steady-state solution: COMSOL-style field map (default unless the user last chose the array table)
+        self.is_solution = self.SOLUTION_KEYS <= set(self.arrays) and self.grid is not None
+        self.field_data = None
+        self.view_mode.setVisible(self.is_solution)
+        self.show_field(self.is_solution and NpzView.prefer_field)
+
+    # -- steady-state solution: field map
+    def _on_view_mode(self, i):
+        NpzView.prefer_field = i == 0
+        self.show_field(i == 0)
+
+    def show_field(self, on: bool = True):
+        """Show the COMSOL-style field map (steady-state solutions only) or the array table."""
+        on = bool(on) and self.is_solution
+        self.view_mode.blockSignals(True)
+        self.view_mode.setCurrentIndex(0 if on else 1)
+        self.view_mode.blockSignals(False)
+        if not on:
+            self._set_mode(self.split)
+            return
+        if self.field is None:
+            from .device import FieldView
+            self.field = FieldView()
+            self.modes.addWidget(self.field)
+        self._set_mode(self.field)
+        if self._field_gen != self._gen and self.path is not None:
+            from .device import load_steady_fields
+            self._field_gen = self._gen
+            self.field.set_fields(None, "Computing the electric field from the solution …")
+            ref = weakref.ref(self)
+            run_async(load_steady_fields, self.path, on_done=_weak_call(ref, "_field_done", self._gen),
+                      on_error=_weak_call(ref, "_field_failed", self._gen))
+
+    def _set_mode(self, w: QWidget):
+        """Show `w` in the stack; the hidden page's height is ignored, so the minimum height is that of the shown
+        page (the array table + plot need ~380 px, the field map much less)."""
+        for c in (self.split, self.field):
+            if c is not None:
+                pol = c.sizePolicy()
+                pol.setVerticalPolicy(QSizePolicy.Policy.Preferred if c is w else QSizePolicy.Policy.Ignored)
+                c.setSizePolicy(pol)
+        self.modes.setCurrentWidget(w)
+
+    def _field_done(self, gen, data):
+        if gen == self._gen and self.field is not None:
+            self.field_data = data
+            self.field.set_fields(data)
+
+    def _field_failed(self, gen, err: str):
+        if gen == self._gen and self.field is not None:
+            why = _explain(err.split("\n\n")[0])
+            self.field.set_fields(None, f"Could not compute the field map from this solution.\n\n{why}\n\n"
+                                        "Its arrays are still available under Arrays.")
 
     def _same_len(self, n, exclude=None):
         """1-D numeric arrays of length n, coordinate-like names first."""
@@ -1810,7 +1928,7 @@ class NpzView(FileView):
             wdg.setVisible(two)
         self.as_grid.setVisible(bool(g))
         self.logc.setVisible(one or two)
-        self.logc.setText("对数 y" if one else "对数")
+        self.logc.setText("Log y" if one else "Log")
         self.g_slice.setVisible(is_num and nd >= 3)
         self.export_btn.setVisible(is_num and nd >= 1)
         self.controls.setVisible(one or two)
@@ -1826,7 +1944,7 @@ class NpzView(FileView):
                 v = a.item()
                 txt = f"{name} = {v!r}\n\ndtype: {a.dtype}" if is_num else str(v)
             elif a.size == 0:
-                txt = f"（空数组，形状 {a.shape}）"
+                txt = f"(empty array, shape {a.shape})"
             else:
                 flat = a.ravel()
                 txt = "\n".join(map(str, flat[:20000])) + ("\n…" if flat.size > 20000 else "")
@@ -1837,14 +1955,14 @@ class NpzView(FileView):
             c.blockSignals(True)
             c.clear()
         if one:
-            self.x_combo.addItem("索引", None)
+            self.x_combo.addItem("Index", None)
             for key in self._same_len(a.shape[0], name):
                 self.x_combo.addItem(key, key)
             if self.x_combo.count() > 1 and _coord_score(self.x_combo.itemData(1)) < 1000:
                 self.x_combo.setCurrentIndex(1)
         elif k:
             for combo, key in ((self.row_combo, "@z"), (self.col_combo, "@x")):
-                combo.addItem("索引", None)
+                combo.addItem("Index", None)
                 combo.addItem(self._axis_name(key), key)
                 combo.setCurrentIndex(1)
             self.transpose.blockSignals(True)
@@ -1861,7 +1979,7 @@ class NpzView(FileView):
                 self.slice.blockSignals(False)
             sh = a.shape[-2:]
             for combo, n in ((self.row_combo, sh[0]), (self.col_combo, sh[1])):
-                combo.addItem("索引", None)
+                combo.addItem("Index", None)
                 for key in self._same_len(n, name):
                     combo.addItem(key, key)
                 if combo.count() > 1 and _coord_score(combo.itemData(1)) < 1000:
@@ -1946,7 +2064,7 @@ class NpzView(FileView):
             if c is not None and c.size > 1 and c[0] > c[-1]:
                 Z, c = Z[:, ::-1], c[::-1]
             fin = Z[np.isfinite(Z)]
-            cmap = None if cmap_name == "自动" else cmap_name
+            cmap = None if cmap_name == "auto" else cmap_name
             if log:
                 Z = np.abs(Z)
                 pos = Z[np.isfinite(Z) & (Z > 0)]
@@ -1987,7 +2105,7 @@ class NpzView(FileView):
         name = self.current
         if name is None or self.path is None:
             return
-        fn, _ = QFileDialog.getSaveFileName(self, "导出数组为 CSV",
+        fn, _ = QFileDialog.getSaveFileName(self, "Export array as CSV",
                                             str(_export_dir(self.path) / f"{self.path.stem}_{name}.csv"), "CSV (*.csv)")
         if not fn:
             return
@@ -2081,19 +2199,19 @@ def _headline(obj, cap=14) -> list[tuple[str, str]]:
 
     def val(v):
         if isinstance(v, dict):
-            return f"{{{len(v)} 个键}}"
+            return f"{{{plural(len(v), 'key')}}}"
         if isinstance(v, list):
             if _num_list(v):
                 if len(v) <= 4:
                     return "[" + ", ".join(_fnum(x) for x in v) + "]"
                 a = _as_float(v)
                 return f"[{len(v)}]  {_fnum(np.nanmin(a))} … {_fnum(np.nanmax(a))}"
-            return f"[{len(v)} 项]"
+            return f"[{plural(len(v), 'item')}]"
         if isinstance(v, str):
             return v if len(v) < 80 else v[:77] + "…"
         return _fnum(v) if v is not None else "null"
     if not isinstance(obj, dict):
-        return [("(内容)", val(obj))]
+        return [("(content)", val(obj))]
     scal = [(k, v) for k, v in obj.items() if not isinstance(v, (dict, list))]
     nested = [(k, v) for k, v in obj.items() if isinstance(v, dict)]
     lists = [(k, v) for k, v in obj.items() if isinstance(v, list)]
@@ -2105,10 +2223,11 @@ def _headline(obj, cap=14) -> list[tuple[str, str]]:
             out += [(f"{k}.{k2}", val(v2)) for k2, v2 in sub]
         else:
             keys = list(d)
-            out.append((k, f"{{{len(d)} 个键}}  " + ", ".join(map(str, keys[:5])) + ("…" if len(keys) > 5 else "")))
+            out.append((k, f"{{{plural(len(d), 'key')}}}  " + ", ".join(map(str, keys[:5]))
+                        + ("…" if len(keys) > 5 else "")))
     for k, v in lists:
         out.append((k, val(v)))
-    return out[:cap] + ([("…", f"另有 {len(out) - cap} 项")] if len(out) > cap else [])
+    return out[:cap] + ([("…", f"{len(out) - cap} more")] if len(out) > cap else [])
 
 
 def _thumb(path: str, w: int, h: int) -> QImage | None:
@@ -2132,7 +2251,7 @@ class _Thumb(ClickableCard):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 6)
         lay.setSpacing(4)
-        self.pic = QLabel("载入中…", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.pic = QLabel("Loading…", alignment=Qt.AlignmentFlag.AlignCenter)
         self.pic.setObjectName("muted")
         self.pic.setFixedSize(self.W, self.H)
         lay.addWidget(self.pic)
@@ -2145,7 +2264,7 @@ class _Thumb(ClickableCard):
 
     def set_image(self, img: QImage | None):
         if img is None:
-            self.pic.setText("无法读取")
+            self.pic.setText("Cannot read")
             return
         pm = QPixmap.fromImage(img)
         pm.setDevicePixelRatio(max(1.0, img.width() / self.W, img.height() / self.H))
@@ -2236,7 +2355,7 @@ class FolderView(FileView):
                 if not isinstance(run, dict):
                     raise ValueError
             except (OSError, ValueError):
-                run = {"_error": f"{f.name} 无法解析"}
+                run = {"_error": f"{f.name} could not be parsed"}
             runs.append(dict(json=f.name, log=log.name if log.is_file() else None, run=run, status=_log_status(log)))
         head = None
         for name in SUMMARY_FILES:
@@ -2274,11 +2393,12 @@ class FolderView(FileView):
         self._tiles, self._kv, self._kv_grid, self._cols = [], [], None, None
         lt = time.localtime(d["latest"]) if d["latest"] else None
         for lab, val, hint in (
-                ("文件", f"{d['n_files']}" + ("+" if d["truncated"] else ""), f"{d['n_dirs']} 个子文件夹"),
-                ("总大小", human_size(d["total"]), "含子文件夹"),
-                ("图像", str(d["n_images"]), "在此文件夹" if d["images_direct"] else
-                 ("在子文件夹中" if d["n_images"] else "")),
-                ("最近修改", time.strftime("%Y-%m-%d", lt) if lt else "—", time.strftime("%H:%M:%S", lt) if lt else "")):
+                ("Files", f"{d['n_files']:,}" + ("+" if d["truncated"] else ""), plural(d["n_dirs"], "subfolder")),
+                ("Total size", human_size(d["total"]), "incl. subfolders"),
+                ("Images", str(d["n_images"]), "in this folder" if d["images_direct"] else
+                 ("in subfolders" if d["n_images"] else "")),
+                ("Last modified", time.strftime("%Y-%m-%d", lt) if lt else "—",
+                 time.strftime("%H:%M:%S", lt) if lt else "")):
             tile = MetricTile(lab, val, hint)
             tile.hint.setWordWrap(False)        # short one-line hints: wrapped ones were clipped in narrow windows
             self._tiles.append(tile)
@@ -2295,8 +2415,8 @@ class FolderView(FileView):
             cl.setContentsMargins(14, 10, 14, 12)
             cl.setSpacing(6)
             top = QHBoxLayout()
-            top.addWidget(label(f"{name} 摘要", "cardTitle"), 1)
-            top.addWidget(_flat(f"打开 {name}", lambda _=False, f=str(p / name): self.open_requested.emit(f)))
+            top.addWidget(label(f"Summary · {name}", "cardTitle"), 1)
+            top.addWidget(_flat(f"Open {name}", lambda _=False, f=str(p / name): self.open_requested.emit(f)))
             cl.addLayout(top)
             g = QGridLayout()
             g.setHorizontalSpacing(14)
@@ -2311,8 +2431,8 @@ class FolderView(FileView):
             self.col.addWidget(c)
         # ---- thumbnails
         if d["images"]:
-            more = f"（显示前 {len(d['images'])} 个）" if d["n_images"] > len(d["images"]) else ""
-            self._section(f"图像  {d['n_images']}{more}" + ("" if d["images_direct"] else "  ·  来自子文件夹"))
+            more = f" (showing the first {len(d['images'])})" if d["n_images"] > len(d["images"]) else ""
+            self._section(f"Images  {d['n_images']}{more}" + ("" if d["images_direct"] else "  ·  from subfolders"))
             grid = QWidget()
             flow = FlowLayout(grid, spacing=10)
             gen = self._gen
@@ -2327,9 +2447,9 @@ class FolderView(FileView):
             self.col.addWidget(grid)
         # ---- contents
         ch = d["children"]
-        self._section(f"内容  {len(ch)} 项")
+        self._section(f"Contents  {plural(len(ch), 'item')}")
         tree = QTreeWidget()
-        tree.setHeaderLabels(["名称", "大小", "修改时间"])
+        tree.setHeaderLabels(["Name", "Size", "Modified"])
         tree.setRootIsDecorated(False)
         tree.setUniformRowHeights(True)
         tree.setStyleSheet(ROW_QSS)
@@ -2343,13 +2463,13 @@ class FolderView(FileView):
         shown = ch[:300]
         for path, isdir, size, mtime, cnt in shown:
             it = QTreeWidgetItem([os.path.basename(path) + ("/" if isdir else ""),
-                                  (f"{cnt} 个文件 · " if isdir else "") + human_size(size), fmt_time(mtime)])
+                                  (f"{plural(cnt, 'file')} · " if isdir else "") + human_size(size), fmt_time(mtime)])
             it.setIcon(0, _icon_for(path))
             it.setData(0, Qt.ItemDataRole.UserRole, path)
             it.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             tree.addTopLevelItem(it)
         if len(ch) > len(shown):
-            it = QTreeWidgetItem([f"… 还有 {len(ch) - len(shown)} 项", "", ""])
+            it = QTreeWidgetItem([f"… {len(ch) - len(shown):,} more", "", ""])
             it.setFlags(Qt.ItemFlag.NoItemFlags)
             tree.addTopLevelItem(it)
         tree.itemClicked.connect(lambda it, _c: it.data(0, Qt.ItemDataRole.UserRole) and
@@ -2359,7 +2479,7 @@ class FolderView(FileView):
         row_h = max(tree.sizeHintForRow(0), 22) if tree.topLevelItemCount() else 22
         tree.setFixedHeight(rows * row_h + tree.header().sizeHint().height() + 6)
         if not ch:
-            self.col.addWidget(label("（空文件夹）", "muted"))
+            self.col.addWidget(label("(empty folder)", "muted"))
         else:
             self.col.addWidget(tree)
         self.col.addStretch(1)
@@ -2407,7 +2527,7 @@ class FolderView(FileView):
         cl.setSpacing(6)
         top = QHBoxLayout()
         tag = Path(json_name).stem[len("gui_run"):].lstrip("_")
-        top.addWidget(label(f"运行记录 · {tag}" if tag else "运行记录", "cardTitle"))
+        top.addWidget(label(f"Run record · {tag}" if tag else "Run record", "cardTitle"))
         if "_error" in run:
             top.addWidget(label(run["_error"], "badgeErr"))
             top.addStretch(1)
@@ -2415,20 +2535,20 @@ class FolderView(FileView):
             return c
         job = _active_job(p, run)
         if job is not None:            # a re-run rewrote gui_run.json; the old log may still say FAILED
-            from ..jobs import STATUS_ZH
-            st, obj = STATUS_ZH.get(job.status, "运行中"), "badgeWarn"
+            from ..jobs import STATUS_TEXT
+            st, obj = STATUS_TEXT.get(job.status, "Running"), "badgeWarn"
         elif run.get("finished"):
-            st, obj = "已完成", "badgeOk"
+            st, obj = "Finished", "badgeOk"
         elif status == "failed":
-            st, obj = "失败", "badgeErr"
+            st, obj = "Failed", "badgeErr"
         elif status == "cancelled":
-            st, obj = "已取消", "badgeWarn"
+            st, obj = "Cancelled", "badgeWarn"
         else:
-            st, obj = "未完成（中断或仍在运行）", "badgeWarn"
+            st, obj = "Incomplete (interrupted or still running)", "badgeWarn"
         top.addWidget(label(st, obj))
         top.addStretch(1)
         if log_name and (p / log_name).is_file():
-            top.addWidget(_flat("查看日志", lambda _=False, f=str(p / log_name): self.open_requested.emit(f)))
+            top.addWidget(_flat("View log", lambda _=False, f=str(p / log_name): self.open_requested.emit(f)))
         top.addWidget(_flat(json_name, lambda _=False, f=str(p / json_name): self.open_requested.emit(f)))
         cl.addLayout(top)
         g = QGridLayout()
@@ -2445,10 +2565,10 @@ class FolderView(FileView):
         for k, v in (run.get("kwargs") or {}).items():
             if k != "out":
                 params.append(f"{k} = {json.dumps(v, ensure_ascii=False)}")
-        rows = [("任务", run.get("title", "")), ("调用", call), ("参数", "\n".join(params) or "（默认）"),
-                ("输出", run.get("out", "")), ("开始", run.get("started", "—")),
-                ("结束", run.get("finished", "—")),
-                ("用时", _wall(run.get("wall_s")))]
+        rows = [("Job", run.get("title", "")), ("Call", call), ("Arguments", "\n".join(params) or "(defaults)"),
+                ("Output", run.get("out", "")), ("Started", run.get("started", "—")),
+                ("Ended", run.get("finished", "—")),
+                ("Duration", _wall(run.get("wall_s")))]
         for i, (k, v) in enumerate(rows):
             g.addWidget(label(k, "muted"), i, 0, Qt.AlignmentFlag.AlignTop)
             vl = label(str(v), selectable=True)
@@ -2478,11 +2598,11 @@ class InfoView(FileView):
         lay.addWidget(self.desc)
         row = QHBoxLayout()
         row.addStretch(1)
-        b = QPushButton("用默认程序打开")
+        b = QPushButton("Open with default app")
         b.clicked.connect(lambda: self.path and open_external(self.path))
         row.addWidget(b)
         if file_actions:
-            b2 = QPushButton("在访达中显示")
+            b2 = QPushButton("Show in Finder")
             b2.clicked.connect(lambda: self.path and reveal(self.path))
             row.addWidget(b2)
         row.addStretch(1)
@@ -2498,8 +2618,8 @@ class InfoView(FileView):
         size, mtime = data
         self.icon.setPixmap(_icon_for(self.path).pixmap(64, 64))
         self.title.setText(self.path.name)
-        self.desc.setText(f"{describe(self.path)}  ·  {human_size(size)}  ·  修改于 {fmt_time(mtime)}\n\n"
-                          "此类型的文件无法在应用内预览。")
+        self.desc.setText(f"{describe(self.path)}  ·  {human_size(size)}  ·  modified {fmt_time(mtime)}\n\n"
+                          "This file type cannot be previewed in the app.")
 
     def load(self, path) -> bool:
         p = Path(path)
@@ -2507,7 +2627,7 @@ class InfoView(FileView):
             return super().load(p)
         self.path = p
         if not p.exists():
-            self.message(f"文件不存在：\n{paths.rel(p)}")
+            self.message(f"File not found:\n{paths.rel(p)}")
             return False
         return self._finish(self._gen, self._read(p))
 
@@ -2524,14 +2644,14 @@ class CompareView(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
         bar = QHBoxLayout()
-        bar.addWidget(label("并排对比", "cardTitle"))
-        self.sync = QCheckBox("同步缩放与平移")
+        bar.addWidget(label("Side by side", "cardTitle"))
+        self.sync = QCheckBox("Sync zoom and pan")
         self.sync.setChecked(True)
         bar.addWidget(self.sync)
         bar.addStretch(1)
-        bar.addWidget(_flat("适应窗口", self.fit))
-        bar.addWidget(_flat("交换左右", self.swap))
-        bar.addWidget(_flat("退出对比", self.closed.emit))
+        bar.addWidget(_flat("Fit", self.fit))
+        bar.addWidget(_flat("Swap sides", self.swap))
+        bar.addWidget(_flat("Exit comparison", self.closed.emit))
         lay.addLayout(bar)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setChildrenCollapsible(False)
@@ -2545,7 +2665,7 @@ class CompareView(QWidget):
             cap = label("", "muted")
             cap.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             row.addWidget(cap, 1)
-            row.addWidget(_flat("更换…", lambda _=False, s=side: self._pick(s)))
+            row.addWidget(_flat("Change…", lambda _=False, s=side: self._pick(s)))
             wl.addLayout(row)
             iv = ImageView(toolbar=False)
             wl.addWidget(iv, 1)
@@ -2570,13 +2690,13 @@ class CompareView(QWidget):
             cap.setText(paths.rel(path))
             cap.setToolTip(paths.rel(path))
         else:
-            iv.clear("点击「更换…」选择图像")
+            iv.clear("Click “Change…” to choose an image")
             cap.setText("")
 
     def _pick(self, side):
         start = self.paths[side] or self.paths[1 - side]
-        fn, _ = QFileDialog.getOpenFileName(self, "选择图像", str(start.parent if start else paths.RESULTS),
-                                            "图像 (" + " ".join(f"*{e}" for e in sorted(IMAGE_EXT)) + ")")
+        fn, _ = QFileDialog.getOpenFileName(self, "Choose an image", str(start.parent if start else paths.RESULTS),
+                                            "Images (" + " ".join(f"*{e}" for e in sorted(IMAGE_EXT)) + ")")
         if fn:
             self.set_image(side, fn)
 

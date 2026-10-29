@@ -5,7 +5,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from .. import paths
-from ..jobs import CANCELLED, FAILED, FINISHED, QUEUED, RUNNING, STATUS_ZH, Job, JobManager
+from ..jobs import CANCELLED, FAILED, FINISHED, PREREQ_FAILED, QUEUED, RUNNING, STATUS_TEXT, Job, JobManager
 from ..theme import repolish
 from .common import reveal
 from .logview import LogView
@@ -33,10 +33,10 @@ class RunPanel(QWidget):
         lay.setSpacing(6)
         top = QHBoxLayout()
         top.setSpacing(10)
-        self.badge = QLabel("空闲")
+        self.badge = QLabel("Idle")
         self.badge.setObjectName("badge")
         top.addWidget(self.badge)
-        self.title = QLabel("尚未运行")
+        self.title = QLabel("Not run yet")
         self.title.setObjectName("cardTitle")
         self.title.setMinimumWidth(60)
         self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)   # long titles never widen the page
@@ -44,11 +44,11 @@ class RunPanel(QWidget):
         self.elapsed = QLabel("")
         self.elapsed.setObjectName("muted")
         top.addWidget(self.elapsed)
-        self.btn_folder = QPushButton("打开结果文件夹")
+        self.btn_folder = QPushButton("Show in Finder")
         self.btn_folder.setObjectName("flat")
         self.btn_folder.clicked.connect(self._open_folder)
         top.addWidget(self.btn_folder)
-        self.btn_cancel = QPushButton("停止")
+        self.btn_cancel = QPushButton("Stop")
         self.btn_cancel.setObjectName("danger")
         self.btn_cancel.clicked.connect(self._cancel)
         top.addWidget(self.btn_cancel)
@@ -91,9 +91,9 @@ class RunPanel(QWidget):
     def _refresh(self):
         j = self.job
         if j is None:
-            self.badge.setText("空闲")
+            self.badge.setText("Idle")
             self.badge.setObjectName("badge")
-            self.title.setText("尚未运行")
+            self.title.setText("Not run yet")
             self.elapsed.setText("")
             self.bar.setRange(0, 100)
             self.bar.setValue(0)
@@ -102,7 +102,7 @@ class RunPanel(QWidget):
             self.btn_folder.setVisible(False)
             repolish(self.badge)
             return
-        self.badge.setText(STATUS_ZH.get(j.status, j.status))
+        self.badge.setText(STATUS_TEXT.get(j.status, j.status))
         self.badge.setObjectName({FINISHED: "badgeOk", FAILED: "badgeErr", CANCELLED: "badgeWarn"}.get(j.status, "badge"))
         repolish(self.badge)
         self.title.setText(j.title)
@@ -118,11 +118,11 @@ class RunPanel(QWidget):
             self.bar.setValue(int(1000 * (j.progress or (1.0 if j.status == FINISHED else 0.0))))
         txt = j.progress_text
         if j.status == QUEUED:
-            txt = "等待前面的任务完成…"
+            txt = "waiting for earlier jobs…"
         elif j.status == FAILED:
-            txt = f"退出码 {j.exit_code} — 详见日志"
+            txt = f"exit code {j.exit_code} — see the log"
         elif j.status == CANCELLED:
-            txt = j.progress_text if j.progress_text == "前置任务未完成" else "已取消"
+            txt = j.progress_text if j.progress_text == PREREQ_FAILED else "cancelled"
         self.ptext.setText(txt)
         self.btn_cancel.setVisible(self.show_actions and j.active)
         self.btn_folder.setVisible(self.show_actions and bool(j.out))

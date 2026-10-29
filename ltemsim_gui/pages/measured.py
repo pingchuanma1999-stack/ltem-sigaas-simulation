@@ -12,8 +12,8 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView, QApplication, QCheckBox, QFileDialog,
-                               QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QSplitter, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+                               QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QSizePolicy, QSplitter,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from .. import icons, paths
 from ..theme import ThemeManager, repolish
@@ -21,12 +21,12 @@ from ..widgets.common import MetricTile, Page, button, card, error_box, label, r
 from ..widgets.mpl import PlotWidget
 
 COLUMNS = ("bias_V", "X_um", "rms", "rms_err", "note")
-HEADERS = ("bias_V", "X_um", "rms", "rms_err", "note 备注")
-HEADER_TIPS = ("偏压 (V)", "X = 光斑 − 针尖 (µm)", "THz 信号 rms（相对 +25 V、X = +5 µm 参考点）", "rms 的误差（≥ 0）",
-               "备注（日期、扫描次数等，可留空）")
+HEADERS = COLUMNS
+HEADER_TIPS = ("Bias (V)", "X = spot − tip (µm)", "THz signal rms, relative to the +25 V, X = +5 µm reference point",
+               "Uncertainty of rms (≥ 0)", "Note: date, number of scans, … (optional)")
 NUMERIC = 4                       # the first four columns are numbers
-EXTRA_TIP = "文件中的其他列：原样保留，保存时写回"
-CONSUMERS = "run_baseline、sweep、compare_scenarios、field_bending、run_pulse_chain、run_tip_positions、fig_slides"
+EXTRA_TIP = "Extra column of the file: kept as it is and written back on save"
+CONSUMERS = "run_baseline, sweep, compare_scenarios, field_bending, run_pulse_chain, run_tip_positions, fig_slides"
 
 # validated categorical slots (light / dark surface); colour follows the entity (the bias), never the rank
 SERIES = {False: ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"),
@@ -57,7 +57,8 @@ def read_table(path) -> tuple[list[str], list[list[str]]]:
         fields = [(f or "").strip() for f in (r.fieldnames or [])]
         missing = [c for c in COLUMNS[:NUMERIC] if c not in fields]
         if missing:
-            raise ValueError("缺少列：" + ", ".join(missing) + "（需要表头 bias_V,X_um,rms,rms_err[,note]）")
+            raise ValueError("Missing column(s): " + ", ".join(missing)
+                             + " (the header must read bias_V,X_um,rms,rms_err[,note])")
         extras = list(dict.fromkeys(f for f in fields if f and f not in COLUMNS))
         cols = list(COLUMNS) + extras
         rows = []
@@ -75,22 +76,20 @@ def read_rows(path) -> list[list[str]]:
 
 
 def cell_error(col: int, text: str) -> str:
-    """'' when the cell is valid, otherwise a Chinese reason."""
+    """'' when the cell is valid, otherwise a short lower-case reason."""
     if col >= NUMERIC:
         return ""
     t = text.strip()
     if not t:
-        return "不能为空"
+        return "empty"
     try:
         v = float(t)
     except ValueError:
-        return "不是有效数字"
+        return "not a number"
     if not math.isfinite(v):
-        return "必须是有限数值"
-    if col == 2 and v < 0:
-        return "rms 不能为负"
-    if col == 3 and v < 0:
-        return "误差不能为负"
+        return "not a finite number"
+    if col in (2, 3) and v < 0:
+        return "must be ≥ 0"
     return ""
 
 
@@ -127,10 +126,18 @@ def _norm(rows) -> list[tuple]:
     return out
 
 
+def _rows(n: int) -> str:
+    return f"{n} row" + ("" if n == 1 else "s")
+
+
+def _cells(n: int) -> str:
+    return f"{n} cell is" if n == 1 else f"{n} cells are"
+
+
 class MeasuredPage(Page):
-    title = "实测数据"
-    subtitle = ("实测针尖扫描：THz 信号 rms 随 X = 光斑 − 针尖 的变化（±25 V 偏压，已归一到 +25 V、X = +5 µm 的参考点），"
-                "叠加在各结果图上与模拟对比。")
+    title = "Measured data"
+    subtitle = ("Measured tip scans: THz signal rms versus X = spot − tip at ±25 V bias, normalised to the +25 V, "
+                "X = +5 µm reference point. The scripts overlay these points on their plots to compare with the model.")
 
     def __init__(self, path=None, backup_dir=None):
         super().__init__()
@@ -151,9 +158,13 @@ class MeasuredPage(Page):
         self.state.setObjectName("badge")
         self.header.add_action(self.state)
         # lambdas: clicked(bool) would otherwise arrive as the first argument (revert(confirm=False)!)
-        self.btn_import = button("导入 CSV…", lambda: self.import_csv(), tooltip="从其他 CSV 文件导入（替换或追加），保存前不会写入")
-        self.btn_revert = button("撤销修改", lambda: self.revert(), tooltip="放弃未保存的修改，重新读取文件")
-        self.btn_save = button("  保存", lambda: self.save(), "primary", tooltip="保存到 CSV（旧文件会先备份）  ⌘S")
+        self.btn_import = button("Import CSV…", lambda: self.import_csv(),
+                                 tooltip="Import rows from another CSV file (replace or append); nothing is written "
+                                         "until you save")
+        self.btn_revert = button("Revert", lambda: self.revert(),
+                                 tooltip="Discard unsaved changes and re-read the file")
+        self.btn_save = button("  Save", lambda: self.save(), "primary",
+                               tooltip="Save to the CSV file (the previous version is backed up first)  ⌘S")
         for b in (self.btn_import, self.btn_revert, self.btn_save):
             self.header.add_action(b)
 
@@ -169,8 +180,9 @@ class MeasuredPage(Page):
         nl.addWidget(self.note_text, 1)
         bcol = QVBoxLayout()
         bcol.setSpacing(2)
-        self.btn_reveal = button("在访达中显示", lambda: reveal(self.path))
-        self.btn_backups = button("打开备份文件夹", self._open_backups)
+        self.btn_reveal = button("Show in Finder", lambda: reveal(self.path))
+        self.btn_backups = button("Show backups", self._open_backups,
+                                  tooltip="Show the folder of automatic backups in Finder")
         for b in (self.btn_reveal, self.btn_backups):
             b.setObjectName("flat")
             bcol.addWidget(b)
@@ -184,6 +196,10 @@ class MeasuredPage(Page):
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setChildrenCollapsible(False)
+        # table and plot take the height that is left: their size hints must not make the page scroll in a
+        # small window (the info line under the table, with the invalid-cell messages, would end up below the fold)
+        split.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+        split.setMinimumHeight(320)
         # ---------------- left: table
         left = card()
         tl = QVBoxLayout(left)
@@ -191,12 +207,14 @@ class MeasuredPage(Page):
         tl.setSpacing(8)
         bar = QHBoxLayout()
         bar.setSpacing(6)
-        bar.addWidget(label("数据表", "cardTitle"))
+        bar.addWidget(label("Data", "cardTitle"))
         bar.addStretch(1)
-        self.btn_add = button("添加行", self.add_row, tooltip="在当前行之后插入一行")
-        self.btn_dup = button("复制行", self.duplicate_rows, tooltip="复制选中的行")
-        self.btn_del = button("删除行", self.delete_rows, tooltip="删除选中的行（Delete 键）")
-        self.btn_sort = button("排序", self.sort_default, tooltip="按偏压（高→低）、X（小→大）排序；也可点击表头按该列排序")
+        self.btn_add = button("Add row", self.add_row, tooltip="Insert a row after the selected one")
+        self.btn_dup = button("Duplicate", self.duplicate_rows, tooltip="Duplicate the selected rows")
+        self.btn_del = button("Delete", self.delete_rows, tooltip="Delete the selected rows (Delete key)")
+        self.btn_sort = button("Sort", self.sort_default,
+                               tooltip="Sort by bias (high → low), then X (low → high); click a column header to sort "
+                                       "by that column")
         for b in (self.btn_add, self.btn_dup, self.btn_del, self.btn_sort):
             bar.addWidget(b)
         tl.addLayout(bar)
@@ -226,14 +244,16 @@ class MeasuredPage(Page):
         rl = QVBoxLayout(right)
         rl.setContentsMargins(12, 10, 12, 12)
         rl.setSpacing(6)
-        rl.addWidget(label("RMS 随 X 的变化", "cardTitle"))
+        rl.addWidget(label("THz rms versus X", "cardTitle"))
         orow = QHBoxLayout()            # own row: next to the title it clips at 1100 px window width
         orow.setSpacing(14)
-        self.opt_mirror = QCheckBox("镜像 −25 V（X → −X）")
-        self.opt_mirror.setToolTip("把负偏压数据的 X 取反，与 +25 V 在同一阳极朝向下比较")
-        self.opt_norm = QCheckBox("各偏压归一化")
-        self.opt_norm.setToolTip("每个偏压分别除以其最大 rms")
-        self.opt_line = QCheckBox("连线")
+        self.opt_mirror = QCheckBox("Mirror −25 V (X → −X)")
+        self.opt_mirror.setToolTip("Flip the sign of X for negative-bias data, to compare it with +25 V at the same "
+                                   "anode orientation")
+        self.opt_norm = QCheckBox("Normalise per bias")
+        self.opt_norm.setToolTip("Divide each bias by its own maximum rms")
+        self.opt_line = QCheckBox("Lines")
+        self.opt_line.setToolTip("Connect the points of each bias")
         self.opt_line.setChecked(True)
         for cb in (self.opt_mirror, self.opt_norm, self.opt_line):
             cb.toggled.connect(self._on_option)
@@ -244,7 +264,8 @@ class MeasuredPage(Page):
         self.plot.canvas.mpl_connect("motion_notify_event", self._on_hover)
         self.plot.canvas.mpl_connect("button_press_event", self._on_click)
         rl.addWidget(self.plot, 1)
-        rl.addWidget(label("悬停数据点查看备注，单击数据点选中表格中对应的行。", "muted", wrap=True))
+        rl.addWidget(label("Hover over a point to see its note; click it to select its row in the table.",
+                           "muted", wrap=True))
         split.addWidget(right)
         split.setStretchFactor(1, 1)
         split.setSizes([560, 700])
@@ -269,9 +290,9 @@ class MeasuredPage(Page):
             extras, rows = read_table(self.path)
             err = ""
         except FileNotFoundError:
-            rows, err = [], f"文件不存在：{paths.rel(self.path)}。添加数据后保存即可创建。"
+            rows, err = [], f"{paths.rel(self.path)} does not exist yet. Add rows and save to create it."
         except (OSError, ValueError, csv.Error, UnicodeDecodeError) as e:
-            rows, err = [], f"无法读取 {paths.rel(self.path)}：{e}"
+            rows, err = [], f"Cannot read {paths.rel(self.path)}: {e}"
         self._set_columns(extras)
         self._saved = [list(r) for r in rows]
         self._mtime = self._disk_mtime()
@@ -297,12 +318,14 @@ class MeasuredPage(Page):
         bad = self.invalid_cells()
         if bad:
             r, c, why = bad[0]
-            error_box(self, "无法保存", f"有 {len(bad)} 个单元格无效，请先修正。\n第 {r + 1} 行 {COLUMNS[c]}：{why}")
+            error_box(self, "Cannot save", f"{_cells(len(bad))} invalid; fix {'it' if len(bad) == 1 else 'them'} "
+                      f"first.\nRow {r + 1}, {COLUMNS[c]}: {why}")
             return False
         if self._disk_mtime() != self._mtime:
-            r = QMessageBox.question(self, "文件已在外部被修改",
-                                     f"{paths.rel(self.path)} 在载入后被其他程序修改过。用当前表格覆盖它吗？"
-                                     "（被覆盖的版本会先备份；选「否」后可点「撤销修改」读取新版本）")
+            r = QMessageBox.question(self, "File changed on disk",
+                                     f"{paths.rel(self.path)} was changed by another program after it was loaded. "
+                                     "Overwrite it with this table?\n\nThe version on disk is backed up first. "
+                                     "Choose No and then Revert to load it instead.")
             if r != QMessageBox.StandardButton.Yes:
                 return False
         bdir = self.backup_folder()
@@ -326,35 +349,37 @@ class MeasuredPage(Page):
                     w.writerow([v.strip() for v in r])
             os.replace(tmp, self.path)
         except OSError as e:
-            error_box(self, "保存失败", f"无法写入 {self.path}：{e}")
+            error_box(self, "Save failed", f"Cannot write {self.path}: {e}")
             return False
         self.last_backup = backup
         self._saved = [list(r) for r in rows]
         self._mtime = self._disk_mtime()
         self._refresh_state()
         when = time.strftime("%H:%M:%S")
-        self.message(f"{when} 已保存 {len(rows)} 行" + (f"；旧文件已备份为 {backup.name}" if backup else "") + "。")
+        self.message(f"Saved {_rows(len(rows))} at {when}"
+                     + (f"; the previous version was backed up as {backup.name}" if backup else "") + ".")
         return True
 
     def revert(self, confirm=True):
         if self.is_dirty() and confirm:         # is_dirty() also commits an open cell editor
-            r = QMessageBox.question(self, "撤销修改", "放弃所有未保存的修改，重新读取文件吗？")
+            r = QMessageBox.question(self, "Revert changes", "Discard all unsaved changes and re-read the file?")
             if r != QMessageBox.StandardButton.Yes:
                 return
         self.load()
-        self.message("已恢复为磁盘上的版本。")
+        self.message("Reverted to the version on disk.")
 
     def import_csv(self, path=None, mode=None):
-        """Load rows from another CSV into the table (mode 'replace' | 'append'); nothing is written until 保存."""
+        """Load rows from another CSV into the table (mode 'replace' | 'append'); nothing is written until Save."""
         if not path:
-            path, _ = QFileDialog.getOpenFileName(self, "导入实测数据 CSV", str(paths.DATA), "CSV (*.csv);;所有文件 (*)")
+            path, _ = QFileDialog.getOpenFileName(self, "Import measured data", str(paths.DATA),
+                                                  "CSV files (*.csv);;All files (*)")
             if not path:
                 return
         self._commit_edit()
         try:
             extras, new = read_table(path)
         except (OSError, ValueError, csv.Error, UnicodeDecodeError) as e:
-            error_box(self, "导入失败", f"无法读取 {Path(path).name}：\n{e}")
+            error_box(self, "Import failed", f"Cannot read {Path(path).name}:\n{e}")
             return
         # keep this file's extra columns; imported columns with the same name fill them
         idx = {c: len(COLUMNS) + i for i, c in enumerate(extras)}
@@ -362,11 +387,12 @@ class MeasuredPage(Page):
         if mode is None:
             if self.table.rowCount():
                 m = QMessageBox(self)
-                m.setWindowTitle("导入 CSV")
-                m.setText(f"{Path(path).name} 含 {len(new)} 行数据。替换当前表格，还是追加到末尾？")
-                b_rep = m.addButton("替换", QMessageBox.ButtonRole.AcceptRole)
-                b_app = m.addButton("追加", QMessageBox.ButtonRole.ActionRole)
-                m.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+                m.setWindowTitle("Import CSV")
+                m.setText(f"{Path(path).name} contains {_rows(len(new))}. "
+                          "Replace the current table, or append to it?")
+                b_rep = m.addButton("Replace", QMessageBox.ButtonRole.AcceptRole)
+                b_app = m.addButton("Append", QMessageBox.ButtonRole.ActionRole)
+                m.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
                 m.exec()
                 clicked = m.clickedButton()
                 mode = "replace" if clicked is b_rep else "append" if clicked is b_app else None
@@ -378,7 +404,8 @@ class MeasuredPage(Page):
         self._sort_state = (None, False)
         self.table.horizontalHeader().setSortIndicatorShown(False)
         self._set_rows(rows)
-        self.message(f"已从 {Path(path).name} {'导入' if mode == 'replace' else '追加'} {len(new)} 行（尚未保存）。")
+        self.message(f"{'Imported' if mode == 'replace' else 'Appended'} {_rows(len(new))} from {Path(path).name} "
+                     "(not saved yet).")
 
     # ------------------------------------------------------------------ table
     def rows(self) -> list[list[str]]:
@@ -451,7 +478,7 @@ class MeasuredPage(Page):
             c = QColor(t.danger)
             c.setAlpha(60)
             it.setBackground(QBrush(c))
-            it.setToolTip(why)
+            it.setToolTip(why[0].upper() + why[1:])
         else:
             it.setBackground(QBrush())
             it.setToolTip(it.text() if it.column() >= NUMERIC else "")
@@ -494,7 +521,7 @@ class MeasuredPage(Page):
         self._commit_edit()
         sel = self._selected_rows()
         if not sel:
-            self.message("请先选中要复制的行。")
+            self.message("Select the rows to duplicate first.")
             return
         rows = self.rows()
         copies = [list(rows[i]) for i in sel]
@@ -506,11 +533,11 @@ class MeasuredPage(Page):
         self._commit_edit()
         sel = self._selected_rows()
         if not sel:
-            self.message("请先选中要删除的行。")
+            self.message("Select the rows to delete first.")
             return
         rows = [r for i, r in enumerate(self.rows()) if i not in set(sel)]
         self._set_rows(rows, select=min(sel[0], len(rows) - 1) if rows else None)
-        self.message(f"已删除 {len(sel)} 行（尚未保存）。")
+        self.message(f"Deleted {_rows(len(sel))} (not saved yet).")
 
     @staticmethod
     def _num(v):
@@ -565,13 +592,13 @@ class MeasuredPage(Page):
         dirty = self._dirty()
         bad = self.invalid_cells()
         if bad:
-            self.state.setText(f"● {len(bad)} 个单元格无效")
+            self.state.setText(f"● {_cells(len(bad))} invalid")
             self.state.setObjectName("badgeErr")
         elif dirty:
-            self.state.setText("● 有未保存的修改")
+            self.state.setText("● Unsaved changes")
             self.state.setObjectName("badgeWarn")
         else:
-            self.state.setText("✓ 已与文件一致")
+            self.state.setText("✓ Matches the file")
             self.state.setObjectName("badgeOk")
         repolish(self.state)
         self.btn_save.setEnabled(dirty and not bad)
@@ -579,21 +606,22 @@ class MeasuredPage(Page):
         n = self.table.rowCount()
         data = numeric_rows(self.rows())
         nb = len({r[1] for r in data})
-        txt = f"{n} 行 · {nb} 个偏压 · 双击单元格编辑"
+        txt = f"{_rows(n)} · {nb} {'bias' if nb == 1 else 'biases'} · double-click a cell to edit"
         seen, dup = {}, []
         for i, b, x, *_ in data:
             if (b, x) in seen:
-                dup.append(f"{seen[(b, x)] + 1} 与 {i + 1}")
+                dup.append(f"{seen[(b, x)] + 1} & {i + 1}")
             seen.setdefault((b, x), i)
         if dup:
             t = ThemeManager.instance().tokens
-            txt += (f" · <span style='color:{t.warning}'>⚠ 偏压与 X 相同的重复点：第 {'、'.join(dup[:3])} 行"
+            txt += (f" · <span style='color:{t.warning}'>⚠ same bias and X in rows {', '.join(dup[:3])}"
                     f"{' …' if len(dup) > 3 else ''}</span>")
         if bad:
             r, c, why = bad[0]
             t = ThemeManager.instance().tokens
-            txt = (f"{n} 行 · <span style='color:{t.danger}'>第 {r + 1} 行 {COLUMNS[c]}：{why}</span>"
-                   f"{f'（另有 {len(bad) - 1} 处）' if len(bad) > 1 else ''} · 无效的行不参与作图，修正后才能保存")
+            txt = (f"{_rows(n)} · <span style='color:{t.danger}'>row {r + 1}, {COLUMNS[c]}: {why}</span>"
+                   f"{f' (+{len(bad) - 1} more)' if len(bad) > 1 else ''}"
+                   " · invalid rows are left out of the plot; fix them to save")
         self.info.setText(txt)
 
     def backup_folder(self) -> Path:
@@ -604,26 +632,27 @@ class MeasuredPage(Page):
         bdir = str(self.backup_folder())
         home = str(Path.home())
         bdir = "~" + bdir[len(home):] if bdir.startswith(home + os.sep) else bdir
-        extra = (f"<br><span style='color:{t.muted}'>文件中另有列 {', '.join(self.extra)}：在表格右侧显示，保存时原样写回。"
-                 f"</span>") if self.extra else ""
+        cols = ", ".join(self.extra)
+        extra = (f"<br><span style='color:{t.muted}'>Extra column{'s' if len(self.extra) > 1 else ''} {cols}: "
+                 f"shown at the right of the table and written back unchanged.</span>") if self.extra else ""
         self.note_text.setText(
-            f"<b>{paths.rel(self.path)}</b> 在脚本运行时读取（{CONSUMERS}）。"
-            f"保存只影响<b>之后</b>新的运行与作图，已经生成的结果图不会自动更新。"
-            f"<br><span style='color:{t.muted}'>保存前旧文件自动备份到 {bdir}/</span>{extra}")
+            f"<b>{paths.rel(self.path)}</b> is read by the scripts when they run ({CONSUMERS}). "
+            f"Saving affects <b>later</b> runs and figures only; figures already made are not updated."
+            f"<br><span style='color:{t.muted}'>Each save first backs up the previous file to {bdir}/</span>{extra}")
 
     def _update_tiles(self):
         data = numeric_rows(self.rows())
         mirror = self.opt_mirror.isChecked() if hasattr(self, "opt_mirror") else False
-        specs = [("有效数据点", f"{len(data)}",
-                  f"X ∈ [{min(d[2] for d in data):+g}, {max(d[2] for d in data):+g}] µm" if data else "没有有效数据")]
+        specs = [("Valid points", f"{len(data)}",
+                  f"X ∈ [{min(d[2] for d in data):+g}, {max(d[2] for d in data):+g}] µm" if data else "no valid data")]
         for b in sorted({d[1] for d in data}, reverse=True):
             pts = [d for d in data if d[1] == b]
             k = int(np.argmax([d[3] for d in pts]))
             xp, rp, ep = pts[k][2], pts[k][3], pts[k][4]
-            hint = f"峰值 X = {xp:+g} µm（rms {rp:.2f} ± {ep:.2f}）"
+            hint = f"peak at X = {xp:+g} µm (rms {rp:.2f} ± {ep:.2f})"
             if mirror and b < 0:
-                hint += f" · 镜像后 {-xp:+g}"
-            specs.append((self._v(b), f"{len(pts)} 个点", hint))
+                hint += f" · mirrored {-xp:+g}"
+            specs.append((self._v(b), f"{len(pts)} point{'' if len(pts) == 1 else 's'}", hint))
         # tiles are reused (hidden when not needed) so nothing stale lingers until a deferred delete
         while len(self._tiles) < len(specs):
             tile = MetricTile("", "—")
@@ -761,6 +790,7 @@ class MeasuredPage(Page):
         if m != self._mtime:
             if not self.is_dirty():
                 self.load()
-                self.message("文件已在外部被修改，已重新读取。")
+                self.message("The file was changed on disk and has been re-read.")
             else:
-                self.message("⚠ 文件已在外部被修改；保存会覆盖外部修改，撤销修改会读取新版本。")
+                self.message("⚠ The file was changed on disk. Save overwrites that version (after backing it up); "
+                             "Revert loads it.")

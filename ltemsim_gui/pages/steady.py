@@ -7,27 +7,37 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QSize, Qt
-from PySide6.QtWidgets import (QCheckBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QMessageBox, QPushButton, QSizePolicy, QSplitter, QTabWidget,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtWidgets import (QCheckBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSizePolicy, QSplitter,
+                               QTabWidget, QVBoxLayout, QWidget)
 
 from .. import icons, nav, paths
-from ..jobs import FINISHED, STATUS_ZH, JobManager
+from ..jobs import FINISHED, STATUS_TEXT, JobManager
 from ..paramspec import params_specs
 from ..theme import ThemeManager, repolish
 from ..widgets.common import MetricTile, Page, button, error_box, label, reveal
+from ..widgets.device import FieldView, device_from_params, draw_device, load_steady_fields
 from ..widgets.imageview import ImageView
+from ..widgets.mpl import PlotWidget
 from ..widgets.paramform import ParamForm
 from ..widgets.runpanel import RunPanel
+from ..workers import run_async
 
 # Params fields that no code reads (verified with grep) or that only the pulse model uses
 HIDDEN = {"gummel_max_iter", "gummel_tol", "poisson_max_iter", "poisson_tol", "generation_ramp", "bias_ramp_steps",
           "rep_rate"}
 QUICK = {"dx_fine": 0.5, "x_fine": 8.0, "dz_fine": 0.25}      # the coarse grid of results/coarse_scenarios (30-60 s)
-FIGURES = (("maps.png", "场与载流子分布"), ("profiles.png", "0.5 µm 深度剖面"), ("tip_scan.png", "针尖扫描 vs 实测"),
-           ("polarisation.png", "极化 P = n·E"))
-RUNTIME = "生产网格约 6–7 分钟，粗网格约 30–60 秒"
+FIGURES = (("maps.png", "Maps"), ("profiles.png", "Profiles"), ("tip_scan.png", "Tip scan"),
+           ("polarisation.png", "Polarisation"))
+FIGURE_TIPS = {"maps.png": "Maps of the potential, E_x, E_z, n, p and EL2⁺ (maps.png)",
+               "profiles.png": "Lateral profiles 0.5 µm below the surface (profiles.png)",
+               "tip_scan.png": "Tip E_z versus spot–tip offset X, with the measured scan (tip_scan.png)",
+               "polarisation.png": "Polarisation P = n·E (polarisation.png)"}
+RUNTIME = "≈ 6–7 min on the production grid, 30–60 s on the coarse grid"
+# Params fields the device diagram depends on (redraw only when one of them changes)
+DEVICE_KEYS = ("gap", "x_half", "depth", "air_height", "V_bias", "anode_side", "spot_x0_um", "spot_w_um", "alpha_cm",
+               "P_avg_mW", "tip_height_um", "tip_x_scan_um")
 # Allowed ranges (inclusive). Out-of-range values make the solver fail late or hang: a negative dx_fine never
 # finishes building the grid, T = 0 or spot_w_um = 0 divide by zero, P_avg_mW < 0 or reflectivity > 1 give G < 0.
 _POS = 1e-30
@@ -56,23 +66,27 @@ def steady_specs():
 
 
 def check_params(v: dict) -> list[str]:
-    """Cross-field checks the per-field ranges cannot express (Chinese messages; empty = ok)."""
+    """Cross-field checks the per-field ranges cannot express (empty = ok)."""
     bad = []
     if v["x_fine"] >= v["x_half"]:
-        bad.append(f"细网格范围 x_fine = {v['x_fine']:g} µm 必须小于计算区半宽 x_half = {v['x_half']:g} µm")
+        bad.append(f"The fine-grid extent x_fine = {v['x_fine']:g} µm must be smaller than the box half-width "
+                   f"x_half = {v['x_half']:g} µm")
     if v["gap"] / 2 >= v["x_half"]:
-        bad.append(f"电极间隙 gap = {v['gap']:g} µm 的一半必须小于 x_half = {v['x_half']:g} µm（电极要在计算区内）")
+        bad.append(f"Half the electrode gap (gap = {v['gap']:g} µm) must be smaller than x_half = {v['x_half']:g} µm, "
+                   "so that both electrodes lie inside the box")
     if v["z_fine"] >= min(v["depth"], v["air_height"]):
-        bad.append(f"细网格 z 范围 z_fine = {v['z_fine']:g} µm 必须小于 GaAs 厚度和空气层高度")
+        bad.append(f"The fine-grid z extent z_fine = {v['z_fine']:g} µm must be smaller than both the GaAs depth "
+                   "and the air height")
     if v["tip_height_um"] >= v["air_height"]:
-        bad.append(f"针尖采样高度 {v['tip_height_um']:g} µm 必须小于空气层高度 {v['air_height']:g} µm")
+        bad.append(f"The tip sampling height {v['tip_height_um']:g} µm must be smaller than the air height "
+                   f"{v['air_height']:g} µm")
     if v["E_T_below_Ec"] >= v["Eg"]:
-        bad.append("EL2 能级 E_c−E_T 必须小于带隙 E_g")
+        bad.append("The EL2 level depth E_c − E_T must be smaller than the band gap E_g")
     xs = v.get("tip_x_scan_um") or ()
     if len(xs) < 2:
-        bad.append("针尖扫描位置至少需要 2 个点（空列表会在求解完成后才报错）")
+        bad.append("The tip scan needs at least 2 positions (an empty list only fails after the solve)")
     elif max(abs(x) for x in xs) >= v["x_half"]:
-        bad.append(f"针尖扫描位置必须在计算区内（|X| < x_half = {v['x_half']:g} µm）")
+        bad.append(f"All tip scan positions must lie inside the box (|X| < x_half = {v['x_half']:g} µm)")
     return bad
 
 
@@ -134,6 +148,19 @@ def is_quick(pr: dict) -> bool:
         return False
 
 
+def no_field_message(d: Path, has_summary: bool) -> str:
+    """Empty-state text of the Electric field tab for a result folder without solution.npz."""
+    if not d.is_dir():
+        return f"The folder {paths.rel(d)} does not exist."
+    if not has_summary:
+        return ("This run did not finish (no summary.json), so there is no solution.npz to show.\n\n"
+                "Run the solve again — the coarse-grid quick mode takes about 30–60 s.")
+    return ("No field data: this result has no solution.npz.\n\n"
+            "Solution files are not committed to the repository, so results/baseline and the parameter-sweep "
+            "folders only keep their figures.\n\n"
+            "Run a solve on this page to see the electric field — the coarse-grid quick mode takes about 30–60 s.")
+
+
 class _Elided(QLabel):
     """One-line label that elides in the middle instead of forcing the layout to its full text width."""
 
@@ -174,21 +201,26 @@ class _Elided(QLabel):
 
 
 class SteadyPage(Page):
-    title = "稳态求解"
-    subtitle = ("连续泵浦、横向偏压的 SI-GaAs 间隙：2-D 漂移-扩散 + EL2 深能级自洽稳态（耦合 Newton + 伪瞬态延拓），"
-                f"并计算针尖 E_z 随光斑-针尖位置 X 的变化。{RUNTIME}。")
+    title = "Steady state"
+    subtitle = ("Self-consistent 2-D drift-diffusion + EL2 steady state of the pumped, biased SI-GaAs gap, and the tip "
+                f"E_z versus the spot–tip offset X. {RUNTIME}.")
     WIDE = 640          # results tab width above which the metric tiles fit in one row
+    SHORT = 620         # tab height below which a one-line summary replaces the tiles (room for the field map)
+    SIDE_BY_SIDE = 1.45  # device canvas width / height above which the two diagram panels sit side by side
 
     def __init__(self):
         super().__init__()
         self.job = None
         self.result_dir = None
-        self.quick = QCheckBox("粗网格快速模式")
-        self.quick.setToolTip("dx_fine = 0.5 µm, x_fine = 8 µm, dz_fine = 0.25 µm（与 results/coarse_scenarios 相同，"
-                              "约 30–60 秒；数值比生产网格粗，用于快速试参数）")
+        self._field_token = 0
+        self._dev_key = None
+        self.quick = QCheckBox("Coarse-grid quick mode")
+        self.quick.setToolTip("dx_fine = 0.5 µm, x_fine = 8 µm, dz_fine = 0.25 µm — the grid of "
+                              "results/coarse_scenarios (≈ 30–60 s). Coarser numbers than the production grid; "
+                              "use it to try parameters quickly.")
         self.quick.toggled.connect(self._toggle_quick)
         self.header.add_action(self.quick)
-        self.run_btn = button("  运行求解", self.run, "primary")
+        self.run_btn = button("  Run solve", self.run, "primary")
         self.header.add_action(self.run_btn)
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -202,21 +234,48 @@ class SteadyPage(Page):
         self.form.changed.connect(self._sync_quick)
         ll.addWidget(self.form, 1)
         orow = QHBoxLayout()
-        orow.addWidget(QLabel("输出文件夹"))
+        orow.addWidget(QLabel("Output folder"))
         self.out_edit = QLineEdit()
-        self.out_edit.setPlaceholderText("自动：results/gui_runs/steady_<时间>")
-        self.out_edit.setToolTip("留空 = 每次运行新建 results/gui_runs/steady_<时间>（不会覆盖已有结果）")
+        self.out_edit.setPlaceholderText("Automatic: results/gui_runs/steady_<time>")
+        self.out_edit.setToolTip("Leave empty to create a new results/gui_runs/steady_<time> for every run "
+                                 "(existing results are never overwritten)")
         orow.addWidget(self.out_edit, 1)
-        b = QPushButton("选择…")
+        b = QPushButton("Choose…")
         b.clicked.connect(self._pick_out)
         orow.addWidget(b)
         ll.addLayout(orow)
         left.setMinimumWidth(330)     # the form needs ~376 px without a horizontal scroll bar; 330 keeps 1000 px usable
         split.addWidget(left)
 
-        # ---------------- right: run / results / history
+        # ---------------- right: device / run / results / history
         self.tabs = QTabWidget()
-        run_tab = QWidget()
+        self.dev_tab = dev_tab = QWidget()
+        dl = QVBoxLayout(dev_tab)
+        dl.setContentsMargins(10, 10, 10, 6)
+        dl.setSpacing(6)
+        drow = QHBoxLayout()
+        drow.addWidget(label("Device cross-section", "cardTitle"))
+        dhint = _Elided("Drawn from the parameters in the form — redraws as you edit them", "muted")
+        drow.addWidget(dhint, 1)
+        dl.addLayout(drow)
+        self.dev_warn = label("", wrap=True)
+        self.dev_warn.hide()
+        dl.addWidget(self.dev_warn)
+        self.dev_plot = PlotWidget(figsize=(8, 4.6))
+        # the canvas' 800 × 460 px size hint must not set the page height (it would scroll in small windows)
+        self.dev_plot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+        self.dev_plot.setMinimumHeight(220)
+        self.dev_plot.canvas.installEventFilter(self)
+        self._dev_side = None
+        dl.addWidget(self.dev_plot, 1)
+        self.tabs.addTab(dev_tab, "Device")
+        self._dev_timer = QTimer(self)
+        self._dev_timer.setSingleShot(True)
+        self._dev_timer.setInterval(300)
+        self._dev_timer.timeout.connect(self._update_device)
+        self.form.changed.connect(self._dev_timer.start)
+
+        self.run_tab = run_tab = QWidget()
         rl = QVBoxLayout(run_tab)
         rl.setContentsMargins(12, 12, 12, 12)
         self.panel = RunPanel()
@@ -224,7 +283,7 @@ class SteadyPage(Page):
         self.panel.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.panel.job_finished.connect(self._on_finished)
         rl.addWidget(self.panel)
-        self.tabs.addTab(run_tab, "运行")
+        self.tabs.addTab(run_tab, "Run")
 
         self.res_tab = res_tab = QWidget()
         xl = QVBoxLayout(res_tab)
@@ -237,34 +296,46 @@ class SteadyPage(Page):
         ml = QHBoxLayout(self.res_bar)
         ml.setContentsMargins(0, 0, 0, 0)
         ml.setSpacing(6)
-        self.res_title = _Elided("尚未载入结果", "cardTitle")
+        self.res_title = _Elided("No result loaded", "cardTitle")
         self.res_state = label("", "badge")
-        self.res_grid = label("粗网格", "badge")
-        self.res_grid.setToolTip("dx_fine = 0.5 µm, x_fine = 8 µm, dz_fine = 0.25 µm：比生产网格粗，数值仅供快速比较")
+        self.res_grid = label("Coarse grid", "badge")
+        self.res_grid.setToolTip("dx_fine = 0.5 µm, x_fine = 8 µm, dz_fine = 0.25 µm: coarser than the production "
+                                 "grid — use the numbers for quick comparisons only")
         ml.addWidget(self.res_title)
         ml.addWidget(self.res_state)
         ml.addWidget(self.res_grid)
         ml.addStretch(1)
-        self.btn_explore = button("在解查看器中打开", self._open_explorer)
-        self.btn_folder = button("打开文件夹", lambda: self.result_dir and reveal(self.result_dir))
-        self.btn_params = button("载入此结果的参数", self._load_result_params)
+        self.btn_explore = button("Open in explorer", self._open_explorer)
+        self.btn_folder = button("Show in Finder", lambda: self.result_dir and reveal(self.result_dir))
+        self.btn_params = button("Load parameters", self._load_result_params,
+                                 tooltip="Copy this result's parameters into the form")
         for b in (self.btn_params, self.btn_explore, self.btn_folder):
             b.setObjectName("flat")
         xl.addLayout(self.res_head)
         self.tile_grid = QGridLayout()
         self.tile_grid.setSpacing(6)
-        self.m_I = MetricTile("光电流 |I|", "—")
-        self.m_gain = MetricTile("增益 I / I_unity", "—")
-        self.m_peak = MetricTile("|S| 峰值位置 X", "—")
+        self.m_I = MetricTile("Photocurrent |I|", "—")
+        self.m_gain = MetricTile("Gain I / I_unity", "—")
+        self.m_peak = MetricTile("|S| peak at X", "—")
         self.m_ratio = MetricTile("S(+5) / S(−5)", "—")
         self.m_s0 = MetricTile("S(0) / max", "—")
         self.tiles = (self.m_I, self.m_gain, self.m_peak, self.m_ratio, self.m_s0)
         for m in self.tiles:        # MetricTile's Maximum height policy clips a hint that wraps to two lines
             m.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         xl.addLayout(self.tile_grid)
-        self._wide = None
-        self._relayout(True)
+        self.summary = label("", wrap=True, selectable=True)
+        self.summary.setTextFormat(Qt.TextFormat.RichText)
+        self.summary.hide()
+        xl.addWidget(self.summary)
+        self._layout_state = None
+        self._wide = True
+        self._relayout(True, False)
         self.fig_tabs = QTabWidget()
+        self.fig_tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)   # as dev_plot
+        self.fig_tabs.setMinimumHeight(250)
+        self.field = FieldView()
+        self.fig_tabs.addTab(self.field, "Electric field")
+        self.fig_tabs.setTabToolTip(0, "COMSOL-style map of |E|, E_x, E_z and the potential from solution.npz")
         self.views = {}
         for fn, title in FIGURES:
             v = ImageView()
@@ -272,26 +343,28 @@ class SteadyPage(Page):
             v.caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             self.views[fn] = v
             self.fig_tabs.addTab(v, title)
+            self.fig_tabs.setTabToolTip(self.fig_tabs.count() - 1, FIGURE_TIPS[fn])
         xl.addWidget(self.fig_tabs, 1)
-        self.tabs.addTab(res_tab, "结果")
+        self.tabs.addTab(res_tab, "Results")
 
         hist_tab = QWidget()
         hl = QVBoxLayout(hist_tab)
         hl.setContentsMargins(12, 12, 12, 12)
         hrow = QHBoxLayout()
-        hrow.addWidget(label("已有的稳态结果（双击载入）", "cardTitle"), 1)
-        rb = button("刷新", self.refresh_history)
+        hrow.addWidget(label("Existing steady-state results (double-click to load)", "cardTitle"), 1)
+        rb = button("Refresh", self.refresh_history)
         rb.setObjectName("flat")
         hrow.addWidget(rb)
         hl.addLayout(hrow)
         self.hist = QListWidget()
         self.hist.itemDoubleClicked.connect(self._on_hist)
         hl.addWidget(self.hist, 1)
-        self.tabs.addTab(hist_tab, "历史结果")
+        self.tabs.addTab(hist_tab, "History")
         split.addWidget(self.tabs)
         # follow the tab widget's width: a hidden tab page is not resized, and a stale wide layout there
         # would keep the whole page wider than the window
         self.tabs.installEventFilter(self)
+        self.tabs.currentChanged.connect(self._on_tab)
         split.setStretchFactor(0, 0)          # extra width goes to the results; the form keeps its size
         split.setStretchFactor(1, 1)
         split.setSizes([430, 900])
@@ -301,26 +374,40 @@ class SteadyPage(Page):
         default = paths.RESULTS / "baseline"
         if (default / "summary.json").exists():
             self.show_result(default, switch=False)
+        else:
+            self._field_message("No result loaded yet. Run a solve — the coarse-grid quick mode takes about 30–60 s.")
         self._sync_quick()
         self._retheme()
         ThemeManager.instance().changed.connect(self._retheme)
         JobManager.instance().job_finished.connect(self._on_any_finished)
+        QTimer.singleShot(0, self._update_device)       # first diagram after the page is shown
 
     def _retheme(self, *_):
         t = ThemeManager.instance().tokens
         self.run_btn.setIcon(icons.icon("play", t.on_accent))
+        self.dev_warn.setStyleSheet(f"color: {t.warning};")
+        self._update_summary()
 
     # ------------------------------------------------------------------ layout
     def eventFilter(self, obj, e):
         if obj is self.tabs and e.type() == QEvent.Type.Resize:
-            self._relayout(obj.width() - 4 >= self.WIDE)
+            self._relayout(obj.width() - 4 >= self.WIDE, obj.height() < self.SHORT)
+        elif obj is self.dev_plot.canvas and e.type() == QEvent.Type.Resize and self._dev_side is not None:
+            if self._side_by_side() != self._dev_side:
+                self._dev_key = None            # panel arrangement changed: redraw
+                self._dev_timer.start()
         return super().eventFilter(obj, e)
 
-    def _relayout(self, wide: bool):
-        """One row of tiles / buttons beside the title when wide; 3 + 2 tiles and buttons below the title when narrow."""
-        if wide == self._wide:
+    def _relayout(self, wide: bool, short: bool):
+        """One row of tiles / buttons beside the title when wide; 3 + 2 tiles and buttons below the title when narrow;
+        a one-line summary instead of the tiles when the window is short."""
+        if (wide, short) == self._layout_state:
             return
+        self._layout_state = (wide, short)
         self._wide = wide
+        for m in self.tiles:
+            m.setVisible(not short)
+        self.summary.setVisible(short)
         h, g = self.res_head, self.tile_grid
         head = (self.res_bar, self.btn_params, self.btn_explore, self.btn_folder)
         for w in (*head, *self.tiles):
@@ -341,6 +428,7 @@ class SteadyPage(Page):
         cols = 5 if wide else 3
         for i, m in enumerate(self.tiles):
             g.addWidget(m, i // cols, i % cols)
+            m.layout().setContentsMargins(*((12, 10, 12, 10) if wide else (12, 5, 12, 6)))    # compact: 2 rows
         for c in range(cols):
             g.setColumnStretch(c, 1)
         self._tile_hints()
@@ -351,6 +439,53 @@ class SteadyPage(Page):
         for m in self.tiles:
             m.setToolTip(m.property("tip") or m.hint.text())
             m.hint.setVisible(bool(self._wide) and bool(m.hint.text()))
+        self.summary.setToolTip("\n".join(f"{m.lab.text()}: {m.property('tip') or m.hint.text() or '—'}"
+                                          for m in self.tiles))
+
+    def _update_summary(self):
+        """The tiles' values as one wrapped line (short windows)."""
+        if not hasattr(self, "summary"):
+            return
+        mu = ThemeManager.instance().tokens.muted
+        nb = lambda t: t.replace(" ", "&nbsp;").replace("|", "|\u2060")     # wrap only between the items
+        self.summary.setText("&nbsp;&nbsp;·&nbsp; ".join(
+            f"<span style='color:{mu}'>{nb(m.lab.text())}</span>&nbsp;<b>{nb(m.val.text())}</b>" for m in self.tiles))
+
+    # ------------------------------------------------------------------ device diagram
+    def _on_tab(self, _i):
+        if self.tabs.currentWidget() is self.dev_tab:
+            self._update_device()
+
+    def _update_device(self):
+        """Redraw the cross-section from the form (only while the tab is visible, and only if it changed)."""
+        v = self.form.values()
+        notes = []
+        bad = [self.form.rows[n].spec.label for n in self.form.invalid_fields() if n in DEVICE_KEYS]
+        if bad:
+            notes.append("Invalid values, drawn with their defaults: " + ", ".join(bad))
+        notes += check_params(v)
+        self.dev_warn.setText("\n".join(f"⚠ {n}" for n in notes))
+        self.dev_warn.setVisible(bool(notes))
+        if self.tabs.currentWidget() is not self.dev_tab:
+            return
+        key = tuple(repr(v.get(k)) for k in DEVICE_KEYS)
+        if key == self._dev_key:
+            return
+        self._dev_key = key
+        dev = device_from_params(v, alpha_cm=max(float(v.get("alpha_cm") or 0.0), 1e-3))   # α = 0: no 1/α division
+        side = self._dev_side = self._side_by_side()
+
+        def draw(fig):
+            ax, az = draw_device(fig, dev)
+            if not side:                        # narrow canvas: whole device on top, gap zoom below
+                gs = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.1])
+                ax.set_subplotspec(gs[0])
+                az.set_subplotspec(gs[1])
+        self.dev_plot.plot(draw)
+
+    def _side_by_side(self) -> bool:
+        c = self.dev_plot.canvas
+        return c.width() >= self.SIDE_BY_SIDE * max(c.height(), 1)
 
     # ------------------------------------------------------------------ run
     def _toggle_quick(self, on):
@@ -366,11 +501,11 @@ class SteadyPage(Page):
             self.quick.blockSignals(True)
             self.quick.setChecked(q)
             self.quick.blockSignals(False)
-        self.run_btn.setToolTip(f"提交到任务队列（{'粗网格：约 30–60 秒' if q else '生产网格：约 6–7 分钟'}）")
+        self.run_btn.setToolTip(f"Submit to the job queue ({'coarse grid: ≈ 30–60 s' if q else 'production grid: ≈ 6–7 min'})")
 
     def _pick_out(self):
-        d = QFileDialog.getExistingDirectory(self, "选择输出文件夹", str(paths.GUI_RUNS if paths.GUI_RUNS.exists()
-                                                                       else paths.RESULTS))
+        d = QFileDialog.getExistingDirectory(self, "Choose output folder", str(paths.GUI_RUNS if paths.GUI_RUNS.exists()
+                                                                              else paths.RESULTS))
         if d:
             self.out_edit.setText(paths.rel(d))
 
@@ -382,25 +517,30 @@ class SteadyPage(Page):
         out = paths.absolute(Path(txt).expanduser())
         r = out.resolve()
         if r in (paths.ROOT.resolve(), paths.RESULTS.resolve(), paths.GUI_RUNS.resolve()) or r in paths.ROOT.resolve().parents:
-            error_box(self, "输出文件夹不合适", f"{txt} 是项目或 results 的根目录。请选择（或输入）一个专用的子文件夹，"
-                                              "或留空让程序自动新建 results/gui_runs/steady_<时间>。")
+            error_box(self, "Unsuitable output folder", f"{txt} is the project or results root. Choose (or type) a "
+                      "dedicated subfolder, or leave the field empty to create results/gui_runs/steady_<time> "
+                      "automatically.")
             return None
         if out.exists() and not out.is_dir():
-            error_box(self, "输出路径不是文件夹", f"{txt} 是一个文件。请输入文件夹路径，或留空自动新建。")
+            error_box(self, "Output path is not a folder", f"{txt} is a file. Enter a folder path, or leave the field "
+                      "empty to create a new folder automatically.")
             return None
         busy = [j for j in JobManager.instance().active() if j.out and paths.absolute(j.out).resolve() == r]
         if busy:
-            error_box(self, "输出文件夹正被占用", f"任务「{busy[0].title}」（{STATUS_ZH.get(busy[0].status)}）"
-                                               f"正在写入 {paths.rel(out)}。请换一个文件夹，或留空自动新建。")
+            error_box(self, "Output folder in use", f"The job “{busy[0].title}” ({STATUS_TEXT.get(busy[0].status, '')}) "
+                      f"is writing to {paths.rel(out)}. Choose another folder, or leave the field empty to create a "
+                      "new one.")
             return None
         if out.is_dir() and any(out.iterdir()):
             committed = r.is_relative_to(paths.RESULTS.resolve()) and not r.is_relative_to(paths.GUI_RUNS.resolve())
-            msg = f"{paths.rel(out)} 中已有文件，运行会覆盖其中的图、CSV、summary.json 和 params.json。"
+            msg = (f"{paths.rel(out)} already contains files. The run will overwrite its figures, CSV files, "
+                   "summary.json, params.json and solution.npz.")
             if committed:
-                msg += "\n\n注意：这是仓库中已提交的结果文件夹，覆盖后只能用 git 恢复。"
+                msg += "\n\nNote: this result folder is committed to the repository; once overwritten it can only be " \
+                       "restored with git."
             if (out / "summary.json").exists():
-                msg += "\n\n该文件夹中已有一个完整的稳态结果。"
-            r2 = QMessageBox.question(self, "覆盖已有结果？", msg + "\n\n继续吗？",
+                msg += "\n\nThe folder already holds a complete steady-state result."
+            r2 = QMessageBox.question(self, "Overwrite existing result?", msg + "\n\nContinue?",
                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                       QMessageBox.StandardButton.No)
             if r2 != QMessageBox.StandardButton.Yes:
@@ -413,21 +553,20 @@ class SteadyPage(Page):
             lines = []
             for n in self.form.invalid_fields():
                 s = rows[n].spec
-                rng = ("" if s.minimum is None and s.maximum is None else
-                       f"（允许范围 {'' if s.minimum is None else f'≥ {s.minimum:g}'}"
-                       f"{'' if s.minimum is None or s.maximum is None else '，'}"
-                       f"{'' if s.maximum is None else f'≤ {s.maximum:g}'}）")
-                lines.append(f"• {s.label}（{n}）= {rows[n].editor.text() if hasattr(rows[n].editor, 'text') else '?'}{rng}")
-            error_box(self, "参数无效", "以下参数无法解析或超出允许范围：\n" + "\n".join(lines))
+                lims = ([] if s.minimum is None else [f"≥ {s.minimum:g}"]) + ([] if s.maximum is None else [f"≤ {s.maximum:g}"])
+                rng = f" (allowed: {', '.join(lims)})" if lims else ""
+                lines.append(f"• {s.label} ({n}) = {rows[n].editor.text() if hasattr(rows[n].editor, 'text') else '?'}{rng}")
+            error_box(self, "Invalid parameters", "These parameters cannot be parsed or are out of range:\n" + "\n".join(lines))
             return
         v = self.form.values()
         bad = check_params(v)
         if bad:
-            error_box(self, "参数组合无效", "请先修正：\n" + "\n".join(f"• {b}" for b in bad))
+            error_box(self, "Invalid parameter combination", "Please fix first:\n" + "\n".join(f"• {b}" for b in bad))
             return
         if self.job is not None and self.job.active:
-            r = QMessageBox.question(self, "已有稳态任务", f"「{self.job.title}」仍在{STATUS_ZH.get(self.job.status)}。\n"
-                                     "再提交一个新任务吗？（新任务会排队，等前面的任务完成后运行）",
+            r = QMessageBox.question(self, "Steady-state job already active",
+                                     f"“{self.job.title}” is still {STATUS_TEXT.get(self.job.status, '').lower()}.\n"
+                                     "Submit another job? It will wait in the queue until the earlier jobs finish.",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                      QMessageBox.StandardButton.No)
             if r != QMessageBox.StandardButton.Yes:
@@ -437,16 +576,16 @@ class SteadyPage(Page):
         if out is None:
             return
         ov = self.form.overrides()
-        desc = ", ".join(f"{k}={x}" for k, x in ov.items() if not (quick and k in QUICK)) or "默认参数"
+        desc = ", ".join(f"{k}={x}" for k, x in ov.items() if not (quick and k in QUICK)) or "default parameters"
         if len(desc) > 60:
             desc = desc[:58].rstrip(", ") + " …"
-        title = ("稳态(粗网格) · " if quick else "稳态 · ") + desc
+        title = ("Steady state (coarse) · " if quick else "Steady state · ") + desc
         self.job = JobManager.instance().submit(
             title, "steady", "scripts/run_baseline.py", "main", kwargs=dict(out=paths.rel(out), **ov), out=out,
             progress={"type": "steady"})
         self.panel.attach(self.job)
-        self.panel.title.setToolTip(", ".join(f"{k}={x}" for k, x in ov.items()) or "默认参数")
-        self.tabs.setCurrentIndex(0)
+        self.panel.title.setToolTip(", ".join(f"{k}={x}" for k, x in ov.items()) or "default parameters")
+        self.tabs.setCurrentWidget(self.run_tab)
 
     def _on_finished(self, job):
         if job is self.job and job.status == FINISHED and job.out:
@@ -481,34 +620,41 @@ class SteadyPage(Page):
         anode_at_pos_X = None if not np.isfinite(V) or V == 0 else ((side == "-x") == (V > 0))
         ug = m.get("unity")
         same = anode_at_pos_X in (None, True)          # same polarity as the measured +25 V scan
+        sd = "anode" if anode_at_pos_X else "cathode"
         hints = {   # tile: (short hint under the value, tooltip)
-            self.m_I: ("实测 ≈ 0.6 mA", "实测光电流约 0.6 mA（+25 V）"),
+            self.m_I: ("measured 0.6 mA", "Measured photocurrent ≈ 0.6 mA (+25 V)"),
             self.m_gain: (f"I_unity {ug:.2f} mA" if ug else "",
-                          "增益 = |I| / I_unity；I_unity 为每个吸收光子贡献一个电荷时的电流" if ug else ""),
-            self.m_peak: ("实测 +5 µm" if same else "实测(镜像) −5 µm",
-                          "实测 +25 V 扫描的峰值在 X = +5 µm（针尖在阳极侧）" +
-                          ("" if same else "；本结果极性相反，对应 X = −5 µm")),
-            self.m_ratio: ({None: "无偏压", True: ">1 阳极侧强", False: ">1 阴极侧强"}[anode_at_pos_X],
-                           "无偏压，无阳极/阴极之分" if anode_at_pos_X is None else
-                           f"S(+5)/S(−5) > 1：针尖在{'阳极' if anode_at_pos_X else '阴极'}侧时信号更强"
-                           f"（X = 光斑 − 针尖 > 0 是{'阳极' if anode_at_pos_X else '阴极'}侧）"),
-            self.m_s0: ("实测 0.24", "实测 +25 V：S(0) / max = 0.24"),
+                          "Gain = |I| / I_unity, where I_unity is the current for one charge per absorbed photon"
+                          if ug else ""),
+            self.m_peak: ("measured +5 µm" if same else "mirrored: −5 µm",
+                          "The measured +25 V scan peaks at X = +5 µm (tip on the anode side)" +
+                          ("" if same else "; this result has the opposite polarity, so compare with X = −5 µm")),
+            self.m_ratio: ({None: "no bias", True: "> 1: anode side", False: "> 1: cathode side"}
+                           [anode_at_pos_X],
+                           "No bias, so there is no anode or cathode side" if anode_at_pos_X is None else
+                           f"S(+5)/S(−5) > 1 means a stronger signal with the tip on the {sd} side "
+                           f"(X = spot − tip > 0 is the {sd} side)"),
+            self.m_s0: ("measured 0.24", "Measured at +25 V: S(0) / max = 0.24"),
         }
         for tile, key, f in ((self.m_I, "I", "{:.3f} mA"), (self.m_gain, "gain", "{:.2f}"), (self.m_peak, "peak_X", "{:+.1f} µm"),
                              (self.m_ratio, "ratio5", "{:.2f}"), (self.m_s0, "S0", "{:.2f}")):
             tile.set(_fmt(m.get(key), f), hints[tile][0])
             tile.setProperty("tip", hints[tile][1])
         self._tile_hints()
+        self._update_summary()
         conv = m.get("converged")
         if not d.is_dir():
-            state, obj, tip = "文件夹不存在", "badgeErr", str(d)
+            state, obj, tip = "Folder not found", "badgeErr", str(d)
         elif not summ:
-            state, obj, tip = "未完成：无 summary.json", "badgeWarn", "运行未完成、已取消或失败（文件夹中没有 summary.json）"
+            state, obj, tip = ("Incomplete: no summary.json", "badgeWarn",
+                               "The run did not finish, was cancelled or failed (no summary.json in the folder)")
         elif conv is None:
             state, obj, tip = "", "badge", ""
         else:
-            state, obj, tip = (("已收敛", "badgeOk", "暗态与光照两个阶段的稳态 Newton 均已收敛") if conv else
-                               ("未完全收敛", "badgeWarn", "至少一个阶段到达 t_end 或步数上限时稳态 Newton 仍未收敛"))
+            state, obj, tip = (("Converged", "badgeOk", "The steady-state Newton converged in both the dark and the "
+                                "illuminated stage") if conv else
+                               ("Not fully converged", "badgeWarn", "In at least one stage the steady-state Newton had "
+                                "not converged when t_end or the step limit was reached"))
         self.res_title.setText(paths.rel(d))
         self.res_state.setText(state)
         self.res_state.setToolTip(tip)
@@ -520,21 +666,45 @@ class SteadyPage(Page):
             if (d / fn).exists():
                 self.views[fn].load(d / fn)
             else:
-                self.views[fn].clear(f"此结果没有 {fn}")
-        has_sol = (d / "solution.npz").exists()
+                self.views[fn].clear(f"This result has no {fn}")
+        sol = d / "solution.npz"
+        has_sol = sol.exists()
         self.btn_explore.setEnabled(has_sol)
-        self.btn_explore.setToolTip("在「解查看器」中交互查看 ψ、E、n、p、EL2⁺" if has_sol else
-                                    "该结果没有保存 solution.npz（仓库中未提交）")
+        self.btn_explore.setToolTip("Inspect ψ, E, n, p and EL2⁺ interactively in the Solution explorer" if has_sol else
+                                    "This result has no solution.npz (solution files are not committed to the repository)")
         self.btn_params.setEnabled(bool(pr))
+        self._field_token += 1
+        if has_sol:
+            self._field_message("Loading the electric field from solution.npz …")
+            tok = self._field_token
+            run_async(load_steady_fields, sol, on_done=lambda data: self._on_fields(tok, data),
+                      on_error=lambda msg: self._on_fields_error(tok, msg))
+        else:
+            self._field_message(no_field_message(d, bool(summ)))
         if switch:
-            self.tabs.setCurrentIndex(1)
+            self.tabs.setCurrentWidget(self.res_tab)
+
+    def _field_message(self, msg: str):
+        self.field.set_fields(None, msg)
+
+    def _on_fields(self, tok, data):
+        if tok != self._field_token:          # a newer result was loaded meanwhile
+            return
+        self.field.set_fields(data)
+
+    def _on_fields_error(self, tok, msg):
+        if tok != self._field_token:
+            return
+        first = (msg or "").strip().splitlines()[0] if (msg or "").strip() else "unknown error"
+        self._field_message(f"Could not read solution.npz:\n{first}")
 
     def _load_result_params(self):
         if not self.result_dir:
             return
         d = result_params(self.result_dir)
         if not d:
-            error_box(self, "无法载入参数", f"{paths.rel(self.result_dir)} 中没有可读的 params.json / summary.json。")
+            error_box(self, "Cannot load parameters", f"{paths.rel(self.result_dir)} has no readable params.json "
+                      "or summary.json.")
             return
         self.form.set_values({k: v for k, v in d.items() if k in self.form.rows}, reset_others=True)
 
@@ -569,18 +739,20 @@ class SteadyPage(Page):
             except (OSError, ValueError, AttributeError, TypeError):
                 summ, m = {}, {}
             when = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime(d / "summary.json")))
-            tags = ("  ·  粗网格" if is_quick(result_params(d, summ)) else "") + \
-                   ("" if m.get("converged", True) else "  ·  ⚠ 未完全收敛")
-            txt = (f"{paths.rel(d)}{tags}\n    I = {_fmt(m.get('I'), '{:.3f} mA')} · 峰值 X = "
+            tags = ("  ·  coarse grid" if is_quick(result_params(d, summ)) else "") + \
+                   ("  ·  field map" if (d / "solution.npz").exists() else "") + \
+                   ("" if m.get("converged", True) else "  ·  ⚠ not fully converged")
+            txt = (f"{paths.rel(d)}{tags}\n    I = {_fmt(m.get('I'), '{:.3f} mA')} · peak X = "
                    f"{_fmt(m.get('peak_X'), '{:+.1f} µm')} · {when}")
             it = QListWidgetItem(txt)
             it.setData(Qt.ItemDataRole.UserRole, str(d))
-            it.setToolTip(str(d))
+            it.setToolTip(str(d) + ("\nHas solution.npz: the Electric field tab shows its field map"
+                                    if (d / "solution.npz").exists() else ""))
             self.hist.addItem(it)
             if keep == str(d):
                 self.hist.setCurrentItem(it)
         if not cands:
-            it = QListWidgetItem("还没有稳态结果。运行一次求解后，结果会出现在这里。")
+            it = QListWidgetItem("No steady-state results yet. Results appear here after you run a solve.")
             it.setFlags(Qt.ItemFlag.NoItemFlags)
             self.hist.addItem(it)
 

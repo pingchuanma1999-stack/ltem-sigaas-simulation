@@ -19,6 +19,7 @@ from ..jobs import CANCELLED, FAILED, FINISHED, JobManager
 from ..paramspec import FieldSpec, format_float
 from ..theme import ThemeManager
 from ..widgets.common import MetricTile, Page, button, error_box, label, reveal
+from ..widgets.device import FieldView, draw_fdtd_device
 from ..widgets.imageview import ImageView
 from ..widgets.mpl import PlotWidget
 from ..widgets.paramform import ParamForm
@@ -45,6 +46,22 @@ UNSCALE = {si: (form, f) for form, (si, f) in SCALE.items()}
 # arrays every ratio_h*.npz of run_fdtd_heights.py holds (an interrupted save leaves some of them missing or empty)
 HEIGHT_KEYS = ("x", "z", "ratio", "Qtip", "Qnotip", "absorbed", "launched")
 
+# quantities of the COMSOL-style optical-field view
+E_TIP = "Electric field norm |E|max / |E0| (field enhancement)"
+E_NOTIP = "Electric field norm |E|max / |E0|, no tip"
+Q_TIP = "Absorbed energy density Q (normalised)"
+Q_NOTIP = "Absorbed energy density Q (normalised), no tip"
+RATIO = "Enhancement Q_tip/Q_notip"
+WITH_TIP = (E_TIP, Q_TIP, RATIO)             # quantities that get the tip outline
+FIELD_NOTE = "|E0| = peak incident field (vacuum run) · Q normalised to max Q_notip — hover for details"
+FIELD_HELP = ("|E|max: the peak of |E(t)| in each cell during the pulse (max over time of Ex² + Ez²).\n"
+              "|E0|: the peak incident field, the maximum of |E|max in the vacuum run between z = 0.5 µm and the source "
+              "plane.\n(fdtd_pump.png divides by the no-tip maximum over all z > 0.5 µm, which includes the source row "
+              "itself\nand is ~60× |E0|² on the default grid.)\n"
+              "Q: absorbed energy density ∫σ|E|² dt, normalised to its maximum without the tip; zero (blank) in the air.\n"
+              "Black lines: the exact tip outline and the GaAs surface z = 0. Cells the FDTD treats as PtIr are blank.")
+E0_Z = 0.5                                   # µm; |E0| is measured in the air between this height and the source
+
 
 def pump_specs() -> list[FieldSpec]:
     """FDTDConfig fields that run_fdtd_pump.main can pass through, in convenient units.
@@ -52,39 +69,52 @@ def pump_specs() -> list[FieldSpec]:
     dx goes through dx_nm; x_half, z_min, z_max, z_source, gaas and tip are fixed by the script
     (passing them raises a duplicate-keyword error); eps_inf_tip and snapshot_every do nothing.
     """
-    B, G, T, N = "光束", "GaAs（820 nm）", "针尖（PtIr，Drude 模型）", "网格与数值"
+    B, G, T, N = "Beam", "GaAs (820 nm)", "Tip (PtIr, Drude model)", "Grid and numerics"     # no "&": QGroupBox mnemonic
     return [
-        FieldSpec("dx_nm", 15.0, "float", "网格步长 dx", "nm",
-                  "Yee 网格边长。耗时 ∝ dx⁻³。高度序列固定使用 15 nm，因此其参考场也必须是 15 nm。", N, minimum=2, maximum=100),
-        FieldSpec("courant", 0.5, "float", "Courant 数", "", "dt = courant·dx/c。2-D 稳定极限 1/√2 ≈ 0.707。", N,
-                  advanced=True, minimum=0.05, maximum=0.7),
-        FieldSpec("t_end_fs", 0.0, "float", "模拟时长 t_end", "fs", "0 = 自动（脉冲 + 两倍传播时间，默认约 535 fs）。", N,
-                  advanced=True, minimum=0),
-        FieldSpec("n_pml", 20, "int", "PML 层数", "", "每侧 CPML 吸收层的网格数。", N, advanced=True, minimum=4, maximum=80),
-        FieldSpec("pml_m", 3, "int", "PML 阶数 m", "", "CPML 电导率多项式阶数。", N, advanced=True, minimum=1, maximum=6),
-        FieldSpec("theta_deg", 45.0, "float", "入射角 θ", "deg", "相对表面法线；光束向 +x 方向传播。", B, minimum=0, maximum=80),
-        FieldSpec("w_um", 3.0, "float", "光斑半径 w (1/e²)", "µm", "投影到表面上的 1/e² 强度半径。", B, minimum=0.05),
-        FieldSpec("x_beam_um", 0.0, "float", "光束位置 X", "µm", "光轴与表面交点的 x 坐标（针尖位于 tip_x）。", B),
-        FieldSpec("wavelength_nm", 820.0, "float", "波长 λ", "nm",
-                  "FDTDConfig.wavelength 以米为单位，这里自动换算。注意 n、κ 和针尖 Drude 参数是 820 nm 的值，不会随 λ 改变。",
-                  B, minimum=100, maximum=5000),
-        FieldSpec("fwhm_fs", 100.0, "float", "脉宽 FWHM", "fs", "强度半高全宽。脉宽越长，模拟时长越长。", B, minimum=5, maximum=1000),
-        FieldSpec("n_gaas", 3.67, "float", "折射率 n", "", "GaAs 在泵浦波长的折射率实部。", G, minimum=1),
-        FieldSpec("kappa_gaas", 0.078, "float", "消光系数 κ", "", "α = 4πκ/λ；0.078 对应 1.2×10⁴ cm⁻¹ @ 820 nm。", G, minimum=0),
-        FieldSpec("tip_radius_nm", 40.0, "float", "针尖曲率半径 R", "nm", "FDTDConfig.tip_radius（米），自动换算。", T, minimum=1),
-        FieldSpec("tip_half_angle_deg", 15.0, "float", "针尖半角", "deg",
-                  "2-D 模型中针尖是 y 方向无限长的楔形，阴影是上限。", T, minimum=1, maximum=60),
-        FieldSpec("tip_gap_nm", 20.0, "float", "针尖–表面间距 gap", "nm", "针尖顶点到 GaAs 表面的距离（FDTDConfig.tip_gap，米）。",
-                  T, minimum=0),
-        FieldSpec("tip_x_um", 0.0, "float", "针尖位置 x", "µm", "FDTDConfig.tip_x（米），自动换算。", T, advanced=True),
-        FieldSpec("omega_p_tip", 1.86e16, "float", "等离子体频率 ω_p", "rad/s", "单频 Drude 拟合 (Pt @ 820 nm: ε ≈ −17.6 + 29.6i)。",
-                  T, advanced=True, minimum=0),
-        FieldSpec("gamma_tip", 3.66e15, "float", "阻尼 γ", "rad/s", "Drude 阻尼率。", T, advanced=True, minimum=0),
+        FieldSpec("dx_nm", 15.0, "float", "Cell size dx", "nm",
+                  "Yee cell edge. Runtime ∝ dx⁻³. The tip-height series always uses 15 nm, so its reference field "
+                  "must be computed at 15 nm too.", N, minimum=2, maximum=100),
+        FieldSpec("courant", 0.5, "float", "Courant number", "", "dt = courant·dx/c. The 2-D stability limit is 1/√2 ≈ 0.707.",
+                  N, advanced=True, minimum=0.05, maximum=0.7),
+        FieldSpec("t_end_fs", 0.0, "float", "Simulated time t_end", "fs",
+                  "0 = automatic (pulse plus twice the propagation time, ≈ 535 fs by default).", N, advanced=True, minimum=0),
+        FieldSpec("n_pml", 20, "int", "PML layers", "", "CPML absorbing cells on each side.", N, advanced=True,
+                  minimum=4, maximum=80),
+        FieldSpec("pml_m", 3, "int", "PML grading order m", "", "Polynomial order of the CPML conductivity profile.", N,
+                  advanced=True, minimum=1, maximum=6),
+        FieldSpec("theta_deg", 45.0, "float", "Incidence angle θ", "deg",
+                  "From the surface normal; the beam travels toward +x.", B, minimum=0, maximum=80),
+        FieldSpec("w_um", 3.0, "float", "Spot radius w (1/e²)", "µm", "1/e² intensity radius projected on the surface.", B,
+                  minimum=0.05),
+        FieldSpec("x_beam_um", 0.0, "float", "Beam position X", "µm",
+                  "x where the beam axis meets the surface (the tip sits at tip_x).", B),
+        FieldSpec("wavelength_nm", 820.0, "float", "Wavelength λ", "nm",
+                  "FDTDConfig.wavelength is in metres; converted automatically. n, κ and the tip's Drude parameters "
+                  "are 820 nm values and do not follow λ.", B, minimum=100, maximum=5000),
+        FieldSpec("fwhm_fs", 100.0, "float", "Pulse width (FWHM)", "fs",
+                  "Intensity full width at half maximum. Longer pulses need a longer simulated time.", B, minimum=5,
+                  maximum=1000),
+        FieldSpec("n_gaas", 3.67, "float", "Refractive index n", "", "Real part of the GaAs index at the pump wavelength.",
+                  G, minimum=1),
+        FieldSpec("kappa_gaas", 0.078, "float", "Extinction coefficient κ", "",
+                  "α = 4πκ/λ; 0.078 gives 1.2×10⁴ cm⁻¹ at 820 nm.", G, minimum=0),
+        FieldSpec("tip_radius_nm", 40.0, "float", "Apex radius R", "nm",
+                  "FDTDConfig.tip_radius (metres), converted automatically.", T, minimum=1),
+        FieldSpec("tip_half_angle_deg", 15.0, "float", "Cone half-angle", "deg",
+                  "In the 2-D model the tip is a wedge, infinitely long in y, so its shadow is an upper bound.", T,
+                  minimum=1, maximum=60),
+        FieldSpec("tip_gap_nm", 20.0, "float", "Tip–surface gap", "nm",
+                  "Distance from the apex to the GaAs surface (FDTDConfig.tip_gap, metres).", T, minimum=0),
+        FieldSpec("tip_x_um", 0.0, "float", "Tip position x", "µm", "FDTDConfig.tip_x (metres), converted automatically.",
+                  T, advanced=True),
+        FieldSpec("omega_p_tip", 1.86e16, "float", "Plasma frequency ω_p", "rad/s",
+                  "Single-frequency Drude fit (Pt at 820 nm: ε ≈ −17.6 + 29.6i).", T, advanced=True, minimum=0),
+        FieldSpec("gamma_tip", 3.66e15, "float", "Damping γ", "rad/s", "Drude damping rate.", T, advanced=True, minimum=0),
     ]
 
 
 def pump_kwargs(ov: dict) -> dict:
-    """Changed form values -> run_fdtd_pump.main keyword arguments (FDTDConfig units)."""
+    """Form values -> run_fdtd_pump.main keyword arguments (FDTDConfig units; dx stays dx_nm)."""
     kw = {}
     for k, v in ov.items():
         if k == "t_end_fs":
@@ -96,6 +126,13 @@ def pump_kwargs(ov: dict) -> dict:
         else:
             kw[k] = v
     return kw
+
+
+def device_cfg(values: dict) -> dict:
+    """Form values -> FDTDConfig fields for draw_fdtd_device (lengths in metres, w_um / x_beam_um in µm)."""
+    cfg = pump_kwargs(values)
+    cfg["dx"] = float(f"{float(cfg.pop('dx_nm', 15.0)) * 1e-9:.12g}")
+    return cfg
 
 
 def form_kwarg(k: str, v) -> str:
@@ -196,7 +233,7 @@ def height_npz_problem(f: Path, deep=False) -> str | None:
             size = {i.filename: i.file_size for i in zf.infolist()}
         bad = [k for k in HEIGHT_KEYS if size.get(f"{k}.npy", 0) < 64]       # 64 = smallest .npy header
         if bad:
-            return "缺少或空的数组：" + ", ".join(bad)
+            return "missing or empty arrays: " + ", ".join(bad)
         if deep:
             with np.load(f, allow_pickle=False) as d:
                 for k in HEIGHT_KEYS:
@@ -233,37 +270,39 @@ def npz_cfg(p: Path) -> dict | None:
 
 
 def check_ref(p: Path) -> tuple[str, str]:
-    """('ok' | 'warn' | 'err', Chinese message) for a reference notip.npz of run_fdtd_heights."""
+    """('ok' | 'warn' | 'err', message) for a reference notip.npz of run_fdtd_heights."""
     from ltemsim.optics_fdtd import FDTDConfig
     p = Path(p)
     if not p.exists():
-        return "err", f"文件不存在：{paths.rel(p)}。运行时可以先排队一次默认参数的泵浦 FDTD 来生成参考场。"
+        return "err", (f"File not found: {paths.rel(p)}. You can queue a default pump FDTD first to create "
+                       "the reference field.")
     if p.is_dir():
-        return "err", f"{paths.rel(p)} 是文件夹，请选择其中的 notip.npz。"
+        return "err", f"{paths.rel(p)} is a folder — choose the notip.npz inside it."
     cfg = npz_cfg(p)
     if cfg is None:
-        return "err", "无法读取该文件的 cfg（不是 run_fdtd_pump.py 写出的 npz，或文件不完整）。"
+        return "err", "Cannot read this file's cfg (not an npz written by run_fdtd_pump.py, or the file is incomplete)."
     if not cfg.get("gaas", True):
-        return "err", "这是真空参考（vacuum.npz，gaas = False）：没有 GaAs 吸收，Q_notip ≡ 0，比值无意义。请选择 notip.npz。"
+        return "err", ("This is the vacuum reference (vacuum.npz, gaas = False): there is no GaAs absorption, "
+                       "Q_notip ≡ 0 and the ratio is meaningless. Choose notip.npz.")
     if cfg.get("tip"):
-        return "err", ("这是有针尖的结果（tip.npz）。ratio_h*.npz 会被下游（针尖位置链）当作 Q_tip/Q_notip 使用，"
-                       "参考场必须是无针尖的 notip.npz。")
+        return "err", ("This is a with-tip result (tip.npz). The Tip-position chain uses ratio_h*.npz as "
+                       "Q_tip/Q_notip, so the reference must be the no-tip notip.npz.")
     if abs(cfg.get("dx", 0) - 15e-9) > 1e-12 or any(abs(cfg.get(k, 0) - v) > 1e-12 for k, v in BOX.items()):
-        return "err", (f"网格不匹配：dx = {cfg.get('dx', 0) * 1e9:.1f} nm。高度序列固定使用 15 nm 默认网格和计算区，"
-                       "用这个参考场会因数组形状不一致而失败。")
+        return "err", (f"Grid mismatch: dx = {cfg.get('dx', 0) * 1e9:.1f} nm. The height series always uses the "
+                       "default 15 nm grid and domain; with this reference it would fail on mismatched array shapes.")
     d0 = FDTDConfig()
     diffs = []
     for k, unit, f in (("theta_deg", "°", 1), ("w_um", " µm", 1), ("x_beam_um", " µm", 1), ("wavelength", " nm", 1e9),
                        ("fwhm_fs", " fs", 1), ("n_gaas", "", 1), ("kappa_gaas", "", 1), ("courant", "", 1)):
         v, v0 = cfg.get(k), getattr(d0, k)
         if v is not None and abs(v - v0) > 1e-9 * max(1.0, abs(v0)):
-            diffs.append(f"{k} = {format_float(v * f)}{unit}（默认 {format_float(v0 * f)}{unit}）")
+            diffs.append(f"{k} = {format_float(v * f)}{unit} (default {format_float(v0 * f)}{unit})")
     if cfg.get("t_end_fs"):
-        diffs.append(f"t_end = {format_float(cfg['t_end_fs'])} fs（默认自动）")
+        diffs.append(f"t_end = {format_float(cfg['t_end_fs'])} fs (default: automatic)")
     if diffs:
-        return "warn", ("⚠ 光束/材料参数与高度序列（固定为 FDTDConfig 默认值）不同：" + "；".join(diffs)
-                        + "。比值会混合两种光束。")
-    return "ok", f"✓ 15 nm 默认网格 · θ = {cfg['theta_deg']:g}° · w = {cfg['w_um']:g} µm · 与高度序列一致"
+        return "warn", ("⚠ Beam/material parameters differ from the height series (fixed to the FDTDConfig "
+                        "defaults): " + "; ".join(diffs) + ". The ratio would mix two different beams.")
+    return "ok", f"✓ Default 15 nm grid · θ = {cfg['theta_deg']:g}° · w = {cfg['w_um']:g} µm · matches the height series"
 
 
 def tip_outline(x0, gap, R, half_deg, z_top=20.0):
@@ -278,6 +317,126 @@ def tip_outline(x0, gap, R, half_deg, z_top=20.0):
     return xs, zs
 
 
+def tip_mask(cfg: dict, z_top: float):
+    """(xs, zs, f[z, x]) in µm for FieldView's outlines: f = 0.5 − (signed distance to the tip of FDTDConfig `cfg`,
+    the shape of optics_fdtd.in_tip), so its 0.5 contour is the exact, smooth geometry edge (a boolean mask would
+    give a staircase). The grid is fine around the apex and coarse along the straight cone."""
+    R, gap, xt = cfg["tip_radius"] * 1e6, cfg["tip_gap"] * 1e6, cfg["tip_x"] * 1e6
+    th = math.radians(cfg["tip_half_angle_deg"])
+    zc = gap + R
+    z_t = zc + R * math.sin(th)                         # the cone is tangent to the apex sphere here
+    h = max(min(R / 10, cfg.get("dx", 15e-9) * 1e6 / 2), 5e-4)
+    half = R * math.cos(th) + max(z_top - z_t, 0.0) * math.tan(th) + 4 * h
+    hx = max(h, 2 * half / 800)
+    xs = np.arange(xt - half, xt + half + hx / 2, hx)
+    z_fine = max(min(zc + 6 * R, z_top), gap - 3 * h)
+    zs = np.concatenate([np.arange(gap - 4 * h, z_fine, h), np.linspace(z_fine, max(z_top, z_fine + h), 80)])
+    X, Z = np.meshgrid(xs, zs)
+    d_sphere = np.hypot(X - xt, Z - zc) - R
+    d_cone = np.maximum((np.abs(X - xt) - R * math.cos(th) - (Z - z_t) * math.tan(th)) * math.cos(th), z_t - Z)
+    return xs, zs, 0.5 - np.minimum(d_sphere, d_cone)
+
+
+def _edges(c) -> np.ndarray:
+    """Cell edges from cell centres (midpoints, the outer edges mirrored)."""
+    c = np.asarray(c, float)
+    if c.size < 2:
+        c0 = float(c[0]) if c.size else 0.0
+        return np.array([c0 - 0.005, c0 + 0.005])
+    mid = 0.5 * (c[1:] + c[:-1])
+    return np.concatenate([[2 * c[0] - mid[0]], mid, [2 * c[-1] - mid[-1]]])
+
+
+def cfg_caption(cfg: dict) -> str:
+    return (f"θ {cfg['theta_deg']:g}° · w {cfg['w_um']:g} µm · λ {cfg['wavelength'] * 1e9:.0f} nm · R "
+            f"{cfg['tip_radius'] * 1e9:.0f} nm · gap {cfg['tip_gap'] * 1e9:.0f} nm · dx {cfg['dx'] * 1e9:g} nm")
+
+
+def source_cut(cfg: dict | None) -> float:
+    """µm: top of the useful air region, just below the soft source line (its own row carries a near field ~8x
+    the propagating beam, and above it there is only the source's backward emission)."""
+    c = cfg or {}
+    return c.get("z_source", BOX["z_source"]) * 1e6 - max(0.1, 4 * c.get("dx", 15e-9) * 1e6)
+
+
+def incident_e2(runs: dict) -> tuple[float, str]:
+    """(|E0|², run name): the peak incident |E|², i.e. the maximum of the vacuum run's max|E|² (the no-tip run's
+    when vacuum.npz is missing) in the air between z = 0.5 µm and the source line.
+
+    run_fdtd_pump.py's figure divides by the no-tip maximum over all z > 0.5 µm, which includes the source row
+    itself and so is ~60x the incident |E|² on the default grid.
+    """
+    for name in ("vacuum", "notip"):
+        r = runs.get(name)
+        if r is None or "Emax2" not in r:
+            continue
+        sel = (r["z"] > E0_Z) & (r["z"] < source_cut(r.get("cfg")))
+        if sel.any():
+            e2 = float(r["Emax2"][:, sel].max())
+            if e2 > 0:
+                return e2, name
+    return 0.0, ""
+
+
+def field_data(runs: dict, x, z, Qt, Qn, ratio, cfg: dict | None) -> dict | None:
+    """Data for the COMSOL-style optical-field view (FieldView scalar mode), or None without field arrays.
+
+    The npz arrays are (Nx, Nz) on cell centres (x, z already in µm here); FieldView takes [z, x] on cell edges.
+    |E| is normalised to the peak incident field (incident_e2); the metal tip's interior is left blank.
+    """
+    base = runs.get("tip") or runs.get("notip") or runs.get("vacuum")
+    if base is not None:
+        xs, zs = base["x"], base["z"]
+    elif x is not None:
+        xs, zs = x, z
+    else:
+        return None
+    shape = (len(xs), len(zs))
+    ok = lambda a: a is not None and np.shape(a) == shape
+    air = zs >= 0
+    q = {}
+    e0, e0_run = incident_e2(runs)
+    if e0 > 0:
+        for name, key in (("tip", E_TIP), ("notip", E_NOTIP)):
+            r = runs.get(name)
+            if r is not None and ok(r["Emax2"]):
+                a = np.sqrt(np.maximum(r["Emax2"], 0.0) / e0)
+                if ok(r.get("tip_mask")):
+                    a[r["tip_mask"]] = np.nan          # inside the PtIr: tiny field, would swamp the log scale
+                q[key] = (a.T, "", False)
+
+    def gaas_only(a):
+        a = np.array(a, float).T                 # [z, x]
+        a[air, :] = np.nan                       # Q and the ratio only live in the GaAs
+        return a
+
+    if Qt is None and "tip" in runs:                 # interrupted run: no ratio.npz, but the run files hold Q
+        Qt = runs["tip"]["Q"]
+    if Qn is None and "notip" in runs:
+        Qn = runs["notip"]["Q"]
+    qmax = float(np.max(Qn)) if ok(Qn) else float(np.max(Qt)) if ok(Qt) else 0.0
+    if qmax > 0:
+        if ok(Qt):
+            q[Q_TIP] = (gaas_only(Qt / qmax), "", False)
+        if ok(Qn):
+            q[Q_NOTIP] = (gaas_only(Qn / qmax), "", False)
+    if ok(ratio):
+        q[RATIO] = (gaas_only(ratio), "", False)
+    if not q:
+        return None
+    xe, ze = _edges(xs), _edges(zs)
+    xt = cfg["tip_x"] * 1e6 if cfg else 0.0
+    za = cfg["tip_gap"] * 1e6 if cfg else 0.0
+    top = min(float(ze[-1]), source_cut(cfg or base and base.get("cfg")))
+    outline = [tip_mask(cfg, float(ze[-1]) + 0.2)] if cfg and ("tip" in runs or ok(Qt)) else []
+    return dict(xe=xe, ze=ze, quantities=q, log_default=True, e0=math.sqrt(e0) if e0 else None, e0_run=e0_run,
+                outlines=outline, outlines_by={k: (outline if k in WITH_TIP else []) for k in q},
+                views={"Whole domain": ((float(xe[0]), float(xe[-1])), (float(ze[0]), top)),
+                       "Near tip (±1 µm)": ((xt - 1.0, xt + 1.0), (za - 1.0, za + 1.0)),
+                       "Apex (±0.2 µm)": ((xt - 0.2, xt + 0.2), (za - 0.2, za + 0.2))},
+                title=cfg_caption(cfg) if cfg else "")
+
+
 def _log10(a, floor=1e-30):
     return np.log10(np.maximum(a, floor))
 
@@ -290,7 +449,7 @@ def _air_nan(a, z):
 
 # ----------------------------------------------------------------------------- loading (worker threads)
 def load_pump(d: Path) -> dict:
-    """Everything the pump-results view needs, from whatever files the folder has."""
+    """Everything the pump-results views need, from whatever files the folder has."""
     from ltemsim.optics_fdtd import fresnel_p_absorption
     d = Path(d)
     res = {"dir": d, "summary": read_dict(d / "summary.json"), "runs": {}, "layers": [], "gui": read_json(d / "gui_run.json")}
@@ -302,7 +461,8 @@ def load_pump(d: Path) -> dict:
             with np.load(p, allow_pickle=False) as z:
                 res["runs"][name] = dict(x=z["x"] * 1e6, z=z["z"] * 1e6, Q=z["Q"], Emax2=z["Emax2"],
                                          launched=float(z["launched"]), absorbed=float(z["absorbed"]),
-                                         cfg=json.loads(str(z["cfg"])))
+                                         cfg=json.loads(str(z["cfg"])),
+                                         tip_mask=z["tip"] if name == "tip" and "tip" in z.files else None)
         except Exception as e:                        # partially written file of a cancelled run
             res.setdefault("errors", []).append(f"{name}.npz: {type(e).__name__}: {e}")
     runs = res["runs"]
@@ -328,6 +488,7 @@ def load_pump(d: Path) -> dict:
     if tcfg:
         tip = dict(x0=tcfg["tip_x"] * 1e6, gap=tcfg["tip_gap"] * 1e6, R=tcfg["tip_radius"] * 1e6,
                    half=tcfg["tip_half_angle_deg"])
+    res["field"] = field_data(runs, x, z, Qt, Qn, ratio, tcfg)
 
     # headline numbers: summary.json, else recomputed like the script does
     m = dict(res["summary"])
@@ -356,33 +517,31 @@ def load_pump(d: Path) -> dict:
     L_ = res["layers"]
     if ratio is not None:
         with np.errstate(divide="ignore"):
-            L_.append(dict(key="ratio", group="ratio", label="log₁₀(Q_tip / Q_notip) — 增强 / 阴影", x=x, z=z,
+            L_.append(dict(key="ratio", group="ratio", label="log₁₀(Q_tip / Q_notip) — enhancement / shadow", x=x, z=z,
                            data=_air_nan(np.log10(np.maximum(ratio, 1e-30)), z), cmap="RdBu_r", v=(-1.0, 1.0),
                            xlim=(-2.0, 2.0), zlim=(-1.5, 0.3), title="log10(Q_tip / Q_notip): enhancement (red), shadow (blue)",
                            cbar="log10 ratio", tip=tip))
     if Qn is not None:
         qmax = Qn.max()
-        L_.append(dict(key="Qtip", group="Q", label="log₁₀ Q 有针尖（/ max Q_notip）", x=x, z=z,
+        L_.append(dict(key="Qtip", group="Q", label="log₁₀ Q with tip (/ max Q_notip)", x=x, z=z,
                        data=_air_nan(_log10(Qt / qmax), z), cmap="viridis", v=(-4.0, 0.5), xlim=(-4.0, 4.0),
                        zlim=(-2.0, 0.3), title="log10 absorbed energy density, with tip (/ max Q_notip)", cbar="log10 Q", tip=tip))
-        L_.append(dict(key="Qnotip", group="Q", label="log₁₀ Q 无针尖（/ max Q_notip）", x=x, z=z,
+        L_.append(dict(key="Qnotip", group="Q", label="log₁₀ Q without tip (/ max Q_notip)", x=x, z=z,
                        data=_air_nan(_log10(Qn / qmax), z), cmap="viridis", v=(-4.0, 0.5), xlim=(-4.0, 4.0),
                        zlim=(-2.0, 0.3), title="log10 absorbed energy density, no tip (/ max Q_notip)", cbar="log10 Q", tip=None))
-    ref_run = runs.get("notip") or runs.get("vacuum")
-    if ref_run is not None:
-        zz = ref_run["z"]
-        inc = ref_run["Emax2"][:, zz > 0.5].max()
-        for name, zh, en in (("tip", "有针尖", "with tip"), ("notip", "无针尖", "no tip"), ("vacuum", "真空", "vacuum")):
+    inc = incident_e2(runs)[0]
+    if inc > 0:
+        for name, en in (("tip", "with tip"), ("notip", "no tip"), ("vacuum", "vacuum")):
             if name in runs:
                 rr = runs[name]
-                L_.append(dict(key=f"E_{name}", group="E", label=f"log₁₀ max|E|² / 入射（{zh}）", x=rr["x"], z=rr["z"],
-                               data=_log10(rr["Emax2"] / inc), cmap="magma", v=(-3.0, 2.0),
+                L_.append(dict(key=f"E_{name}", group="E", label=f"log₁₀ max|E|² / |E0|² ({en})", x=rr["x"], z=rr["z"],
+                               data=_log10(rr["Emax2"] / inc), cmap="magma", v=(-3.0, 1.5),
                                xlim=(float(rr["x"][0]), float(rr["x"][-1])), zlim=(float(rr["z"][0]), float(rr["z"][-1])),
-                               title=f"log10 max|E|^2 / incident ({en})", cbar="log10 |E|^2 / incident",
+                               title=f"log10 max|E|^2 / incident |E0|^2 ({en})", cbar="log10 |E|^2 / |E0|^2",
                                tip=tip if name == "tip" else None))
     for r in runs.values():           # the raw arrays are no longer needed
-        r.pop("Q", None)
-        r.pop("Emax2", None)
+        for k in ("Q", "Emax2", "tip_mask"):
+            r.pop(k, None)
     return res
 
 
@@ -683,11 +842,61 @@ class _PlotStack(QStackedWidget):
         return QSize(super().sizeHint().width(), self.minimumHeight())
 
 
+class _Tab(QWidget):
+    """Tab page with a modest preferred height. The app hosts pages in a resizable scroll area that, because the
+    page layout has height-for-width, makes the page as tall as its preferred height: a FigureCanvas asks for its
+    whole figsize (~500 px), which would push a 700 px window into scrolling."""
+
+    def sizeHint(self):
+        return QSize(super().sizeHint().width(), max(self.minimumSizeHint().height(), 320))
+
+
+# ----------------------------------------------------------------------------- COMSOL-style optical field
+class OpticalFieldView(FieldView):
+    """FieldView for the FDTD maps: the tip outline only on the with-tip quantities, 1:1 aspect by default and the
+    selected quantity / view kept when another result is loaded. Scalar maps only: the vector-overlay control
+    (disabled by FieldView for scalar data) is hidden."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.equal.setChecked(True)
+        self.overlay.hide()
+        for w in self.findChildren(QLabel):
+            if w.text() == "Overlay":
+                w.hide()
+        self.qty.setToolTip("Quantity shown as the color surface")
+        self.view.setToolTip("Zoom presets; the views end just below the source plane at z = 2.2 µm")
+        self.log.setToolTip("Logarithmic color scale (on by default: the field and the absorption span decades)")
+        self.equal.setToolTip("Same length scale on x and z (to scale, as in COMSOL)")
+
+    def set_fields(self, data, message=None):
+        keep = (self.qty.currentText(), self.view.currentText()) if self.data else None
+        super().set_fields(data, message)
+        if not data:
+            return
+        if keep and (keep[0] != self.qty.currentText() or keep[1] != self.view.currentText()):
+            self._busy = True
+            try:
+                for combo, text in zip((self.qty, self.view), keep):
+                    j = combo.findText(text)
+                    if j >= 0:
+                        combo.setCurrentIndex(j)
+            finally:
+                self._busy = False
+            self._redraw()
+
+    def _redraw(self, *_):
+        d = self.data
+        if d and "outlines_by" in d:
+            d["outlines"] = d["outlines_by"].get(self.qty.currentText(), ())
+        super()._redraw()
+
+
 # ----------------------------------------------------------------------------- colour-map view
 class MapView(QWidget):
     """Colour map of one of several (x, z) layers with layer / colormap / range controls."""
 
-    def __init__(self, empty_text="暂无数据", parent=None):
+    def __init__(self, empty_text="No data", parent=None):
         super().__init__(parent)
         self.layers: list[dict] = []
         self.cur: dict | None = None
@@ -702,22 +911,23 @@ class MapView(QWidget):
         self.cmap = QComboBox()
         self.cmap.addItems(CMAPS)
         self.cmap.currentTextChanged.connect(self._schedule)
-        self.tip = QCheckBox("针尖轮廓")
+        self.tip = QCheckBox("Tip outline")
         self.tip.setChecked(True)
         self.tip.toggled.connect(self._schedule)
-        self.equal = QCheckBox("等比例")
+        self.equal = QCheckBox("1:1 aspect")
         self.equal.setChecked(True)
-        self.equal.setToolTip("x 与 z 使用相同的长度比例")
+        self.equal.setToolTip("Same length scale on x and z")
         self.equal.toggled.connect(self._schedule)
-        r1.addWidget(_group(label("物理量", "muted"), self.layer))
-        r1.addWidget(_group(label("色图", "muted"), self.cmap))
+        r1.addWidget(_group(label("Quantity", "muted"), self.layer))
+        r1.addWidget(_group(label("Colormap", "muted"), self.cmap))
         r1.addWidget(_group(self.tip, self.equal, spacing=10))
-        rb = button("重置视图", self._reset_view, "flat", "恢复该物理量的默认范围与色图")
+        rb = button("Reset view", self._reset_view, "flat", "Restore this quantity's default ranges and colormap")
         r1.addWidget(rb)
         lay.addLayout(r1)
         r2 = FlowLayout(hspacing=14)
         self.spins = {}
-        for key, text, lo, hi, step in (("x", "x", -20, 20, 0.25), ("z", "z", -20, 20, 0.25), ("v", "色标", -40, 40, 0.25)):
+        for key, text, lo, hi, step in (("x", "x", -20, 20, 0.25), ("z", "z", -20, 20, 0.25),
+                                        ("v", "Color range", -40, 40, 0.25)):
             parts = [label(text, "muted")]
             pair = []
             for j in range(2):
@@ -850,9 +1060,10 @@ class MapView(QWidget):
 
 # ----------------------------------------------------------------------------- page
 class FdtdPage(Page):
-    title = "泵浦 FDTD"
-    subtitle = ("2-D FDTD：820 nm、100 fs p 偏振泵浦依次照射真空、无针尖、有针尖（PtIr Drude）的 GaAs，"
-                "得到吸收能量密度 Q(x,z) 与针尖增强/阴影比值 Q_tip/Q_notip。默认网格约 4–5 分钟。")
+    title = "Pump FDTD (optics)"
+    subtitle = ("2-D FDTD of the 820 nm, 100 fs p-polarised pump on GaAs: vacuum reference, no tip, and a PtIr (Drude) "
+                "tip. Gives the optical field |E|, the absorbed energy density Q(x, z) and the tip's enhancement / "
+                "shadow Q_tip/Q_notip. Default grid ≈ 4–5 min.")
 
     def __init__(self):
         super().__init__()
@@ -863,11 +1074,13 @@ class FdtdPage(Page):
         self._pump_token = self._heights_token = 0
         self._levels = {}           # label -> colour level, re-applied on theme change
         self._loaded_once = False
+        self._dev_cfg = None        # FDTDConfig fields of the last device drawing
+        self._dev_dirty = True
 
-        b = button("文档", lambda: nav.navigate("docs", path=str(paths.DOCS / "pulse_chain.md")), "flat",
-                   "docs/pulse_chain.md — Stage 1 pump field")
+        b = button("Docs", lambda: nav.navigate("docs", path=str(paths.DOCS / "pulse_chain.md")), "flat",
+                   "docs/pulse_chain.md — stage 1: the pump field")
         self.header.add_action(b)
-        self.run_btn = button("  运行泵浦 FDTD", self.run, "primary")
+        self.run_btn = button("  Run pump FDTD", self.run, "primary")
         self.header.add_action(self.run_btn)
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -877,10 +1090,19 @@ class FdtdPage(Page):
         split.setSizes([440, 900])
         self.body.addWidget(split, 1)
 
+        self._dev_timer = QTimer(self)
+        self._dev_timer.setSingleShot(True)
+        self._dev_timer.setInterval(300)
+        self._dev_timer.timeout.connect(self._draw_device)
+        self.form.changed.connect(self._schedule_device)
+        self.hform.changed.connect(self._schedule_device)
+        self.tabs.currentChanged.connect(self._on_tab)
+
         self._update_pump_estimate()
         self._refresh_refs()
         self._update_heights_info()
         self._retheme()
+        self._schedule_device()
         ThemeManager.instance().changed.connect(self._retheme)
         JobManager.instance().job_finished.connect(self._on_any_finished)
 
@@ -893,8 +1115,10 @@ class FdtdPage(Page):
         self.mode_bar = QTabBar()
         self.mode_bar.setDrawBase(False)
         self.mode_bar.setExpanding(False)
-        self.mode_bar.addTab("泵浦场（无针尖 / 有针尖）")
-        self.mode_bar.addTab("针尖高度序列")
+        self.mode_bar.addTab("Pump field")
+        self.mode_bar.addTab("Tip-height series")
+        self.mode_bar.setTabToolTip(0, "Vacuum reference, no tip and with tip, with the parameters below")
+        self.mode_bar.setTabToolTip(1, "One with-tip run per apex height (fixed default grid and beam)")
         self.mode_bar.currentChanged.connect(self._on_mode)
         ll.addWidget(self.mode_bar)
         self.mode_stack = QStackedWidget()
@@ -908,17 +1132,17 @@ class FdtdPage(Page):
         self.form = ParamForm(pump_specs())
         self.form.changed.connect(self._update_pump_estimate)
         l1.addWidget(self.form, 1)
-        self.est1 = MetricTile("预计耗时", "—")
+        self.est1 = MetricTile("Estimated runtime", "—")
         l1.addWidget(self.est1)
         self.warn1 = label("", wrap=True)
         self.warn1.setVisible(False)
         l1.addWidget(self.warn1)
         orow = QHBoxLayout()
-        orow.addWidget(QLabel("输出文件夹"))
+        orow.addWidget(QLabel("Output folder"))
         self.out1 = QLineEdit()
-        self.out1.setPlaceholderText("自动：results/gui_runs/fdtd_<时间>")
+        self.out1.setPlaceholderText("Automatic: results/gui_runs/fdtd_<time>")
         orow.addWidget(self.out1, 1)
-        b = QPushButton("选择…")
+        b = QPushButton("Choose…")
         b.clicked.connect(lambda: self._pick_dir(self.out1))
         orow.addWidget(b)
         l1.addLayout(orow)
@@ -930,8 +1154,9 @@ class FdtdPage(Page):
         l2 = QVBoxLayout(m2)
         l2.setContentsMargins(0, 0, 12, 0)        # room for the overlay scroll bar
         l2.setSpacing(8)
-        self.hform = ParamForm([FieldSpec("heights", HEIGHTS_DEFAULT, "tuple", "高度 h 列表", "nm",
-                                          "针尖顶点到表面的距离，逗号分隔。文件名用 int(h)，所以 12.5 与 12 会冲突。", "针尖高度")],
+        self.hform = ParamForm([FieldSpec("heights", HEIGHTS_DEFAULT, "tuple", "Heights h", "nm",
+                                          "Apex–surface distances, comma separated. Files are named by int(h), "
+                                          "so 12.5 and 12 collide.", "Tip heights")],
                                toolbar=False, scroll=False)
         self.hform.changed.connect(self._update_heights_info)
         self.hform.rows["heights"].editor.setCursorPosition(0)
@@ -939,55 +1164,57 @@ class FdtdPage(Page):
         gg = hrow.group.layout()                 # the form's own group box: add presets + note below the field
         gg.setColumnMinimumWidth(0, 90)
         prow = QHBoxLayout()
-        prow.addWidget(label("预设", "muted"))
-        for text, hs in (("默认 10 点", HEIGHTS_DEFAULT), ("快速 3 点", (10, 80, 370)),
-                         ("近场加密", (5, 10, 15, 20, 25, 35, 45, 60, 80))):
+        prow.addWidget(label("Presets", "muted"))
+        for text, hs in (("Default (10)", HEIGHTS_DEFAULT), ("Quick (3)", (10, 80, 370)),
+                         ("Dense near field", (5, 10, 15, 20, 25, 35, 45, 60, 80))):
             pb = button(text, lambda _=False, v=hs: self._set_heights(v), "flat")
             prow.addWidget(pb)
         prow.addStretch(1)
         r0 = gg.rowCount()
         gg.addLayout(prow, r0, 0, 1, 3)
-        gg.addWidget(label("每个高度一次完整 FDTD（有针尖）。脚本固定 dx = 15 nm、θ = 45°、w = 3 µm 及其余 FDTDConfig 默认值，"
-                           "“泵浦场”表单中的参数不作用于高度序列。", "muted", wrap=True), r0 + 1, 0, 1, 3)
+        gg.addWidget(label("One full FDTD run (with tip) per height. The script fixes dx = 15 nm, θ = 45°, w = 3 µm and "
+                           "all other FDTDConfig defaults; the “Pump field” form does not apply to the series.",
+                           "muted", wrap=True), r0 + 1, 0, 1, 3)
         l2.addWidget(self.hform)
 
-        g = QGroupBox("参考场（无针尖 notip.npz）")
+        g = QGroupBox("Reference field (no-tip notip.npz)")
         gl = QVBoxLayout(g)
         rrow = QHBoxLayout()
         self.ref = QComboBox()
         self.ref.setMinimumWidth(150)
         self.ref.currentIndexChanged.connect(self._update_heights_info)
         rrow.addWidget(self.ref, 1)
-        b = QPushButton("选择…")
+        b = QPushButton("Choose…")
         b.clicked.connect(self._pick_ref)
         rrow.addWidget(b)
         gl.addLayout(rrow)
         self.ref_info = label("", wrap=True)
         gl.addWidget(self.ref_info)
-        gl.addWidget(label("比值 = Q_tip(h) / Q_notip，并用参考场的入射能量归一化吸收比例。参考场必须来自 15 nm 默认网格。",
-                           "muted", wrap=True))
+        gl.addWidget(label("Ratio = Q_tip(h) / Q_notip; absorbed fractions are normalised by the reference's incident "
+                           "energy. The reference must come from the default 15 nm grid.", "muted", wrap=True))
         l2.addWidget(g)
 
-        g = QGroupBox("输出")
+        g = QGroupBox("Output")
         gl = QVBoxLayout(g)
         orow = QHBoxLayout()
         self.out2 = QLineEdit()
-        self.out2.setPlaceholderText("自动：results/gui_runs/fdtd_heights_<时间>")
+        self.out2.setPlaceholderText("Automatic: results/gui_runs/fdtd_heights_<time>")
         self.out2.textChanged.connect(self._update_heights_info)
         orow.addWidget(self.out2, 1)
-        b = QPushButton("选择…")
+        b = QPushButton("Choose…")
         b.clicked.connect(lambda: self._pick_dir(self.out2))
         orow.addWidget(b)
         gl.addLayout(orow)
         self.out2_info = label("", "muted", wrap=True)
         gl.addWidget(self.out2_info)
-        self.rebuild = QCheckBox("完成后重建 summary.json")
+        self.rebuild = QCheckBox("Rebuild summary.json when done")
         self.rebuild.setChecked(True)
-        self.rebuild.setToolTip("汇总文件夹内所有高度。run_fdtd_heights.py 只把本次计算的高度写进 summary.json"
-                                "（跳过的高度会丢失）；\n勾选后排队运行 gui_tasks.fdtd_heights_summary，从所有 ratio_h*.npz 重建。")
+        self.rebuild.setToolTip("Summarise every height in the folder. run_fdtd_heights.py writes only this run's heights "
+                                "into summary.json (skipped heights are lost);\nwhen checked, "
+                                "gui_tasks.fdtd_heights_summary is queued to rebuild it from all ratio_h*.npz.")
         gl.addWidget(self.rebuild)
         l2.addWidget(g)
-        self.est2 = MetricTile("预计耗时", "—")
+        self.est2 = MetricTile("Estimated runtime", "—")
         l2.addWidget(self.est2)
         l2.addStretch(1)
         area = QScrollArea()
@@ -996,23 +1223,58 @@ class FdtdPage(Page):
         area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         area.setWidget(m2)
         self.mode_stack.addWidget(area)
-        left.setMinimumWidth(350)
+        left.setMinimumWidth(330)
         return left
 
     def _build_right(self):
         self.tabs = QTabWidget()
+        # ---------------- device (model geometry of the parameters that will be run)
+        self.tab_device = _Tab()
+        dl = QVBoxLayout(self.tab_device)
+        dl.setContentsMargins(12, 12, 12, 8)
+        dl.setSpacing(6)
+        self.dev_note = label("", "muted", wrap=True)
+        dl.addWidget(self.dev_note)
+        self.dev_plot = PlotWidget(figsize=(8, 5))
+        dl.addWidget(self.dev_plot, 1)
+        self.dev_info = label("", "muted", wrap=True)
+        dl.addWidget(self.dev_info)
+        self.tabs.addTab(self.tab_device, "Device")
+        self.tabs.setTabToolTip(0, "The FDTD model to scale: GaAs, air, CPML, source, pump beam and the tip")
+
         # ---------------- run
-        run_tab = QWidget()
-        rl = QVBoxLayout(run_tab)
+        self.tab_run = QWidget()
+        rl = QVBoxLayout(self.tab_run)
         rl.setContentsMargins(12, 12, 12, 12)
         rl.setSpacing(8)
-        self.run_info = label("尚未提交任务。在左侧选择模式、设置参数，然后点击右上角的运行按钮。"
-                              "任务在后台子进程中运行，可在“任务中心”查看全部任务。", "muted", wrap=True)
+        self.run_info = label("No job submitted yet. Choose a mode and set the parameters on the left, then press the run "
+                              "button at the top right. Jobs run in a background process; the Job center lists all of them.",
+                              "muted", wrap=True)
         rl.addWidget(self.run_info)
         self.panel = RunPanel()
         self.panel.job_finished.connect(self._on_finished)
         rl.addWidget(self.panel, 1)
-        self.tabs.addTab(run_tab, "运行")
+        self.tabs.addTab(self.tab_run, "Run")
+
+        # ---------------- optical field (COMSOL style)
+        self.tab_field = _Tab()
+        fl = QVBoxLayout(self.tab_field)
+        fl.setContentsMargins(12, 12, 12, 8)
+        fl.setSpacing(6)
+        top = FlowLayout(lead=True)
+        self.f_title = ElidedLabel("No result loaded", "cardTitle")
+        top.addWidget(self.f_title)
+        self.btn_f_folder = button("Show in Finder", lambda: self.pump and reveal(self.pump["dir"]), "flat")
+        top.addWidget(self.btn_f_folder)
+        fl.addLayout(top)
+        self.f_note = ElidedLabel(FIELD_NOTE, "muted")
+        self.f_note.setToolTip(FIELD_HELP)
+        fl.addWidget(self.f_note)
+        self.field = OpticalFieldView()
+        self.field.set_fields(None, "Loading the repository result…")
+        fl.addWidget(self.field, 1)
+        self.tabs.addTab(self.tab_field, "Optical field")
+        self.tabs.setTabToolTip(2, "COMSOL-style colour maps of the optical field, the absorbed energy and the tip enhancement")
 
         # ---------------- pump results
         pt = QWidget()
@@ -1020,23 +1282,25 @@ class FdtdPage(Page):
         pl.setContentsMargins(12, 12, 12, 12)
         pl.setSpacing(8)
         top = FlowLayout(lead=True)              # buttons move under the title in narrow windows
-        self.p_title = ElidedLabel("尚未载入结果", "cardTitle")
+        self.p_title = ElidedLabel("No result loaded", "cardTitle")
         top.addWidget(self.p_title)
-        self.btn_params = button("载入参数", self._load_params, "flat", "把该结果的 FDTDConfig 填入左侧“泵浦场”表单")
-        self.btn_as_ref = button("设为高度参考", self._use_as_ref, "flat", "把该结果的 notip.npz 设为针尖高度序列的参考场")
-        self.btn_p_heights = button("高度序列", lambda: self.pump and self.show_heights(self.pump["dir"] / "heights"), "flat",
-                                    "查看该文件夹下 heights/ 中的针尖高度序列结果")
-        self.btn_p_folder = button("打开文件夹", lambda: self.pump and reveal(self.pump["dir"]), "flat")
+        self.btn_params = button("Load parameters", self._load_params, "flat",
+                                 "Copy this result's FDTDConfig into the “Pump field” form")
+        self.btn_as_ref = button("Use as height reference", self._use_as_ref, "flat",
+                                 "Use this result's notip.npz as the tip-height series reference")
+        self.btn_p_heights = button("Height series", lambda: self.pump and self.show_heights(self.pump["dir"] / "heights"),
+                                    "flat", "Show the tip-height series in this folder's heights/")
+        self.btn_p_folder = button("Show in Finder", lambda: self.pump and reveal(self.pump["dir"]), "flat")
         for b in (self.btn_params, self.btn_as_ref, self.btn_p_heights, self.btn_p_folder):
             top.addWidget(b)
         pl.addLayout(top)
         self.p_cfg = ElidedLabel("", "muted")
         pl.addWidget(self.p_cfg)
         grid = TileLayout()
-        self.m_notip = MetricTile("吸收比例 · 无针尖", "—")
-        self.m_tip = MetricTile("吸收比例 · 有针尖", "—")
-        self.m_apex = MetricTile("针尖正下方 Q_tip/Q_notip", "—")
-        self.m_col = MetricTile("深度积分比值 min – max", "—")
+        self.m_notip = MetricTile("Absorbed fraction · no tip", "—")
+        self.m_tip = MetricTile("Absorbed fraction · with tip", "—")
+        self.m_apex = MetricTile("Q_tip/Q_notip under the apex", "—")
+        self.m_col = MetricTile("Depth-integrated ratio min – max", "—")
         for m in (self.m_notip, self.m_tip, self.m_apex, self.m_col):
             grid.addWidget(m)
         pl.addLayout(grid)
@@ -1044,18 +1308,22 @@ class FdtdPage(Page):
         self.p_tabs.setMinimumHeight(330)
         self.p_img = ImageView()
         self.p_img.setMinimumWidth(240)          # its toolbar row alone asks for ~505 px; do not widen the page
-        self.p_tabs.addTab(self.p_img, "概览图")
-        self.p_tabs.setTabToolTip(0, "脚本输出的 fdtd_pump.png")
-        self.p_map = MapView("该文件夹没有 .npz 数据文件，无法绘制场分布。")
+        self.p_tabs.addTab(self.p_img, "Overview")
+        self.p_tabs.setTabToolTip(0, "fdtd_pump.png written by the script")
+        self.p_map = MapView("This folder has no .npz data files, so the field maps cannot be drawn.")
         mw = QWidget()
         ml = QVBoxLayout(mw)
         ml.setContentsMargins(8, 8, 8, 4)
         ml.addWidget(self.p_map)
-        self.p_tabs.addTab(mw, "场分布（交互）")
+        self.p_tabs.addTab(mw, "Log₁₀ maps")
+        self.p_tabs.setTabToolTip(1, "log₁₀ maps with editable x / z / color ranges (defaults as in fdtd_pump.png, but |E|² "
+                                     "is divided by the true incident |E0|², not by the source-plane maximum)")
         self.p_cols = PlotWidget()
-        self.p_tabs.addTab(self.p_cols, "深度积分 vs x")
+        self.p_tabs.addTab(self.p_cols, "Depth-integrated vs x")
         pl.addWidget(self.p_tabs, 1)
-        self.tabs.addTab(_scrolled(pt), "泵浦场结果")
+        self.tab_pump = _scrolled(pt)
+        self.tabs.addTab(self.tab_pump, "Absorption")
+        self.tabs.setTabToolTip(3, "Absorbed fractions, the script's figure, log maps and depth-integrated absorption")
 
         # ---------------- heights results
         ht = QWidget()
@@ -1063,51 +1331,53 @@ class FdtdPage(Page):
         hl.setContentsMargins(12, 12, 12, 12)
         hl.setSpacing(8)
         top = FlowLayout(lead=True)
-        self.h_title = ElidedLabel("尚未载入高度序列", "cardTitle")
+        self.h_title = ElidedLabel("No height series loaded", "cardTitle")
         top.addWidget(self.h_title)
-        self.btn_resume = button("在此文件夹续算", self._resume_heights, "flat",
-                                 "把该文件夹设为高度序列的输出（已有 ratio_h*.npz 会被跳过）")
-        self.btn_summary = button("重建 summary.json", self._rebuild_summary, "flat",
-                                  "从文件夹内全部 ratio_h*.npz 重建 summary.json（gui_tasks.fdtd_heights_summary）")
-        self.btn_h_folder = button("打开文件夹", lambda: self.heights and reveal(self.heights["dir"]), "flat")
+        self.btn_resume = button("Resume in this folder", self._resume_heights, "flat",
+                                 "Use this folder as the series output (existing ratio_h*.npz are skipped)")
+        self.btn_summary = button("Rebuild summary.json", self._rebuild_summary, "flat",
+                                  "Rebuild summary.json from every ratio_h*.npz in the folder (gui_tasks.fdtd_heights_summary)")
+        self.btn_h_folder = button("Show in Finder", lambda: self.heights and reveal(self.heights["dir"]), "flat")
         for b in (self.btn_resume, self.btn_summary, self.btn_h_folder):
             top.addWidget(b)
         hl.addLayout(top)
         grid = TileLayout()
-        self.h_n = MetricTile("高度点数", "—")
-        self.h_abs = MetricTile("吸收比例 h_min → h_max", "—")
-        self.h_apex = MetricTile("针尖下 Q_tip/Q_notip", "—")
-        self.h_ref = MetricTile("参考场", "—")
+        self.h_n = MetricTile("Heights", "—")
+        self.h_abs = MetricTile("Absorbed fraction h_min → h_max", "—")
+        self.h_apex = MetricTile("Q_tip/Q_notip under the tip", "—")
+        self.h_ref = MetricTile("Reference field", "—")
         for m in (self.h_n, self.h_abs, self.h_apex, self.h_ref):
             grid.addWidget(m)
         hl.addLayout(grid)
         self.h_tabs = QTabWidget()
         self.h_tabs.setMinimumHeight(330)
         self.h_plot = PlotWidget()
-        self.h_tabs.addTab(self.h_plot, "随高度变化")
+        self.h_tabs.addTab(self.h_plot, "Versus height")
         self.h_map = MapView()
         mw = QWidget()
         ml = QVBoxLayout(mw)
         ml.setContentsMargins(8, 8, 8, 4)
         ml.addWidget(self.h_map)
-        self.h_tabs.addTab(mw, "比值图（按高度）")
+        self.h_tabs.addTab(mw, "Ratio map per height")
         hl.addWidget(self.h_tabs, 1)
-        self.tabs.addTab(_scrolled(ht), "高度序列结果")
+        self.tab_heights = _scrolled(ht)
+        self.tabs.addTab(self.tab_heights, "Heights")
+        self.tabs.setTabToolTip(4, "Results of the tip-height series (ratio_h*.npz)")
 
         # ---------------- history
-        hist = QWidget()
-        hy = QVBoxLayout(hist)
+        self.tab_hist = QWidget()
+        hy = QVBoxLayout(self.tab_hist)
         hy.setContentsMargins(12, 12, 12, 12)
         hrow = QHBoxLayout()
-        hrow.addWidget(label("已有的 FDTD 结果（双击载入）", "cardTitle"), 1)
-        for text, slot in (("在访达中显示", self._reveal_selected), ("刷新", self.refresh_history)):
+        hrow.addWidget(ElidedLabel("Existing FDTD results (double-click to load)", "cardTitle"), 1)
+        for text, slot in (("Show in Finder", self._reveal_selected), ("Refresh", self.refresh_history)):
             hrow.addWidget(button(text, slot, "flat"))
         hy.addLayout(hrow)
         self.hist = QListWidget()
         self.hist.setSpacing(3)
         self.hist.itemDoubleClicked.connect(self._open_item)
         hy.addWidget(self.hist, 1)
-        self.tabs.addTab(hist, "历史结果")
+        self.tabs.addTab(self.tab_hist, "History")
         return self.tabs
 
     def _retheme(self, *_):
@@ -1123,16 +1393,63 @@ class FdtdPage(Page):
         col = {"ok": t.success, "warn": t.warning, "err": t.danger}.get(level, t.muted)
         w.setStyleSheet(f"color: {col};")
 
+    # ================================================================== device view
+    def _schedule_device(self, *_):
+        self._dev_timer.start()
+
+    def _on_tab(self, _i):
+        if self.tabs.currentWidget() is self.tab_device and self._dev_dirty:
+            self._draw_device()
+
+    def device_config(self) -> tuple[dict, str, dict]:
+        """(FDTDConfig fields to draw, caption, form values for the grid statistics) for the current mode."""
+        if self.mode_bar.currentIndex() == 1:
+            hs = sorted(h for h in self._heights() if h > 0)
+            h = hs[0] if hs else 20.0
+            cfg = dict(dx=15e-9, tip_gap=float(f"{h * 1e-9:.12g}"))
+            more = f" (lowest of {len(hs)}, up to {hs[-1]:g} nm)" if len(hs) > 1 else ""
+            note = ("Tip-height series: one run per height with the fixed 15 nm grid and the default beam, GaAs and tip "
+                    f"(FDTDConfig); the apex is drawn at h = {h:g} nm{more}.")
+            return cfg, note, {}
+        v = self.form.values()
+        bad = self.form.invalid_fields()
+        note = ("The model to scale, from the current form values — it follows your edits. Hatched border: CPML absorbing "
+                "layers; dashed red line: source plane.")
+        if bad:
+            note += f" Invalid values are drawn at their defaults: {', '.join(bad)}."
+        return device_cfg(v), note, v
+
+    def _draw_device(self):
+        if self.tabs.currentWidget() is not self.tab_device:
+            self._dev_dirty = True            # drawn when the tab is opened
+            return
+        self._dev_dirty = False
+        cfg, note, v = self.device_config()
+        self._dev_cfg = cfg
+        self.dev_note.setText(note)
+        try:
+            nx, nz, steps, _ = fdtd_cost(**{k: v[k] for k in ("dx_nm", "courant", "fwhm_fs", "t_end_fs", "n_pml") if k in v})
+            dx = cfg["dx"] * 1e9
+            n_gaas = v.get("n_gaas", 3.67)
+            lam = cfg.get("wavelength", 820e-9) * 1e9
+            R = cfg.get("tip_radius", 40e-9) * 1e9
+            self.dev_info.setText(f"Grid {nx} × {nz} cells incl. CPML · {lam / (n_gaas * dx):.1f} cells per wavelength in "
+                                  f"GaAs · apex radius = {R / dx:.1f} cells · {steps:,} time steps".replace(",", " "))
+        except (TypeError, ValueError, ZeroDivisionError):
+            self.dev_info.setText("")
+        self.dev_plot.plot(lambda fig: draw_fdtd_device(fig, cfg))
+
     # ================================================================== mode 1: pump field
     def _on_mode(self, i):
         self.mode_stack.setCurrentIndex(i)
-        self.run_btn.setText("  运行泵浦 FDTD" if i == 0 else "  运行高度序列")
+        self.run_btn.setText("  Run pump FDTD" if i == 0 else "  Run height series")
         if i == 1:
             self._update_heights_info()
+        self._schedule_device()
 
     def _pick_dir(self, edit: QLineEdit):
         start = paths.absolute(edit.text().strip()) if edit.text().strip() else paths.GUI_RUNS
-        d = QFileDialog.getExistingDirectory(self, "选择输出文件夹", str(start if start.exists() else paths.RESULTS))
+        d = QFileDialog.getExistingDirectory(self, "Choose output folder", str(start if start.exists() else paths.RESULTS))
         if d:
             edit.setText(paths.rel(d))
 
@@ -1147,24 +1464,26 @@ class FdtdPage(Page):
                 raise ValueError
             nx, nz, steps, per = fdtd_cost(**v)
         except (TypeError, ValueError, ZeroDivisionError):
-            self.est1.set("—", "参数无效" + ("：" + ", ".join(bad) if bad else ""))
+            self.est1.set("—", "Invalid parameters" + (": " + ", ".join(bad) if bad else ""))
             self.warn1.setVisible(False)
             return
         total = 3 * (per + RUN_OVERHEAD) + JOB_OVERHEAD
         self.est1.set(f"≈ {fmt_dur(total)}",
-                      f"范围 {fmt_range(total)} · 3 次 FDTD（真空 / 无针尖 / 有针尖）× {steps} 步 · "
-                      f"网格 {nx}×{nz}（含 PML）· 耗时 ∝ dx⁻³")
+                      f"Range {fmt_range(total)} · 3 FDTD runs (vacuum / no tip / with tip) × {steps} steps · "
+                      f"grid {nx}×{nz} (incl. PML) · runtime ∝ dx⁻³")
         warns = []
         dx = v.get("dx_nm", 15.0)
         ppw = v.get("wavelength_nm", 820.0) / (max(v.get("n_gaas", 3.67), 1.0) * dx)
         if ppw < 10:
-            warns.append(f"网格较粗：GaAs 中每个波长只有 {ppw:.1f} 个网格（默认 15 nm 时为 14.9），结果只适合快速测试。")
+            warns.append(f"Coarse grid: only {ppw:.1f} cells per wavelength in GaAs (14.9 at the default 15 nm) — "
+                         "good for quick tests only.")
         if v.get("tip_radius_nm", 40.0) / dx < 2:
-            warns.append(f"针尖曲率半径只有 {v.get('tip_radius_nm', 40.0) / dx:.1f} 个网格，针尖形状分辨不足。")
+            warns.append(f"The apex radius spans only {v.get('tip_radius_nm', 40.0) / dx:.1f} cells; the tip shape is "
+                         "under-resolved.")
         if abs(dx - 15.0) > 1e-9:
-            warns.append("dx ≠ 15 nm：此结果的 notip.npz 不能作为针尖高度序列的参考场。")
+            warns.append("dx ≠ 15 nm: this result's notip.npz cannot serve as the tip-height series reference.")
         if total > 1800:
-            warns.append(f"运行时间较长（约 {fmt_dur(total)}）。耗时 ∝ dx⁻³。")
+            warns.append(f"Long run (≈ {fmt_dur(total)}). Runtime ∝ dx⁻³.")
         self.warn1.setText("\n".join("⚠ " + w for w in warns))
         self.warn1.setVisible(bool(warns))
         self._paint(self.warn1, "warn")
@@ -1174,35 +1493,39 @@ class FdtdPage(Page):
             self.run_heights()
             return
         if not self.form.is_valid():
-            error_box(self, "参数无效", "以下参数的值无法解析或超出范围：\n" + ", ".join(self.form.invalid_fields()))
+            error_box(self, "Invalid parameters", "These values cannot be parsed or are out of range:\n"
+                      + ", ".join(self.form.invalid_fields()))
             return
         ov = self.form.overrides()
         kw = pump_kwargs(ov)
         txt = self.out1.text().strip()
         out = paths.absolute(txt) if txt else paths.new_run_dir("fdtd")
         if out.exists() and not out.is_dir():
-            error_box(self, "输出文件夹无效", f"{paths.rel(out)} 是一个文件，不是文件夹。")
+            error_box(self, "Invalid output folder", f"{paths.rel(out)} is a file, not a folder.")
             return
         if out.exists() and any(out.iterdir()):
             committed = out.resolve() == PUMP_DIR.resolve()
-            msg = (f"{paths.rel(out)} 已有文件，运行会覆盖其中的 npz、图和 summary.json。"
-                   + ("\n\n这是仓库提交的参考结果：高度序列和单脉冲链默认读取其中的 notip.npz / ratio.npz，"
-                      "用其他参数覆盖会悄悄改变下游结果。" if committed else "") + "\n\n继续吗？")
-            if QMessageBox.question(self, "覆盖已有结果？", msg) != QMessageBox.StandardButton.Yes:
+            msg = (f"{paths.rel(out)} already contains files; the run overwrites its npz files, figure and summary.json."
+                   + ("\n\nThis is the repository's reference result: the height series and the Single-pulse chain read "
+                      "its notip.npz / ratio.npz by default, so overwriting it with other parameters silently changes "
+                      "downstream results." if committed else "") + "\n\nContinue?")
+            if QMessageBox.question(self, "Overwrite existing results?", msg) != QMessageBox.StandardButton.Yes:
                 return
         total = pump_total(self._pump_values())
         if total > 1800 and QMessageBox.question(
-                self, "运行时间较长", f"按当前网格估计需要约 {fmt_dur(total)}。确定运行吗？") != QMessageBox.StandardButton.Yes:
+                self, "Long run", f"With the current grid this takes about {fmt_dur(total)}. Run it?") \
+                != QMessageBox.StandardButton.Yes:
             return
-        desc = ", ".join(f"{k}={format_float(v) if isinstance(v, float) else v}" for k, v in ov.items()) or "默认参数"
+        desc = ", ".join(f"{k}={format_float(v) if isinstance(v, float) else v}" for k, v in ov.items()) or "default parameters"
         self.job = JobManager.instance().submit(
-            f"泵浦 FDTD · {desc}", "fdtd", "scripts/run_fdtd_pump.py", "main",
+            f"Pump FDTD · {desc}", "fdtd", "scripts/run_fdtd_pump.py", "main",
             kwargs=dict(out=paths.rel(out), **kw), out=out, progress=PUMP_PROGRESS)
         self.post_job = None
-        self.run_info.setText(f"泵浦场 FDTD（3 次运行）· 预计 ≈ {fmt_dur(total)}（{fmt_range(total)}）· "
-                              f"输出到 {paths.rel(out)}。中途停止后没有续算，再次运行会重算全部三次。")
+        self.run_info.setText(f"Pump-field FDTD (3 runs) · estimated ≈ {fmt_dur(total)} ({fmt_range(total)}) · output: "
+                              f"{paths.rel(out)}. A stopped run cannot be resumed; running again recomputes all three. "
+                              "The optical field opens automatically when the run finishes.")
         self.panel.attach(self.job)
-        self.tabs.setCurrentIndex(0)
+        self.tabs.setCurrentWidget(self.tab_run)
 
     def _load_params(self):
         if self.pump and self.pump.get("cfg"):
@@ -1237,7 +1560,7 @@ class FdtdPage(Page):
         self.ref.blockSignals(True)
         self.ref.clear()
         for p in cands:
-            note = "（仓库参考结果）" if p == DEFAULT_REF else ("" if p.exists() else "（不存在）")
+            note = "  (repository reference)" if p == DEFAULT_REF else ("" if p.exists() else "  (missing)")
             self.ref.addItem(paths.rel(p) + note, str(p))
         self.ref.setCurrentIndex(max(0, cands.index(Path(want))))
         self.ref.blockSignals(False)
@@ -1245,7 +1568,7 @@ class FdtdPage(Page):
 
     def _pick_ref(self):
         start = self.ref.currentData() or str(PUMP_DIR)
-        f, _ = QFileDialog.getOpenFileName(self, "选择无针尖参考场 notip.npz", start, "notip.npz (*.npz)")
+        f, _ = QFileDialog.getOpenFileName(self, "Choose the no-tip reference notip.npz", start, "notip.npz (*.npz)")
         if f:
             self._refresh_refs(select=Path(f))
 
@@ -1259,16 +1582,17 @@ class FdtdPage(Page):
         existing = heights_in(out) if out and out.is_dir() else {}
         todo = [h for h in hs if int(h) not in existing]
         if out is None:
-            self.out2_info.setText("每次运行新建一个文件夹，不会写入 results/fdtd_pump/heights。")
+            self.out2_info.setText("Each run creates a new folder; nothing is written to results/fdtd_pump/heights.")
         elif not out.exists():
-            self.out2_info.setText("文件夹不存在，将新建。")
+            self.out2_info.setText("The folder does not exist yet and will be created.")
         elif not out.is_dir():
-            self.out2_info.setText("⚠ 这是一个文件，不是文件夹。")
+            self.out2_info.setText("⚠ This is a file, not a folder.")
         else:
             skip = [h for h in existing if h in {int(x) for x in hs}]
-            self.out2_info.setText(f"已有 {len(existing)} 个 ratio_h*.npz" + (
-                f"，其中 {len(skip)} 个高度（{', '.join(map(str, skip))} nm）会被跳过（可续算）。" if skip else "。")
-                + ("\n⚠ 这是仓库中的高度结果文件夹，将写入 npz 并覆盖 summary.json。" if out.resolve() == HEIGHTS_DIR.resolve() else ""))
+            self.out2_info.setText(f"{len(existing)} ratio_h*.npz already here" + (
+                f"; {len(skip)} height(s) ({', '.join(map(str, skip))} nm) will be skipped (resume)." if skip else ".")
+                + ("\n⚠ This is the repository's height-results folder: npz files will be written and summary.json "
+                   "overwritten." if out.resolve() == HEIGHTS_DIR.resolve() else ""))
         ref = Path(self.ref.currentData()) if self.ref.currentData() else DEFAULT_REF
         level, msg = self._check_ref(ref)
         self.ref_info.setText(msg)
@@ -1278,12 +1602,12 @@ class FdtdPage(Page):
         bad = [h for h in hs if h <= 0]
         dup = len({int(h) for h in hs}) != len(hs)
         if not hs or bad or dup:
-            self.est2.set("—", "高度列表无效：需要正数且 int(h) 互不相同。")
+            self.est2.set("—", "Invalid height list: the heights must be positive with distinct int(h).")
         else:
-            self.est2.set(f"≈ {fmt_dur(total)}" if todo else "无需计算",
-                          (f"范围 {fmt_range(total)} · " if todo else "")
-                          + f"{len(todo)} 个高度待算 × 约 {fmt_dur(per)}（每个一次完整 FDTD，15 nm 网格）"
-                          + (f"，{len(hs) - len(todo)} 个已存在将跳过" if len(hs) > len(todo) else ""))
+            self.est2.set(f"≈ {fmt_dur(total)}" if todo else "Nothing to compute",
+                          (f"Range {fmt_range(total)} · " if todo else "")
+                          + f"{len(todo)} height(s) to compute × ≈ {fmt_dur(per)} each (one full FDTD per height, 15 nm grid)"
+                          + (f"; {len(hs) - len(todo)} already done, skipped" if len(hs) > len(todo) else ""))
 
     def _check_ref(self, ref: Path):
         """check_ref, memoised on (path, mtime) — it is called on every keystroke of the heights field."""
@@ -1297,45 +1621,47 @@ class FdtdPage(Page):
 
     def run_heights(self):
         if not self.hform.is_valid():
-            error_box(self, "高度列表无效", "无法解析高度列表，请用逗号分隔的数字，例如 10, 15, 25。")
+            error_box(self, "Invalid height list", "Cannot parse the height list. Use comma-separated numbers, e.g. 10, 15, 25.")
             return
         hs = self._heights()
         if not hs or any(h <= 0 for h in hs) or len({int(h) for h in hs}) != len(hs):
-            error_box(self, "高度列表无效", "高度必须为正数，且取整后互不相同（输出文件名为 ratio_h{int(h)}.npz）。")
+            error_box(self, "Invalid height list", "The heights must be positive and distinct after rounding down "
+                      "(the files are named ratio_h{int(h)}.npz).")
             return
         ref = Path(self.ref.currentData()) if self.ref.currentData() else DEFAULT_REF
         out = self._out2() or paths.new_run_dir("fdtd_heights")
         if out.exists() and not out.is_dir():
-            error_box(self, "输出文件夹无效", f"{paths.rel(out)} 是一个文件，不是文件夹。")
+            error_box(self, "Invalid output folder", f"{paths.rel(out)} is a file, not a folder.")
             return
         jm = JobManager.instance()
         pre = None
         if not ref.exists():
             m = QMessageBox(self)
             m.setIcon(QMessageBox.Icon.Question)
-            m.setWindowTitle("缺少参考场")
-            m.setText(f"参考场 {paths.rel(ref)} 不存在。\n\n可以先排队运行一次默认参数的泵浦 FDTD（dx = 15 nm，约 4–5 分钟），"
-                      "完成后自动开始高度序列，并以它的 notip.npz 为参考。")
-            yes = m.addButton("先运行泵浦 FDTD", QMessageBox.ButtonRole.AcceptRole)
-            m.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            m.setWindowTitle("Reference field missing")
+            m.setText(f"The reference field {paths.rel(ref)} does not exist.\n\nA default pump FDTD (dx = 15 nm, ≈ 4–5 min) "
+                      "can be queued first; the height series then starts automatically with its notip.npz as the reference.")
+            yes = m.addButton("Run pump FDTD first", QMessageBox.ButtonRole.AcceptRole)
+            m.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
             m.exec()
             if m.clickedButton() is not yes:
                 return
             pdir = paths.new_run_dir("fdtd")
-            pre = jm.submit("泵浦 FDTD · 默认参数（高度序列参考）", "fdtd", "scripts/run_fdtd_pump.py", "main",
-                            kwargs=dict(out=paths.rel(pdir)), out=pdir, progress=PUMP_PROGRESS)
+            pre = jm.submit("Pump FDTD · default parameters (height-series reference)", "fdtd", "scripts/run_fdtd_pump.py",
+                            "main", kwargs=dict(out=paths.rel(pdir)), out=pdir, progress=PUMP_PROGRESS)
             ref = pdir / "notip.npz"
         else:
             level, msg = check_ref(ref)
             if level == "err":
-                error_box(self, "参考场不可用", msg)
+                error_box(self, "Reference field unusable", msg)
                 return
-            if level == "warn" and QMessageBox.question(self, "参考场参数不一致", msg + "\n\n仍然继续吗？") \
+            if level == "warn" and QMessageBox.question(self, "Reference parameters differ", msg + "\n\nContinue anyway?") \
                     != QMessageBox.StandardButton.Yes:
                 return
         if out.exists() and out.resolve() == HEIGHTS_DIR.resolve() and QMessageBox.question(
-                self, "写入仓库结果文件夹？", "results/fdtd_pump/heights 是仓库中的结果文件夹（其中的 summary.json 已提交）。\n"
-                "运行会写入 ratio_h*.npz、gui_run*.json / gui_log*.txt 并覆盖 summary.json。继续吗？") \
+                self, "Write into the repository results folder?",
+                "results/fdtd_pump/heights is a repository results folder (its summary.json is committed).\n"
+                "The run writes ratio_h*.npz and gui_run*.json / gui_log*.txt there and overwrites summary.json. Continue?") \
                 != QMessageBox.StandardButton.Yes:
             return
         if not self._clear_broken(out):
@@ -1347,12 +1673,13 @@ class FdtdPage(Page):
             if not existing:
                 return
             self.post_job = self.job = self._submit_summary(out, ref)
-            self.run_info.setText(f"所选高度在 {rel_out} 中都已存在，只重建 summary.json（几秒钟）。")
+            self.run_info.setText(f"All selected heights already exist in {rel_out}; only summary.json is rebuilt "
+                                  "(a few seconds).")
             self.panel.attach(self.job)
-            self.tabs.setCurrentIndex(0)
+            self.tabs.setCurrentWidget(self.tab_run)
             return
         hs_json = [int(h) if float(h).is_integer() else float(h) for h in hs]
-        self.job = jm.submit(f"针尖高度序列 · {len(hs)} 个高度 ({min(hs_json)}–{max(hs_json)} nm)", "fdtd_heights",
+        self.job = jm.submit(f"Tip-height series · {len(hs)} heights ({min(hs_json)}–{max(hs_json)} nm)", "fdtd_heights",
                              "scripts/run_fdtd_heights.py", "main",
                              kwargs=dict(out=rel_out, heights=hs_json, ref=rel_ref), out=out,
                              progress={"type": "count", "pattern": r"^h = ", "total": len(hs)}, after=pre)
@@ -1360,11 +1687,12 @@ class FdtdPage(Page):
         self.post_job = self._submit_summary(out, ref, after=self.job) if self.rebuild.isChecked() else None
         total = heights_total(len(todo))
         self.run_info.setText(
-            ("已先排队默认参数的泵浦 FDTD（约 4–5 min），完成后开始高度序列。" if pre else "")
-            + f"针尖高度序列：{len(todo)} 个高度待算（{len(hs) - len(todo)} 个已存在跳过）· 预计 ≈ {fmt_dur(total)} · "
-            f"输出到 {rel_out}。可随时停止，已完成的高度会保留并在下次续算时跳过。")
+            ("A default pump FDTD (≈ 4–5 min) is queued first; the height series starts when it finishes. " if pre else "")
+            + f"Tip-height series: {len(todo)} height(s) to compute ({len(hs) - len(todo)} already done, skipped) · "
+            f"estimated ≈ {fmt_dur(total)} · output: {rel_out}. You can stop at any time; finished heights are kept "
+            "and skipped when you resume.")
         self.panel.attach(pre or self.job)
-        self.tabs.setCurrentIndex(0)
+        self.tabs.setCurrentWidget(self.tab_run)
 
     def _resume_heights(self):
         if not self.heights:
@@ -1380,7 +1708,7 @@ class FdtdPage(Page):
     def _submit_summary(self, d: Path, ref: Path, after=None):
         """Queue gui_tasks.fdtd_heights_summary for folder `d` (a follow-up job may share the series' folder)."""
         return JobManager.instance().submit(
-            f"重建高度汇总 · {paths.rel(d)}", "fdtd_heights", "ltemsim_gui/gui_tasks.py", "fdtd_heights_summary",
+            f"Rebuild height summary · {paths.rel(d)}", "fdtd_heights", "ltemsim_gui/gui_tasks.py", "fdtd_heights_summary",
             kwargs=dict(out=paths.rel(d), ref=paths.rel(ref)), out=d, after=after)
 
     def _clear_broken(self, d: Path) -> bool:
@@ -1390,12 +1718,12 @@ class FdtdPage(Page):
         bad = {h: p for h, f in files.items() if (p := height_npz_problem(f))}
         if not bad:
             return True
-        detail = "\n".join(f"ratio_h{h}.npz：{p}" for h, p in bad.items())
+        detail = "\n".join(f"ratio_h{h}.npz: {p}" for h, p in bad.items())
         if QMessageBox.question(
-                self, "发现不完整的结果文件",
-                f"{paths.rel(d)} 中有 {len(bad)} 个 ratio_h*.npz 不完整（多半是被中断的运行留下的）：\n\n{detail}\n\n"
-                "run_fdtd_heights.py 会把它们当作已完成而跳过，重建 summary.json 也会因此失败。\n"
-                "把它们改名为 *.npz.partial（不删除）后继续吗？") != QMessageBox.StandardButton.Yes:
+                self, "Incomplete result files found",
+                f"{len(bad)} ratio_h*.npz in {paths.rel(d)} are incomplete (most likely left by an interrupted run):\n\n"
+                f"{detail}\n\nrun_fdtd_heights.py would skip them as finished, and rebuilding summary.json would fail on "
+                "them.\nRename them to *.npz.partial (nothing is deleted) and continue?") != QMessageBox.StandardButton.Yes:
             return False
         quarantine(files[h] for h in bad)
         return True
@@ -1405,23 +1733,26 @@ class FdtdPage(Page):
             return
         d, ref = self.heights["dir"], self.heights["ref"]
         if not ref.exists():
-            error_box(self, "缺少参考场", f"参考场 {paths.rel(ref)} 不存在，无法计算吸收比例。")
+            error_box(self, "Reference field missing", f"The reference field {paths.rel(ref)} does not exist, so the "
+                      "absorbed fractions cannot be computed.")
             return
         if d.resolve() == HEIGHTS_DIR.resolve() and QMessageBox.question(
-                self, "覆盖仓库中的 summary.json？", "将用文件夹中的 ratio_h*.npz 重写 results/fdtd_pump/heights/summary.json，"
-                "并在其中写入 gui_run*.json / gui_log*.txt。继续吗？") != QMessageBox.StandardButton.Yes:
+                self, "Overwrite the committed summary.json?",
+                "This rewrites results/fdtd_pump/heights/summary.json from the folder's ratio_h*.npz and writes "
+                "gui_run*.json / gui_log*.txt there. Continue?") != QMessageBox.StandardButton.Yes:
             return
         if not self._clear_broken(d):
             return
         n = len(heights_in(d))
         if not n:
-            error_box(self, "无法重建", f"{paths.rel(d)} 中没有完整的 ratio_h*.npz，重建会把 summary.json 清空。")
+            error_box(self, "Cannot rebuild", f"{paths.rel(d)} has no complete ratio_h*.npz; rebuilding would empty "
+                      "summary.json.")
             self.show_heights(d, switch=False)
             return
         self.post_job = self.job = self._submit_summary(d, ref)
-        self.run_info.setText(f"从 {paths.rel(d)} 中的 {n} 个 ratio_h*.npz 重建 summary.json（几秒钟）。")
+        self.run_info.setText(f"Rebuilding summary.json from the {n} ratio_h*.npz in {paths.rel(d)} (a few seconds).")
         self.panel.attach(self.job)
-        self.tabs.setCurrentIndex(0)
+        self.tabs.setCurrentWidget(self.tab_run)
 
     # ================================================================== job completion
     def _on_finished(self, job):
@@ -1465,64 +1796,71 @@ class FdtdPage(Page):
 
     def _after_quarantine(self, d: Path, moved: list[str]):
         if moved:
-            self.run_info.setText(self.run_info.text() + f"\n已把中断时未写完的 {', '.join(moved)} 改名为 *.npz.partial，"
-                                  "续算时会重新计算这些高度。")
+            self.run_info.setText(self.run_info.text() + f"\nRenamed {', '.join(moved)}, left incomplete by the "
+                                  "interruption, to *.npz.partial; these heights are recomputed when you resume.")
             if self.heights and Path(self.heights["dir"]) == d:
                 self.show_heights(d, switch=False)
         self._update_heights_info()
 
     # ================================================================== results: pump
     def show_pump(self, d, switch=True):
+        """Load a pump result; with `switch`, open the optical field (or, without field data, the absorption tab)."""
         d = Path(d)
         self._pump_token += 1
         tok = self._pump_token
-        self.p_title.setText(f"{paths.rel(d)}  ·  载入中…")
-        if switch:
-            self.tabs.setCurrentIndex(1)
-        run_async(load_pump, d, on_done=lambda r: tok == self._pump_token and self._show_pump(r),
-                  on_error=lambda e: tok == self._pump_token and self._load_failed(self.p_title, d, e))
+        self.p_title.setText(f"{paths.rel(d)}  ·  loading…")
+        self.f_title.setText(f"{paths.rel(d)}  ·  loading…")
+        run_async(load_pump, d, on_done=lambda r: tok == self._pump_token and self._show_pump(r, switch),
+                  on_error=lambda e: tok == self._pump_token and self._load_failed((self.p_title, self.f_title), d, e))
 
-    def _load_failed(self, title: QLabel, d, err):
-        title.setText(f"{paths.rel(d)}  ·  载入失败")
-        error_box(self, "载入失败", f"无法读取 {paths.rel(d)}", err)
+    def _load_failed(self, titles, d, err):
+        for t in titles:
+            t.setText(f"{paths.rel(d)}  ·  failed to load")
+        if self.f_title in titles:
+            self.field.set_fields(None, f"Cannot read {paths.rel(d)} — see the error message for details.")
+        error_box(self, "Loading failed", f"Cannot read {paths.rel(d)}", err)
 
-    def _show_pump(self, r: dict):
+    def _show_pump(self, r: dict, switch=False):
         self.pump = r
         d, m, cfg = r["dir"], r["metrics"], r.get("cfg")
         state = []
         if not r["runs"]:
-            state.append("没有 npz 数据")
+            state.append("no npz data")
         elif len(r["runs"]) < 3:
-            state.append("未完成：只有 " + " / ".join(r["runs"]))
+            state.append("incomplete: only " + " / ".join(r["runs"]))
         if r.get("errors"):
-            state.append("部分文件损坏")
-        self.p_title.setText(paths.rel(d) + ("  ·  " + "，".join(state) if state else ""))
+            state.append("some files are damaged")
+        title = paths.rel(d) + ("  ·  " + ", ".join(state) if state else "")
+        self.p_title.setText(title)
+        self.f_title.setText(title)
         f = lambda k, fmt: fmt.format(m[k]) if isinstance(m.get(k), (int, float)) and np.isfinite(m[k]) else "—"
         fr = m.get("fresnel_p")
         self.m_notip.set(f("absorbed_fraction_notip", "{:.3f}"), f"Fresnel 1−|r_p|² = {fr:.3f}" if fr is not None else "")
         rel_tip = (m["absorbed_fraction_tip"] / m["absorbed_fraction_notip"]
                    if m.get("absorbed_fraction_tip") and m.get("absorbed_fraction_notip") else None)
-        self.m_tip.set(f("absorbed_fraction_tip", "{:.3f}"), f"无针尖的 {rel_tip:.2f} 倍" if rel_tip else "")
-        self.m_tip.setToolTip("相对真空入射能量。2-D 模型中针尖是无限长楔形，阴影是上限。")
-        self.m_apex.set(f("surface_ratio_under_apex", "{:.2f}"), "x = 0，z = −20 nm")
+        self.m_tip.set(f("absorbed_fraction_tip", "{:.3f}"), f"{rel_tip:.2f}× the no-tip value" if rel_tip else "")
+        self.m_tip.setToolTip("Relative to the vacuum run's incident energy. In 2-D the tip is an infinite wedge, so its "
+                              "shadow is an upper bound.")
+        self.m_apex.set(f("surface_ratio_under_apex", "{:.2f}"), "x = 0, z = −20 nm")
         if isinstance(m.get("column_ratio_min"), float):
-            self.m_col.set(f"{m['column_ratio_min']:.3f} – {m['column_ratio_max']:.2f}", "阴影 – 增强")
+            self.m_col.set(f"{m['column_ratio_min']:.3f} – {m['column_ratio_max']:.2f}", "shadow – enhancement")
         else:
             self.m_col.set("—", "")
-        self.m_col.setToolTip("∫Q_tip dz / ∫Q_notip dz 随 x 的最小值（阴影）与最大值（增强）")
+        self.m_col.setToolTip("Minimum (shadow) and maximum (enhancement) over x of ∫Q_tip dz / ∫Q_notip dz")
         if cfg:
             self.p_cfg.setText(
                 f"θ {cfg['theta_deg']:g}° · w {cfg['w_um']:g} µm · X {cfg['x_beam_um']:g} µm · λ {cfg['wavelength'] * 1e9:.0f} nm · "
-                f"FWHM {cfg['fwhm_fs']:g} fs · n {cfg['n_gaas']:g}, κ {cfg['kappa_gaas']:g} · 针尖 R {cfg['tip_radius'] * 1e9:.0f} nm, "
-                f"半角 {cfg['tip_half_angle_deg']:g}°, gap {cfg['tip_gap'] * 1e9:.0f} nm · dx {cfg['dx'] * 1e9:g} nm")
+                f"FWHM {cfg['fwhm_fs']:g} fs · n {cfg['n_gaas']:g}, κ {cfg['kappa_gaas']:g} · tip R {cfg['tip_radius'] * 1e9:.0f} nm, "
+                f"half-angle {cfg['tip_half_angle_deg']:g}°, gap {cfg['tip_gap'] * 1e9:.0f} nm · dx {cfg['dx'] * 1e9:g} nm")
         else:
             self.p_cfg.setText(f"θ = {m['theta_deg']:g}° · w = {m['w_um']:g} µm" if "theta_deg" in m else "")
         png = d / "fdtd_pump.png"
         if png.exists():
             self.p_img.load(png)
         else:
-            self.p_img.clear("该结果没有 fdtd_pump.png（运行未完成或被中断；图在三次运行全部结束后才生成）。")
-        self.p_map.set_layers(r["layers"], "该文件夹没有可用的 .npz 数据文件，无法绘制场分布。")
+            self.p_img.clear("This result has no fdtd_pump.png (the run is unfinished or was interrupted; the figure is "
+                             "written after all three runs).")
+        self.p_map.set_layers(r["layers"], "This folder has no usable .npz data files, so the field maps cannot be drawn.")
         cols = r.get("columns")
         if cols is not None:
             tip_x = cfg["tip_x"] * 1e6 if cfg else 0.0
@@ -1533,10 +1871,24 @@ class FdtdPage(Page):
                                                   color=ThemeManager.instance().tokens.muted))
         has_ref = (d / "notip.npz").exists() and check_ref(d / "notip.npz")[0] != "err"
         self.btn_as_ref.setEnabled(has_ref)
-        self.btn_as_ref.setToolTip("把该结果的 notip.npz 设为高度序列的参考场" if has_ref
-                                   else "需要 15 nm 默认网格的 notip.npz")
+        self.btn_as_ref.setToolTip("Use this result's notip.npz as the height-series reference" if has_ref
+                                   else "Needs a notip.npz on the default 15 nm grid")
         self.btn_params.setEnabled(bool(cfg))
         self.btn_p_heights.setVisible((d / "heights").is_dir())
+        fd = r.get("field")
+        if fd:
+            self.field.set_fields(fd)
+            e0 = fd.get("e0")
+            self.f_note.setToolTip(FIELD_HELP + (f"\n\n|E0| = {e0:.3g} V/m per unit source current, from "
+                                                 f"{fd.get('e0_run')}.npz." if e0 else ""))
+        else:
+            fast, full = pump_total({"dx_nm": 40.0}), pump_total({})
+            self.field.set_fields(None, (
+                "No optical-field data in this folder. The maps need vacuum/notip/tip.npz (or ratio.npz), which "
+                "run_fdtd_pump.py writes but git does not track.\n\nRun the pump FDTD to compute them: a coarse "
+                f"dx = 40 nm grid takes ≈ {fmt_dur(fast)}, the default 15 nm grid ≈ {fmt_dur(full)}."))
+        if switch:
+            self.tabs.setCurrentWidget(self.tab_field if fd else self.tab_pump)
 
     @staticmethod
     def _draw_columns(fig, c, tip_x, beam_x):
@@ -1563,11 +1915,11 @@ class FdtdPage(Page):
         d = Path(d)
         self._heights_token += 1
         tok = self._heights_token
-        self.h_title.setText(f"{paths.rel(d)}  ·  载入中…")
+        self.h_title.setText(f"{paths.rel(d)}  ·  loading…")
         if switch:
-            self.tabs.setCurrentIndex(2)
+            self.tabs.setCurrentWidget(self.tab_heights)
         run_async(load_heights, d, on_done=lambda r: tok == self._heights_token and self._show_heights(r),
-                  on_error=lambda e: tok == self._heights_token and self._load_failed(self.h_title, d, e))
+                  on_error=lambda e: tok == self._heights_token and self._load_failed((self.h_title,), d, e))
 
     @staticmethod
     def _fractions(r: dict):
@@ -1583,48 +1935,52 @@ class FdtdPage(Page):
         d, files, bad, norm = r["dir"], r["files"], r["bad"], r["norm"]
         note = []
         if r["from_npz"]:
-            note.append(f"{len(r['from_npz'])} 个高度不在 summary.json 中，已由 npz 计算")
+            note.append(f"{len(r['from_npz'])} height(s) not in summary.json, computed from the npz")
         if bad:
-            note.append(f"{len(bad)} 个 npz 不完整（h = {', '.join(map(str, bad))} nm）")
-        self.h_title.setText(paths.rel(d) + ("  ·  " + "，".join(note) if note else ""))
+            note.append(f"{len(bad)} incomplete npz (h = {', '.join(map(str, bad))} nm)")
+        self.h_title.setText(paths.rel(d) + ("  ·  " + ", ".join(note) if note else ""))
         hs, af, ra = self._fractions(r)
         f = lambda v, fmt: fmt.format(v) if np.isfinite(v) else "—"
         n_ok = len(files) - len(bad)
         if hs:
-            self.h_n.set(str(len(hs)), f"{hs[0]}–{hs[-1]} nm · npz {n_ok} 个" + (f"，{len(bad)} 个不完整" if bad else ""))
+            self.h_n.set(str(len(hs)), f"{hs[0]}–{hs[-1]} nm · {n_ok} npz" + (f", {len(bad)} incomplete" if bad else ""))
             nt, k = norm["notip"], norm["factor"]
             if norm["basis"] == "vacuum":
-                hint = f"无针尖 {nt:.3f}"
-                tip = ("吸收能量 / 真空参考的入射能量，与“泵浦场结果”和 Fresnel 值可直接比较。\n"
-                       "summary.json 中的值除以的是 notip 运行的净入射通量（入射减去部分反射），"
-                       f"这里乘以 launched_notip / launched_vacuum = {k:.3f}；\n"
-                       f"summary.json 原值：{f(af[0] / k, '{:.3f}')} → {f(af[-1] / k, '{:.3f}')}。")
+                hint = f"no tip {nt:.3f}"
+                tip = ("Absorbed energy / incident energy of the vacuum reference — directly comparable with “Absorption” "
+                       "and the Fresnel value.\nsummary.json divides by the notip run's net incident flux (incident minus "
+                       f"part of the reflection); here it is multiplied by launched_notip / launched_vacuum = {k:.3f};\n"
+                       f"raw summary.json values: {f(af[0] / k, '{:.3f}')} → {f(af[-1] / k, '{:.3f}')}.")
             else:
-                hint = f"无针尖 {nt:.3f}（÷ notip 净入射）" if nt else "÷ notip 运行的净入射"
-                tip = ("参考场旁没有 vacuum.npz，无法换算为相对真空入射：数值与 summary.json 相同，"
-                       "除以 notip 运行的净入射通量（入射减去部分反射），不能与“泵浦场结果”的吸收比例直接比较。")
+                hint = f"no tip {nt:.3f} (÷ notip net flux)" if nt else "÷ notip run's net incident flux"
+                tip = ("No vacuum.npz next to the reference, so the values cannot be converted to the vacuum incident "
+                       "energy: they equal summary.json (divided by the notip run's net incident flux, i.e. incident "
+                       "minus part of the reflection) and are not directly comparable with the absorbed fractions "
+                       "under “Absorption”.")
             self.h_abs.set(f"{f(af[0], '{:.3f}')} → {f(af[-1], '{:.3f}')}", hint)
             self.h_abs.setToolTip(tip)
-            self.h_apex.set(f"{f(ra[0], '{:.2f}')} → {f(ra[-1], '{:.2f}')}", "z = −20 nm，<1 为阴影")
+            self.h_apex.set(f"{f(ra[0], '{:.2f}')} → {f(ra[-1], '{:.2f}')}", "z = −20 nm; < 1 means shadow")
         else:
-            self.h_n.set("0", f"npz {n_ok} 个" + (f"，{len(bad)} 个不完整" if bad else ""))
+            self.h_n.set("0", f"{n_ok} npz" + (f", {len(bad)} incomplete" if bad else ""))
             self.h_abs.set("—", "")
             self.h_abs.setToolTip("")
             self.h_apex.set("—", "")
         ref = r["ref"]
-        self.h_ref.set(ref.parent.name, ref.name + ("" if ref.exists() else "（不存在）"))
+        self.h_ref.set(ref.parent.name, ref.name + ("" if ref.exists() else "  (missing)"))
         self.h_ref.setToolTip(paths.rel(ref))
         if hs:
             self.h_plot.plot(lambda fig: self._draw_heights(fig, r))
         else:
             self.h_plot.plot(lambda fig: fig.text(0.5, 0.5, "No summary.json and no complete ratio_h*.npz in this folder",
                                                   ha="center", va="center", color=ThemeManager.instance().tokens.muted))
-        self.h_map.set_layers(r["layers"], "该文件夹没有可用的 ratio_h*.npz（这些文件被 .gitignore 排除，仓库中只有 summary.json）。"
-                                           "运行一次高度序列后即可在这里查看每个高度的比值图。")
+        self.h_map.set_layers(r["layers"], "This folder has no usable ratio_h*.npz (they are .gitignored; the repository "
+                                           "only has summary.json). Run a height series to see the ratio map of each "
+                                           "height here.")
         self.btn_summary.setEnabled(bool(files))
-        self.btn_summary.setToolTip(("先把不完整的 npz 改名为 *.npz.partial，再从其余 ratio_h*.npz 重建 summary.json" if bad
-                                     else "从文件夹内全部 ratio_h*.npz 重建 summary.json") if files
-                                    else "没有 ratio_h*.npz，无法重建（会把 summary.json 清空）")
+        self.btn_summary.setToolTip(("Rename the incomplete npz to *.npz.partial first, then rebuild summary.json from the "
+                                     "remaining ratio_h*.npz" if bad
+                                     else "Rebuild summary.json from every ratio_h*.npz in the folder") if files
+                                    else "No ratio_h*.npz — rebuilding would empty summary.json")
 
     @staticmethod
     def _draw_heights(fig, r):
@@ -1671,7 +2027,7 @@ class FdtdPage(Page):
             except OSError:
                 return ""
 
-        header("泵浦场（vacuum / notip / tip）")
+        header("Pump field (vacuum / notip / tip)")
         pumps = [PUMP_DIR] + sorted((p for p in paths.GUI_RUNS.glob("fdtd_*")
                                      if p.is_dir() and not p.name.startswith("fdtd_heights")), reverse=True)
         n = 0
@@ -1683,22 +2039,22 @@ class FdtdPage(Page):
             g = read_dict(d / "gui_run.json")
             kw = {k: v for k, v in (g.get("kwargs") or {}).items() if k != "out"}
             if s:
-                line = (f"无针尖 {s.get('absorbed_fraction_notip', float('nan')):.3f} · 有针尖 "
+                line = (f"no tip {s.get('absorbed_fraction_notip', float('nan')):.3f} · with tip "
                         f"{s.get('absorbed_fraction_tip', float('nan')):.3f} · θ {s.get('theta_deg', 45):g}° · w {s.get('w_um', 3):g} µm")
             elif npz:
-                line = "未完成：只有 " + " / ".join(npz)
+                line = "incomplete: only " + " / ".join(npz)
             else:
-                line = "空文件夹（运行失败或仍在进行）"
-            line += f" · dx {kw.get('dx_nm', 15):g} nm" if d != PUMP_DIR else " · 仓库参考结果"
+                line = "empty folder (run failed or still running)"
+            line += f" · dx {kw.get('dx_nm', 15):g} nm" if d != PUMP_DIR else " · repository reference"
             extra = ", ".join(form_kwarg(k, v) for k, v in kw.items() if k != "dx_nm")
             it = QListWidgetItem(f"{paths.rel(d)}\n    {line}" + (f" · {extra}" if extra else "") + f" · {when(d)}")
             it.setData(Qt.ItemDataRole.UserRole, ("pump", str(d)))
             self.hist.addItem(it)
             n += 1
         if not n:
-            self.hist.addItem("    还没有泵浦场结果")
+            self.hist.addItem("    No pump-field results yet")
 
-        header("针尖高度序列（ratio_h*.npz）")
+        header("Tip-height series (ratio_h*.npz)")
         n = 0
         for d in [HEIGHTS_DIR] + sorted((p for p in paths.GUI_RUNS.glob("fdtd_heights_*") if p.is_dir()), reverse=True):
             if not d.exists():
@@ -1706,14 +2062,14 @@ class FdtdPage(Page):
             s = read_dict(d / "summary.json")
             files = heights_in(d)
             hs = sorted({int(float(k)) for k in s} | set(files))
-            line = (f"{len(hs)} 个高度：{', '.join(map(str, hs))} nm" if hs else "还没有完成的高度") + \
-                   f" · npz {len(files)} 个" + (" · 仓库结果（npz 未提交）" if d == HEIGHTS_DIR and not files else "")
+            line = (f"{len(hs)} heights: {', '.join(map(str, hs))} nm" if hs else "no finished heights yet") + \
+                   f" · {len(files)} npz" + (" · repository result (npz not committed)" if d == HEIGHTS_DIR and not files else "")
             it = QListWidgetItem(f"{paths.rel(d)}\n    {line} · {when(d)}")
             it.setData(Qt.ItemDataRole.UserRole, ("heights", str(d)))
             self.hist.addItem(it)
             n += 1
         if not n:
-            self.hist.addItem("    还没有高度序列结果")
+            self.hist.addItem("    No height-series results yet")
 
     def _open_item(self, it):
         data = it.data(Qt.ItemDataRole.UserRole)
@@ -1740,6 +2096,8 @@ class FdtdPage(Page):
             self._loaded_once = True
             if PUMP_DIR.exists() and self.pump is None:
                 self.show_pump(PUMP_DIR, switch=False)
+            elif self.pump is None:
+                self.field.set_fields(None, "Run the pump FDTD (or load a result from History) to see the optical field.")
             if HEIGHTS_DIR.exists() and self.heights is None:
                 self.show_heights(HEIGHTS_DIR, switch=False)
         self.refresh_history()

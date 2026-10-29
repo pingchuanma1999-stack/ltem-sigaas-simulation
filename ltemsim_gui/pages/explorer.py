@@ -19,14 +19,16 @@ from matplotlib import patheffects
 from matplotlib.figure import Figure
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QCursor, QFont, QIcon, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
-                               QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLayout, QLineEdit, QListWidget,
-                               QListWidgetItem, QMenu, QPlainTextEdit, QScrollArea, QSizePolicy, QSlider, QSplitter,
-                               QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
+                               QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLayout, QLineEdit,
+                               QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QRadioButton, QScrollArea,
+                               QSizePolicy, QSlider, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem,
+                               QTabWidget, QVBoxLayout, QWidget)
 
 from .. import icons, paths
-from ..theme import LIGHT, ThemeManager, Tokens, mpl_rc
+from ..theme import LIGHT, ThemeManager, Tokens, mpl_rc, repolish
 from ..widgets.common import MetricTile, Page, button, card, label, reveal
+from ..widgets.device import FieldView, device_from_params, draw_device, load_steady_fields
 from ..widgets.mpl import PlotWidget
 from ..workers import run_async
 
@@ -50,19 +52,19 @@ class Quantity:
 
 
 QUANTITIES = [
-    Quantity("V", "电势 V", "potential V (V)", False, "signed", "RdBu_r"),
-    Quantity("Ex", "电场 E_x", "E_x (kV/cm)", False, "signed", "RdBu_r"),
-    Quantity("Ez", "电场 E_z（向上为正）", "E_z (kV/cm, + up)", False, "signed", "RdBu_r"),
-    Quantity("E", "场强 |E|", "|E| (kV/cm)", False, "pos", "magma"),
-    Quantity("logn", "电子密度 log10 n", "log10 n (n in cm⁻³)", True, "log", "viridis"),
-    Quantity("logp", "空穴密度 log10 p", "log10 p (p in cm⁻³)", True, "log", "viridis"),
-    Quantity("logT", "电离 EL2⁺ 密度 log10", "log10 EL2⁺ (EL2⁺ in cm⁻³)", True, "log", "magma"),
-    Quantity("NTp", "电离 EL2⁺ 密度（线性）", "EL2⁺ (cm⁻³)", True, "pos", "magma"),
-    Quantity("f", "EL2 中性占比 f", "EL2 neutral fraction f", True, "pos", "cividis"),
-    Quantity("G", "产生率 G（归一化）", "generation G / G_max", True, "pos", "inferno"),
-    Quantity("w", "发射权重 n_pulse·|E|", "emission weight n_pulse·|E| (kV/cm)", True, "pos", "viridis"),
-    Quantity("Px", "极化 P_x = n_pulse·E_x", "P_x ∝ n_pulse·E_x (arb.)", True, "signed", "RdBu_r"),
-    Quantity("Pz", "极化 P_z = n_pulse·E_z", "P_z ∝ n_pulse·E_z (arb.)", True, "signed", "RdBu_r"),
+    Quantity("V", "Potential V", "potential V (V)", False, "signed", "RdBu_r"),
+    Quantity("Ex", "Field E_x", "E_x (kV/cm)", False, "signed", "RdBu_r"),
+    Quantity("Ez", "Field E_z (+ up)", "E_z (kV/cm, + up)", False, "signed", "RdBu_r"),
+    Quantity("E", "Field magnitude |E|", "|E| (kV/cm)", False, "pos", "magma"),
+    Quantity("logn", "Electrons n (log10)", "log10 n (n in cm⁻³)", True, "log", "viridis"),
+    Quantity("logp", "Holes p (log10)", "log10 p (p in cm⁻³)", True, "log", "viridis"),
+    Quantity("logT", "Ionized EL2⁺ (log10)", "log10 EL2⁺ (EL2⁺ in cm⁻³)", True, "log", "magma"),
+    Quantity("NTp", "Ionized EL2⁺ (linear)", "EL2⁺ (cm⁻³)", True, "pos", "magma"),
+    Quantity("f", "EL2 neutral fraction f", "EL2 neutral fraction f", True, "pos", "cividis"),
+    Quantity("G", "Generation G / G_max", "generation G / G_max", True, "pos", "inferno"),
+    Quantity("w", "Emission n_pulse·|E|", "emission weight n_pulse·|E| (kV/cm)", True, "pos", "viridis"),
+    Quantity("Px", "P_x = n_pulse·E_x", "P_x ∝ n_pulse·E_x (arb.)", True, "signed", "RdBu_r"),
+    Quantity("Pz", "P_z = n_pulse·E_z", "P_z ∝ n_pulse·E_z (arb.)", True, "signed", "RdBu_r"),
 ]
 QBY = {q.key: q for q in QUANTITIES}
 # compact axis labels for the (short) line-cut panels
@@ -115,15 +117,16 @@ def load_solution(path: str) -> Loaded:
     try:
         sol = Solution.load(path)
     except FileNotFoundError:
-        raise FileNotFoundError("文件不存在（可能已被移动或删除）") from None
+        raise FileNotFoundError("File not found (it may have been moved or deleted)") from None
     except Exception as e:          # zip errors, missing members, wrong dtypes ...
-        raise ValueError(f"不是 Solution.save 写出的解文件（{type(e).__name__}: {e}）") from None
+        raise ValueError(f"Not a solution file written by Solution.save ({type(e).__name__}: {e})") from None
     sim = Simulation(sol.params, verbose=False)
     g = sim.grid
     sg = sol.grid
     if (g.xe.shape != sg.xe.shape or g.ze.shape != sg.ze.shape or g.ks != sg.ks
             or not (np.allclose(g.xe, sg.xe) and np.allclose(g.ze, sg.ze))):
-        raise ValueError("由文件中的参数重建的网格与保存的网格不一致，无法计算场（参数定义可能已改变）。")
+        raise ValueError("The grid rebuilt from the saved parameters does not match the saved grid, so the fields cannot be "
+                         "computed (the parameter definitions may have changed).")
     ks = g.ks
     Ex, Ez = sol.fields_physical(sim)
     n, p, NTp = sol.densities_physical(sim)
@@ -233,8 +236,8 @@ def discover_solutions(extra) -> list[dict]:
     return out
 
 
-GROUPS = (("coarse", "粗网格场景 · results/coarse_scenarios"), ("gui", "GUI 运行 · results/gui_runs"),
-          ("results", "其他结果 · results/**/solution.npz"), ("recent", "手动打开的文件"))
+GROUPS = (("coarse", "Coarse-grid scenarios · results/coarse_scenarios"), ("gui", "GUI runs · results/gui_runs"),
+          ("results", "Other results · results/**/solution.npz"), ("recent", "Opened manually"))
 
 _MEASURED = None
 
@@ -331,6 +334,10 @@ def volts(v) -> str:
     return f"{round(v) + 0:+d} V".replace("-", "−") if abs(v) >= 0.5 else "0 V"
 
 
+def plural(n, word) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
 def fnum(v, unit="") -> str:
     if v is None or not np.isfinite(v):
         return "—"
@@ -354,7 +361,7 @@ def _ask_save(parent, title, name, filt):
 
 def export_figure(parent, draw, size, name, path=None):
     """Re-draw `draw(fig, tokens, interactive)` in the light theme on white and save it (readable in any app theme)."""
-    path = path or _ask_save(parent, "保存图像", name, "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)")
+    path = path or _ask_save(parent, "Save figure", name, "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)")
     if not path:
         return None
     w, h = size
@@ -577,36 +584,38 @@ class MapTab(_Tab):
             self.q.addItem(q.name, q.key)
         self.q.setMinimumWidth(165)
         self.cmap = QComboBox()
-        self.cmap.addItem("自动", "")
+        self.cmap.addItem("Auto", "")
         for c in DIVERGING + SEQUENTIAL:
             self.cmap.addItem(c, c)
-        self.cmap.setToolTip("自动：带符号的量用发散色图 RdBu_r，正值量用顺序色图")
-        self.sym = QCheckBox("对称色标")
+        self.cmap.setToolTip("Auto: diverging RdBu_r for signed quantities, a sequential map for positive ones")
+        self.sym = QCheckBox("Symmetric")
         self.sym.setChecked(True)
-        self.sym.setToolTip("带符号的量（V、E_x、E_z、P_x、P_z）以 0 为中心对称取色")
+        self.sym.setToolTip("Center the color scale on 0 for signed quantities (V, E_x, E_z, P_x, P_z)")
         self.vmin = QLineEdit()
         self.vmax = QLineEdit()
-        for e, tip in ((self.vmin, "色标下限（留空 = 自动，取视窗内数据范围）"), (self.vmax, "色标上限（留空 = 自动）")):
-            e.setPlaceholderText("自动")
+        for e, tip in ((self.vmin, "Color-scale minimum (empty = auto: data range inside the view)"),
+                       (self.vmax, "Color-scale maximum (empty = auto)")):
+            e.setPlaceholderText("auto")
             e.setFixedWidth(72)
             e.setToolTip(tip)
         self.x0, self.x1 = spin(-1000, 1000, -20, 1, width=76), spin(-1000, 1000, 20, 1, width=76)
         self.z0, self.z1 = spin(-1000, 1000, -4, 0.5, width=76), spin(-1000, 1000, 1, 0.5, width=76)
         self.fieldmode = QComboBox()
-        self.fieldmode.addItems(["无", "流线", "箭头"])
-        self.fieldmode.setToolTip("叠加电场 E 的流线（线宽 ∝ |E|）或方向箭头")
-        self.aspect = QCheckBox("1:1 比例")
-        self.aspect.setToolTip("x 与 z 使用相同比例尺（默认拉伸 z 方向以便观察表层）")
-        reset = button("复位视图", self._reset_view, "flat")
-        lay.addWidget(flow(hgroup("物理量", self.q), hgroup("色图", self.cmap), self.sym,
-                           hgroup("色标", self.vmin, "–", self.vmax),
-                           hgroup("x 范围", self.x0, "…", self.x1, "µm"), hgroup("z 范围", self.z0, "…", self.z1, "µm"),
-                           hgroup("电场线", self.fieldmode), self.aspect, reset))
+        self.fieldmode.addItems(["None", "Streamlines", "Arrows"])
+        self.fieldmode.setToolTip("Overlay electric-field streamlines (line width ∝ |E|) or direction arrows")
+        self.aspect = QCheckBox("1:1 aspect")
+        self.aspect.setToolTip("Same scale for x and z (by default z is stretched to show the surface layer)")
+        reset = button("Reset view", self._reset_view, "flat")
+        # ordered so that the groups pack into three rows even in the narrowest window
+        lay.addWidget(flow(hgroup("Quantity", self.q), hgroup("Colors", self.cmap), self.sym,
+                           hgroup("Range", self.vmin, "–", self.vmax), hgroup("Field lines", self.fieldmode),
+                           self.aspect, hgroup("x", self.x0, "…", self.x1, "µm"),
+                           hgroup("z", self.z0, "…", self.z1, "µm"), reset))
 
         self.map = PlotWidget(figsize=(7, 4))
         self.map.setMinimumHeight(150)
         self.map.canvas.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self.map.canvas.setToolTip("单击或拖动设置十字准星；方向键逐格移动（Shift+方向键 5 格）")
+        self.map.canvas.setToolTip("Click or drag to place the crosshair; arrow keys move it by one cell (Shift+arrow: 5 cells)")
         c = self.map.canvas
         c.mpl_connect("button_press_event", self._on_press)
         c.mpl_connect("motion_notify_event", self._on_motion)
@@ -840,7 +849,7 @@ class MapTab(_Tab):
     def draw_cuts(self, fig, t, interactive):
         L = self.L
         if L is None:
-            empty(fig, t, "单击上方二维图设置十字准星，这里显示经过该点的 x / z 两条剖线")
+            empty(fig, t, "Click the map above to place the crosshair; the x and z line cuts through it appear here")
             return
         q, g = self.quantity(), L.g
         data = L.data[q.key]
@@ -884,11 +893,11 @@ class MapTab(_Tab):
         d = L.data
         v = d[q.key][k, i]
         mu = f"color:{t.muted}"
-        head = (f"<b>十字准星</b> <span style='{mu}'>x =</span> {g.xc[i]:+.3f} µm, <span style='{mu}'>z =</span> "
-                f"{g.zc[k]:+.3f} µm <span style='{mu}'>（单元 i = {i}, k = {k}{'，GaAs' if k < g.ks else '，空气'}）</span>"
+        head = (f"<b>Crosshair</b> <span style='{mu}'>x =</span> {g.xc[i]:+.3f} µm, <span style='{mu}'>z =</span> "
+                f"{g.zc[k]:+.3f} µm <span style='{mu}'>(cell i = {i}, k = {k}, {'GaAs' if k < g.ks else 'air'})</span>"
                 f" &nbsp;→&nbsp; <b style='color:{t.accent}'>{q.label.split(' (')[0]} = {fnum(v)}</b>")
         if q.semi and self.cross[1] > 0:
-            head += f" <span style='{mu}'>（该量只在 GaAs 中定义，已吸附到表层单元）</span>"
+            head += f" <span style='{mu}'>(defined in GaAs only: snapped to the top GaAs cell)</span>"
         vals = [("V", d["V"][k, i], "V"), ("E_x", d["Ex"][k, i], "kV/cm"), ("E_z", d["Ez"][k, i], "kV/cm"),
                 ("|E|", d["E"][k, i], "kV/cm")]
         if k < g.ks:
@@ -953,8 +962,8 @@ class MapTab(_Tab):
             return None
         if which is None and path is None:
             m = QMenu(self)
-            a1 = m.addAction("二维分布图…")
-            a2 = m.addAction("两条剖线图…")
+            a1 = m.addAction("2-D map…")
+            a2 = m.addAction("Line cuts…")
             a = m.exec(QCursor.pos())
             which = "map" if a is a1 else "cuts" if a is a2 else None
             if which is None:
@@ -983,7 +992,7 @@ class MapTab(_Tab):
             return None
         q = self.quantity()
         stem = Path(self.L.name).name.replace("/", "_")
-        path = path or _ask_save(self, "导出剖线 CSV", f"{stem}_{q.key}_cuts.csv", "CSV (*.csv)")
+        path = path or _ask_save(self, "Export line cuts as CSV", f"{stem}_{q.key}_cuts.csv", "CSV (*.csv)")
         if not path:
             return None
         c = self.cut_data()
@@ -992,6 +1001,315 @@ class MapTab(_Tab):
                          f"cut along z at x = {c['xc']:+.4f} um (cell i = {c['i']})",
                          "columns 1-2: along x; columns 3-4: along z (different lengths)"],
                   [("x_um", c["x"]), (f"{q.key}_along_x", c["vx"]), ("z_um", c["z"]), (f"{q.key}_along_z", c["vz"])])
+        return path
+
+
+def sci(v) -> str:
+    """1.2e4 -> '1.2 × 10⁴' (plain notation between 0.01 and 1e4)."""
+    if v == 0 or 1e-2 <= abs(v) < 1e4:
+        return f"{v:.3g}"
+    e = int(np.floor(np.log10(abs(v))))
+    m = v / 10 ** e
+    sup = str(e).translate(str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"))
+    return f"10{sup}" if abs(m - 1) < 5e-4 else f"{m:.3g} × 10{sup}"
+
+
+class _DevicePage(QWidget):
+    """The device structure (draw_device: two panels side by side) at a fitting aspect, its key dimensions below.
+    draw_device sizes its annotations by the figure width at draw time: re-drawn when the width changes noticeably."""
+
+    FACTS = (("box", "Simulated box"), ("pump", "Pump"), ("gap", "Electrode gap"), ("alpha", "Absorption"),
+             ("bias", "Electrodes"), ("tip", "Tip"))
+
+    def __init__(self):
+        super().__init__()
+        self.dev = None
+        self._drawn_w = 0                 # canvas width the device was drawn at
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.plot = PlotWidget(figsize=(8, 3.6))
+        lay.addWidget(self.plot)
+        self.facts = QWidget()
+        grid = QGridLayout(self.facts)
+        grid.setContentsMargins(4, 0, 4, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(4)
+        self.val = {}
+        top = Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        for n, (k, txt) in enumerate(self.FACTS):
+            r, c = divmod(n, 2)
+            kl = label(txt, "muted")
+            kl.setAlignment(top)
+            vl = label("—", wrap=True, selectable=True)
+            vl.setAlignment(top)
+            vl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            grid.addWidget(kl, r, 2 * c, top)
+            grid.addWidget(vl, r, 2 * c + 1)
+            self.val[k] = vl
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
+        lay.addWidget(self.facts)
+        lay.addStretch(1)
+        self._rescale = debounce(150, lambda: self._render(only_if_resized=True), self)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+        if self.dev is not None:
+            self._rescale.start()
+
+    def _fit(self):
+        # panel (a) is drawn to scale (120 x 60 µm): a canvas much taller than ~0.45 x its width only adds empty space
+        fh = self.facts.heightForWidth(self.width())          # wrapped labels: the height at this width
+        free = self.height() - (fh if fh > 0 else self.facts.sizeHint().height()) - 8
+        h = max(220, min(int(0.45 * self.width()) + 30, free))
+        if h != self.plot.height():
+            self.plot.setFixedHeight(h)
+
+    def _render(self, only_if_resized=False):
+        w = self.plot.canvas.width()
+        if self.dev is None or (only_if_resized and abs(w - self._drawn_w) <= 0.06 * max(w, 1)):
+            return
+        self._drawn_w = w
+        dev = self.dev
+        self.plot.plot(lambda fig: draw_device(fig, dev))
+
+    def show_message(self, msg):
+        self.dev = None
+        self.plot.plot(lambda fig: empty(fig, ThemeManager.instance().tokens, msg))
+        for v in self.val.values():
+            v.setText("—")
+
+    def show_device(self, L, dev):
+        """Draw Device `dev` of Loaded `L` and list its key dimensions."""
+        self.dev = dev
+        self._render()
+        P, g = L.P, L.g
+        a, b = dev.inner_edges
+        mm = lambda v: f"{v + 0.0:+.4g}".replace("-", "−")
+        xs = [-x for x in P.tip_x_scan_um]
+        back = ("floating back surface" if P.back_boundary == "neumann"
+                else f"back surface held at {mm(P.V_back)} V")
+        self.val["box"].setText(f"{2 * P.x_half:g} × {P.depth + P.air_height:g} µm: GaAs {P.depth:g} µm + air "
+                                f"{P.air_height:g} µm, {back}; grid {g.Nx} × {g.Nz}")
+        self.val["gap"].setText(f"{b - a:.4g} µm between the electrode edges as discretized (nominal {P.gap:g} µm)")
+        self.val["bias"].setText(f"Au films at {mm(L.sol.V_left)} V (left) and {mm(L.sol.V_right)} V (right); "
+                                 f"anode at {P.anode_side.replace('-', '−')}")
+        where = "centered on the gap" if P.spot_x0_um == 0 else f"centered at x = {mm(P.spot_x0_um)} µm"
+        self.val["pump"].setText(f"{dev.P_mW:.3g} mW at {P.wavelength_nm:g} nm, normal incidence, w = "
+                                 f"{P.spot_w_um:g} µm (1/e²) {where}; R = {P.reflectivity:g}")
+        self.val["alpha"].setText(f"α = {sci(P.alpha_cm)} cm⁻¹, 1/α = {1e4 / P.alpha_cm:.3g} µm")
+        h = f"E_z read {P.tip_height_um * 1000:.0f} nm above the surface"
+        self.val["tip"].setText(f"{h}; scan X = {mm(min(xs))}…{mm(max(xs))} µm ({len(xs)} positions)" if xs else h)
+        self._fit()
+
+
+class FieldTab(_Tab):
+    """COMSOL-style surface plot of the solved electric field (widgets.device.FieldView) and the device
+    cross-section (draw_device) for the selected solution. The fields load lazily: when the tab is shown, or when
+    the selection changes while it is visible."""
+
+    def __init__(self, page):
+        super().__init__(page)
+        self._seq = 0
+        self._key = None                  # (path, mtime) of the fields on display
+        self._pending = None              # key of the load in flight
+        self._cache: dict = {}            # (path, mtime) -> load_steady_fields() result
+        self._data = None                 # the fields on display
+        self._dev_key = None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 8)
+        lay.setSpacing(6)
+        self.r_field = QRadioButton("Electric field")
+        self.r_field.setToolTip("Surface plot of the solved field with arrows or streamlines, in COMSOL's style")
+        self.r_dev = QRadioButton("Device structure")
+        self.r_dev.setToolTip("Simulated cross-section to scale, with the gap region enlarged (from this solution's "
+                              "parameters; electrode edges as discretized on its grid)")
+        self.r_field.setChecked(True)
+        grp = QButtonGroup(self)
+        grp.addButton(self.r_field)
+        grp.addButton(self.r_dev)
+        self.fv = FieldView()                 # its own controls (quantity, view, overlay, colors, log, aspect)
+        self.dev_page = _DevicePage()
+        self.dev = self.dev_page.plot
+        self.status = label("", "muted", wrap=True, selectable=True)   # caption under the field map
+        fit_height(self.status)
+        lay.addWidget(flow(hgroup(self.r_field, self.r_dev, spacing=12)))
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.fv)
+        self.stack.addWidget(self.dev_page)
+        lay.addWidget(self.stack, 1)
+        lay.addWidget(self.status)
+        self.r_dev.toggled.connect(self._on_mode)
+        self.fv.qty.currentIndexChanged.connect(self._on_quantity)
+
+    # ---------------------------------------------------------------- state
+    def _on_mode(self, *_):
+        dev = self.r_dev.isChecked()
+        for r in (self.r_field, self.r_dev):      # the checked indicator is wider (QSS border): buttons cache
+            repolish(r)                           # their size hint until a style change, so force one
+            r.updateGeometry()
+        self.stack.setCurrentWidget(self.dev_page if dev else self.fv)
+        self.refresh()
+
+    def _on_quantity(self, *_):
+        """Log scale applies to |E| only: FieldView ignores it for signed quantities, so grey it out there."""
+        q = getattr(self.fv, "qtys", {}).get(self.fv.qty.currentText())
+        self.fv.log.setEnabled(bool(q) and not q[2])
+
+    def refresh(self):
+        self.dirty = False
+        if self.r_dev.isChecked():
+            self._draw_device()
+        else:
+            self._load_fields()
+        self._update_status()
+
+    # ---------------------------------------------------------------- field map
+    def _load_fields(self):
+        L = self.L
+        if L is None:
+            self._seq += 1
+            self._key = self._pending = self._data = None
+            self.fv.set_fields(None, self.empty_text())
+            return
+        key = (L.path, L.mtime)
+        if key == self._key or key == self._pending:
+            return
+        if key in self._cache:
+            self._show(key, self._cache[key])
+            return
+        self._seq += 1
+        seq = self._seq
+        self._pending = key
+        self._key = self._data = None
+        self.fv.set_fields(None, f"Computing the electric field of {L.name}…")
+        run_async(load_steady_fields, L.path, on_done=lambda d: self._done(seq, key, d),
+                  on_error=lambda e: self._fail(seq, e))
+
+    def _done(self, seq, key, d):
+        if len(self._cache) >= 8:
+            self._cache.pop(next(iter(self._cache)))
+        self._cache[key] = d
+        if seq != self._seq:                  # a newer request superseded this one
+            return
+        self._pending = None
+        L = self.L
+        if L is not None and (L.path, L.mtime) == key and not self.r_dev.isChecked():
+            self._show(key, d)
+        else:                                 # selection or mode changed meanwhile: load again when shown
+            self.dirty = True
+
+    def _fail(self, seq, err):
+        if seq != self._seq:
+            return
+        self._pending = None
+        self.fv.set_fields(None, "Could not compute the field map:\n" + err.splitlines()[0])
+        self._update_status()
+
+    def _show(self, key, d):
+        """Show new fields, keeping the quantity and view the user picked for the previous solution."""
+        fv = self.fv
+        q, v = fv.qty.currentText(), fv.view.currentText()
+        fv.set_fields(d)
+        changed = False
+        for combo, txt in ((fv.qty, q), (fv.view, v)):
+            i = combo.findText(txt) if txt else -1
+            if i >= 0 and i != combo.currentIndex():
+                combo.blockSignals(True)
+                combo.setCurrentIndex(i)
+                combo.blockSignals(False)
+                changed = True
+        if changed:                           # one redraw through FieldView's own slot
+            fv.view.currentIndexChanged.emit(fv.view.currentIndex())
+        self._key, self._data = key, d
+        self._on_quantity()
+        self._update_status()
+
+    def _update_status(self):
+        L, d = self.L, self._data
+        self.status.setToolTip("")
+        show = L is not None and d is not None and not self.r_dev.isChecked()
+        self.status.setVisible(show)
+        if not show:
+            self.status.setText("")
+        else:
+            xe, ze = np.asarray(d["xe"]), np.asarray(d["ze"])
+            E = np.hypot(d["Ex"], d["Ez"])
+            k, i = np.unravel_index(int(np.nanargmax(E)), E.shape)
+            x, z = 0.5 * (xe[i] + xe[i + 1]), 0.5 * (ze[k] + ze[k + 1])
+            g0, g1 = d.get("gap", self._edges(L))
+            edge = abs(z) < 1.0 and min(abs(x - g0), abs(x - g1)) < 2.5
+            V = L.P.V_bias
+            avg = abs(V) / (g1 - g0) * 10.0 if g1 > g0 else np.nan      # V/µm -> kV/cm
+            s = lambda v: f"{v + 0.0:+.2f}".replace("-", "−")
+            self.status.setText(f"max |E| = {E[k, i]:.3g} kV/cm at x = {s(x)} µm, z = {s(z)} µm"
+                                f"{' (electrode edge)' if edge else ''} · bare-gap average {avg:.3g} kV/cm")
+            self.status.setToolTip(f"Bare-gap average = |V_bias| / gap = {abs(V):g} V over {g1 - g0:.4g} µm (the gap "
+                                   "between the electrode edges as discretized)")
+        _FitHeight.fit(self.status)
+
+    # ---------------------------------------------------------------- device
+    @staticmethod
+    def _edges(L):
+        """Inner electrode edges as discretized (load_steady_fields uses the same columns)."""
+        lefts = [b for a, b in L.electrodes if b <= 0]
+        rights = [a for a, b in L.electrodes if a >= 0]
+        return (max(lefts) if lefts else -L.P.gap / 2, min(rights) if rights else L.P.gap / 2)
+
+    def device(self):
+        L = self.L
+        P = L.P
+        # the pump power that was solved for is P_avg × gen_factor
+        return device_from_params(P, electrode_edges=self._edges(L), P_mW=P.P_avg_mW * L.sol.gen_factor)
+
+    def _draw_device(self):
+        L = self.L
+        if L is None:
+            self._dev_key = None
+            self.dev_page.show_message(self.empty_text())
+            return
+        key = (L.path, L.mtime)
+        if key == self._dev_key:
+            return
+        self._dev_key = key
+        self.dev_page.show_device(L, self.device())
+
+    # ---------------------------------------------------------------- export
+    def save_figure(self, path=None):
+        if self.L is None:
+            return None
+        stem = Path(self.L.name).name.replace("/", "_")
+        if self.r_dev.isChecked():
+            w, name = self.dev, f"{stem}_device.png"
+        elif self._data is not None:
+            w, name = self.fv.plot, f"{stem}_field.png"
+        else:
+            return None
+        path = path or _ask_save(self, "Save figure", name, "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)")
+        if not path:
+            return None
+        w.export(path)            # dark theme: re-drawn light on white
+        return path
+
+    def export_csv(self, path=None):
+        d, L = self._data, self.L
+        if d is None or L is None:
+            return None
+        stem = Path(L.name).name.replace("/", "_")
+        path = path or _ask_save(self, "Export field as CSV", f"{stem}_field.csv", "CSV (*.csv)")
+        if not path:
+            return None
+        xe, ze = np.asarray(d["xe"]), np.asarray(d["ze"])
+        xc, zc = 0.5 * (xe[1:] + xe[:-1]), 0.5 * (ze[1:] + ze[:-1])
+        Z, X = np.meshgrid(zc, xc, indexing="ij")
+        cols = [("x_um", X.ravel()), ("z_um", Z.ravel()), ("Ex_kVcm", np.ravel(d["Ex"])), ("Ez_kVcm", np.ravel(d["Ez"])),
+                ("E_kVcm", np.hypot(d["Ex"], d["Ez"]).ravel())]
+        if d.get("V") is not None:
+            cols.append(("V_V", np.ravel(d["V"])))
+        write_csv(path, [f"solution: {L.path}", f"grid cell centres, Nx = {len(xc)}, Nz = {len(zc)} (x varies fastest); "
+                         "z < 0: GaAs, z > 0: air", "E in kV/cm, V in volts"], cols)
         return path
 
 
@@ -1008,12 +1326,12 @@ class ProfileTab(_Tab):
         lay.setSpacing(6)
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setFixedWidth(220)
-        self.slider.setToolTip("按网格单元中心逐行选择深度（从表面向下）")
+        self.slider.setToolTip("Step through the grid rows (cell centers) from the surface down")
         self.depth = spin(0, 1000, 0.5, 0.1, 3, " µm", 100)
-        self.depth.setToolTip("请求的深度；实际取最近的 GaAs 单元中心")
+        self.depth.setToolTip("Requested depth; the nearest GaAs cell center is used")
         self.actual = label("", "muted")
         self.xr = spin(1, 1000, 20, 1, 1, " µm", 90)
-        lay.addWidget(flow(hgroup("深度", self.slider, self.depth), self.actual, hgroup("x 范围 ±", self.xr)))
+        lay.addWidget(flow(hgroup("Depth", self.slider, self.depth), self.actual, hgroup("x range ±", self.xr)))
         self.plot = PlotWidget(figsize=(7, 7))
         lay.addWidget(self.plot, 1)
         self.slider.valueChanged.connect(self._on_slider)
@@ -1057,7 +1375,7 @@ class ProfileTab(_Tab):
             self.slider.blockSignals(True)
             self.slider.setValue(r)
             self.slider.blockSignals(False)
-            self.actual.setText(f"→ 实际 {self.pr['depth']:.3f} µm（自表面第 {r + 1} 行单元中心）")
+            self.actual.setText(f"→ used {self.pr['depth']:.3f} µm (cell row {r + 1} from the surface)")
         else:
             self.pr = None
             self.actual.setText("")
@@ -1117,7 +1435,7 @@ class ProfileTab(_Tab):
             return None
         pr = self.pr
         stem = Path(self.L.name).name.replace("/", "_")
-        path = path or _ask_save(self, "导出剖面 CSV", f"{stem}_profiles_{pr['depth']:.2f}um.csv", "CSV (*.csv)")
+        path = path or _ask_save(self, "Export profiles as CSV", f"{stem}_profiles_{pr['depth']:.2f}um.csv", "CSV (*.csv)")
         if not path:
             return None
         write_csv(path, [f"solution: {self.L.path}", f"depth: {pr['depth']:.4f} um (nearest GaAs cell centre)",
@@ -1143,23 +1461,24 @@ class TipTab(_Tab):
         lay.setContentsMargins(12, 10, 12, 8)
         lay.setSpacing(8)
         self.h = spin(1, 20000, 50, 10, 0, " nm", 96)
-        self.h.setToolTip("针尖顶点到 GaAs 表面的高度；读取 E_z 时吸附到最近的空气单元中心")
+        self.h.setToolTip("Height of the tip apex above the GaAs surface; E_z is read at the nearest air-cell center")
         self.h_actual = label("", "muted")
         self.sx0, self.sx1 = spin(-55, 55, -10, 0.5, 2, width=78), spin(-55, 55, 10, 0.5, 2, width=78)
         self.sdx = spin(0.01, 10, 0.5, 0.1, 2, width=70)
-        self.meas = QCheckBox("叠加实测 RMS")
+        self.meas = QCheckBox("Show measured RMS")
         self.meas.setChecked(True)
-        self.meas.setToolTip(f"{paths.rel(paths.MEASURED_CSV)}：与模型偏压相同（及相反、对应镜像曲线）的实测点")
+        self.meas.setToolTip(f"{paths.rel(paths.MEASURED_CSV)}: measured points at the model bias (and at the opposite bias, "
+                             "against the mirrored curve)")
         self.status = label("", "muted", wrap=True)
-        lay.addWidget(flow(hgroup("针尖高度", self.h, self.h_actual), hgroup("X 范围", self.sx0, "…", self.sx1, "µm"),
-                           hgroup("步长", self.sdx, "µm"), self.meas))
+        lay.addWidget(flow(hgroup("Tip height", self.h, self.h_actual), hgroup("X range", self.sx0, "…", self.sx1, "µm"),
+                           hgroup("Step", self.sdx, "µm"), self.meas))
         lay.addWidget(self.status)
         grid = QGridLayout()
         grid.setSpacing(8)
-        self.m_peak = MetricTile("|S| 峰值位置 X", "—", "实测 +25 V：+5 µm")
-        self.m_s0 = MetricTile("S(0) / max", "—", "实测 +25 V：0.24")
-        self.m_ratio = MetricTile("|S(+5)| / |S(−5)|", "—", ">1：X > 0 一侧更强")
-        self.m_dev = MetricTile("与实测的 RMS 偏差", "—", "")
+        self.m_peak = MetricTile("Peak of |S| at X", "—", "measured at +25 V: +5 µm")
+        self.m_s0 = MetricTile("S(0) / max", "—", "measured at +25 V: 0.24")
+        self.m_ratio = MetricTile("|S(+5)| / |S(−5)|", "—", ">1: stronger on the X > 0 side")
+        self.m_dev = MetricTile("RMS deviation from measured", "—", "")
         for i, m in enumerate((self.m_peak, self.m_s0, self.m_ratio, self.m_dev)):
             grid.addWidget(m, 0, i)
             fit_height(m.hint)
@@ -1205,7 +1524,7 @@ class TipTab(_Tab):
             self._replot()
             return
         self.h_actual.setText(f"→ {self.snapped_height(self.L, self.h.value() / 1000) * 1000:.0f} nm")
-        self.h_actual.setToolTip("E_z 读取于最近的空气单元中心（网格吸附后的实际高度）")
+        self.h_actual.setToolTip("E_z is read at the nearest air-cell center (the actual height after snapping to the grid)")
         if self._busy:
             self._pending = True
             return
@@ -1215,7 +1534,7 @@ class TipTab(_Tab):
         self._seq += 1
         seq = self._seq
         self._busy = True
-        self.status.setText("计算中…")
+        self.status.setText("Computing…")
 
         def work():
             from ltemsim.tip import tip_scan
@@ -1233,8 +1552,9 @@ class TipTab(_Tab):
     def _done(self, seq, L, ts):
         if seq == self._seq and L is self.L:
             self.ts, self.ts_L = ts, L
-            self.status.setText(f"{len(ts.X_exp)} 个针尖位置 · 高度 {ts.h_um * 1000:.0f} nm 吸附到最近的空气单元中心 "
-                                f"{self.snapped_height(L, ts.h_um) * 1000:.0f} nm · X = −x_tip（光斑相对针尖的位置）")
+            self.status.setText(f"{len(ts.X_exp)} tip positions · height {ts.h_um * 1000:.0f} nm, snapped to the "
+                                f"nearest air-cell center at {self.snapped_height(L, ts.h_um) * 1000:.0f} nm · "
+                                "X = −x_tip (spot position relative to the tip)")
             self._update_metrics()
             for w in (self.status, self.m_peak.hint, self.m_s0.hint, self.m_ratio.hint, self.m_dev.hint):
                 _FitHeight.fit(w)
@@ -1244,8 +1564,8 @@ class TipTab(_Tab):
     def _fail(self, seq, err):
         if seq == self._seq:
             self.ts = None
-            self.status.setText("针尖扫描失败")
-            self.plot.plot(lambda fig: empty(fig, ThemeManager.instance().tokens, "针尖扫描失败：\n" + err.splitlines()[0]))
+            self.status.setText("Tip scan failed")
+            self.plot.plot(lambda fig: empty(fig, ThemeManager.instance().tokens, "Tip scan failed:\n" + err.splitlines()[0]))
         self._after()
 
     def _update_metrics(self):
@@ -1254,14 +1574,15 @@ class TipTab(_Tab):
         self.m_peak.set(fnum(m["peak"]) + " µm" if np.isfinite(m["peak"]) else "—")
         self.m_s0.set(f"{m['s0']:.3f}" if np.isfinite(m["s0"]) else "—")
         la = electrode_titles(L.sol)[2]                       # X > 0 <=> tip at x < 0 (the -x electrode side)
-        side = "−x 电极侧" if la is None else "阳极侧" if la else "阴极侧"
+        side = "the −x electrode side" if la is None else "the anode side" if la else "the cathode side"
         self.m_ratio.set(f"{m['ratio']:.2f}" if np.isfinite(m["ratio"]) else "—",
-                         f">1：针尖在{side}更强" if np.isfinite(m["ratio"]) else "扫描范围需覆盖 X = ±5 µm")
+                         f">1: stronger with the tip on {side}" if np.isfinite(m["ratio"])
+                         else "the scan range must cover X = ±5 µm")
         V = L.P.V_bias
         dev, n = measured_deviation(ts.X_exp, ts.S, V)
         self.m_dev.set(f"{dev:.3f}" if np.isfinite(dev) else "—",
-                       (f"{n} 个实测点（{volts(-V)} 对镜像）" if V else f"{n} 个 0 V 实测点") if n
-                       else f"没有 {'±' if V else ''}{volts(abs(V))} 的实测数据")
+                       (f"{n} measured points ({volts(-V)} vs. the mirrored model)" if V else f"{n} measured points at 0 V") if n
+                       else f"no measured data at {'±' + volts(abs(V))[1:] if V else '0 V'}")
         self.metrics = m | dict(dev=dev, n_dev=n)
 
     def _replot(self):
@@ -1270,7 +1591,7 @@ class TipTab(_Tab):
     def draw(self, fig, t, interactive):
         ts, L = self.ts, self.ts_L
         if ts is None or L is None:
-            empty(fig, t, self.empty_text() if self.L is None else "正在计算针尖扫描…")
+            empty(fig, t, self.empty_text() if self.L is None else "Computing the tip scan…")
             return
         c = colors(t)
         o = np.argsort(ts.X_exp)
@@ -1325,7 +1646,7 @@ class TipTab(_Tab):
         if ts is None:
             return None
         stem = Path(L.name).name.replace("/", "_")
-        path = path or _ask_save(self, "导出针尖扫描 CSV", f"{stem}_tip_scan.csv", "CSV (*.csv)")
+        path = path or _ask_save(self, "Export tip scan as CSV", f"{stem}_tip_scan.csv", "CSV (*.csv)")
         if not path:
             return None
         o = np.argsort(ts.X_exp)
@@ -1341,8 +1662,8 @@ class TipTab(_Tab):
 class CompareTab(_Tab):
     """Overlay several solutions (interactive scripts/compare_scenarios.py)."""
 
-    COLS = ["场景", "V_bias (V)", "P (mW)", "τ_srh (ns)", "S (cm/s)", "接触 (cm⁻³)", "|I| (mA)", "增益",
-            "n(0) (cm⁻³)", "E_x(−5) (kV/cm)", "E_x(+5) (kV/cm)", "峰值 X (µm)", "S(0)/max"]
+    COLS = ["Scenario", "V_bias (V)", "P (mW)", "τ_srh (ns)", "S (cm/s)", "Contacts (cm⁻³)", "|I| (mA)", "Gain",
+            "n(0) (cm⁻³)", "E_x(−5) (kV/cm)", "E_x(+5) (kV/cm)", "Peak X (µm)", "S(0)/max"]
 
     def __init__(self, page):
         super().__init__(page)
@@ -1364,22 +1685,19 @@ class CompareTab(_Tab):
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 0, 0)
         ll.setSpacing(6)
-        ll.addWidget(label(f"勾选要对比的解（≤ {MAX_COMPARE}）", "cardTitle"))
+        ll.addWidget(label(f"Solutions to compare (≤ {MAX_COMPARE})", "cardTitle"))
         self.filter = QLineEdit()
-        self.filter.setPlaceholderText("筛选")
+        self.filter.setPlaceholderText("Filter")
         self.filter.setClearButtonEnabled(True)
         self.filter.textChanged.connect(self._apply_filter)
         ll.addWidget(self.filter)
         self.list = QListWidget()
         self.list.itemChanged.connect(self._on_item)
         ll.addWidget(self.list, 1)
-        br = QHBoxLayout()
-        br.setSpacing(0)
-        br.addWidget(button("清空", self.clear_checks, "flat"))
-        br.addWidget(button("功率序列", self._preset_power, "flat", "勾选 coarse_P0.02 … coarse_P2.00"))
-        br.addWidget(button("+当前解", self._add_current, "flat", "勾选当前在查看的解"))
-        br.addStretch(1)
-        ll.addLayout(br)
+        ll.addWidget(flow(button("Clear", self.clear_checks, "flat"),
+                          button("Power series", self._preset_power, "flat", "Check coarse_P0.02 … coarse_P2.00"),
+                          button("+ Current", self._add_current, "flat", "Check the solution that is open now"),
+                          hspacing=0))
         left.setMinimumWidth(165)
         hs.addWidget(left)
 
@@ -1388,11 +1706,11 @@ class CompareTab(_Tab):
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(6)
         self.depth = spin(0, 100, 0.5, 0.1, 3, " µm", 100)
-        self.depth.setToolTip("E_x 与密度剖面的深度（各解分别吸附到最近的 GaAs 单元中心）")
+        self.depth.setToolTip("Depth of the E_x and density profiles (each solution snaps to its nearest GaAs cell center)")
         self.h = spin(1, 20000, 50, 10, 0, " nm", 96)
-        self.h.setToolTip("针尖扫描的高度（吸附到最近的空气单元中心）")
+        self.h.setToolTip("Tip height of the scans (snapped to the nearest air-cell center)")
         self.status = label("", "muted")
-        rl.addWidget(flow(hgroup("剖面深度", self.depth), hgroup("针尖高度", self.h), self.status))
+        rl.addWidget(flow(hgroup("Profile depth", self.depth), hgroup("Tip height", self.h), self.status))
         vs = QSplitter(Qt.Orientation.Vertical)
         vs.setChildrenCollapsible(False)
         self.plot = PlotWidget(figsize=(7, 5.5))
@@ -1406,7 +1724,7 @@ class CompareTab(_Tab):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.doubleClicked.connect(self._open_row)
-        self.table.setToolTip("双击一行在「二维分布」中打开该解")
+        self.table.setToolTip("Double-click a row to open that solution in the 2-D map tab")
         vs.addWidget(self.table)
         vs.setSizes([560, 190])
         rl.addWidget(vs, 1)
@@ -1480,7 +1798,7 @@ class CompareTab(_Tab):
             self._fill = True
             it.setCheckState(Qt.CheckState.Unchecked)
             self._fill = False
-            self.status.setText(f"最多同时对比 {MAX_COMPARE} 个解")
+            self.status.setText(f"At most {MAX_COMPARE} solutions can be compared at once")
             return
         self._sync_slots()
         self._timer.start()
@@ -1532,7 +1850,7 @@ class CompareTab(_Tab):
         self._seq += 1
         seq = self._seq
         self._busy = True
-        self.status.setText(f"正在计算 {len(sel)} 个解…")
+        self.status.setText(f"Computing {plural(len(sel), 'solution')}…")
 
         def work():
             from ltemsim.tip import surface_profiles, tip_scan
@@ -1562,7 +1880,7 @@ class CompareTab(_Tab):
             self.results = [r for r in res if "error" not in r and r["path"] in self.slots]
             errs = [r for r in res if "error" in r]
             self.rows = [self._row(r) for r in self.results]
-            self.status.setText(f"{len(self.results)} 个解" + (f" · {len(errs)} 个无法读取" if errs else ""))
+            self.status.setText(plural(len(self.results), "solution") + (f" · {len(errs)} unreadable" if errs else ""))
             if errs:
                 self.status.setToolTip("\n".join(f"{paths.rel(r['path'])}: {r['error']}" for r in errs))
             self._show()
@@ -1570,7 +1888,7 @@ class CompareTab(_Tab):
 
     def _fail(self, seq, err):
         if seq == self._seq:
-            self.status.setText("计算失败：" + err.splitlines()[0])
+            self.status.setText("Computation failed: " + err.splitlines()[0])
         self._after()
 
     def _row(self, r):
@@ -1615,7 +1933,7 @@ class CompareTab(_Tab):
 
     def draw(self, fig, t, interactive):
         if not self.results:
-            empty(fig, t, f"在左侧勾选要对比的解（最多 {MAX_COMPARE} 个）")
+            empty(fig, t, f"Check the solutions to compare on the left (up to {MAX_COMPARE})")
             return
         cols = series_colors(t)
         axs = fig.subplots(2, 2)
@@ -1684,7 +2002,7 @@ class CompareTab(_Tab):
     def export_csv(self, path=None):
         if not self.rows:
             return None
-        path = path or _ask_save(self, "导出对比表 CSV", "compare_solutions.csv", "CSV (*.csv)")
+        path = path or _ask_save(self, "Export comparison table as CSV", "compare_solutions.csv", "CSV (*.csv)")
         if not path:
             return None
         keys = ["scenario", "V_bias_V", "P_mW", "tau_srh_ns", "S_surface_cms", "contact_density_cm3", "I_mA", "gain",
@@ -1701,8 +2019,8 @@ class CompareTab(_Tab):
 
 # ---------------------------------------------------------------------------------------------- page
 class ExplorerPage(Page):
-    title = "解查看器"
-    subtitle = "交互查看已保存的稳态解 solution.npz（即时计算，不启动模拟）"
+    title = "Solution explorer"
+    subtitle = "Interactive views of saved steady-state solutions (solution.npz)"
 
     def __init__(self):
         super().__init__()
@@ -1715,10 +2033,13 @@ class ExplorerPage(Page):
         self._disc_seq = 0
         self._discovered = False
 
-        self.btn_save = button("保存图像", self.save_figure, tooltip="保存当前标签页的图（PNG / PDF / SVG，白底浅色）")
-        self.btn_csv = button("导出 CSV", self.export_csv,
-                              tooltip="二维分布：两条剖线 · 剖面：该深度全部剖面 · 针尖扫描：S、Sx、Sz · 对比：汇总表")
-        self.btn_side = button("文件列表", self._toggle_side, tooltip="显示 / 隐藏左侧的解文件列表与信息（窄窗口时腾出绘图空间）")
+        self.btn_save = button("Save figure", self.save_figure,
+                               tooltip="Save the current tab's figure (PNG / PDF / SVG, light theme on white)")
+        self.btn_csv = button("Export CSV", self.export_csv,
+                              tooltip="2-D map: both line cuts · Field: E and V on the grid · Profiles: every profile "
+                                      "at that depth · Tip scan: S, Sx, Sz · Compare: summary table")
+        self.btn_side = button("File list", self._toggle_side,
+                               tooltip="Show or hide the solution list and info on the left (more room for plots)")
         self.btn_side.setCheckable(True)
         self.btn_side.setChecked(self.settings.value("explorer/side_visible", True, type=bool))
         self.header.add_action(self.btn_side)
@@ -1735,9 +2056,10 @@ class ExplorerPage(Page):
         self.map_tab = MapTab(self)
         self.prof_tab = ProfileTab(self)
         self.tip_tab = TipTab(self)
+        self.field_tab = FieldTab(self)
         self.cmp_tab = CompareTab(self)
-        for w, name in ((self.map_tab, "二维分布"), (self.prof_tab, "剖面"), (self.tip_tab, "针尖扫描"),
-                        (self.cmp_tab, "对比")):
+        for w, name in ((self.map_tab, "2-D map"), (self.field_tab, "Field (COMSOL style)"), (self.prof_tab, "Profiles"),
+                        (self.tip_tab, "Tip scan"), (self.cmp_tab, "Compare")):
             self.tabs.addTab(w, name)
         self.tabs.currentChanged.connect(self._on_tab)
         split.addWidget(self.tabs)
@@ -1757,14 +2079,14 @@ class ExplorerPage(Page):
         l1.setContentsMargins(12, 10, 12, 10)
         l1.setSpacing(6)
         row = QHBoxLayout()
-        row.addWidget(label("解文件", "cardTitle"), 1)
+        row.addWidget(label("Solutions", "cardTitle"), 1)
         self.count = label("", "muted")
         row.addWidget(self.count)
-        self.btn_refresh = button("", self.discover, "flat", "重新扫描 results/ 下的解文件")
+        self.btn_refresh = button("", self.discover, "flat", "Rescan results/ for solution files")
         row.addWidget(self.btn_refresh)
         l1.addLayout(row)
         self.filter = QLineEdit()
-        self.filter.setPlaceholderText("筛选：名称或路径")
+        self.filter.setPlaceholderText("Filter by name or path")
         self.filter.setClearButtonEnabled(True)
         self.filter.textChanged.connect(self._apply_filter)
         l1.addWidget(self.filter)
@@ -1773,10 +2095,10 @@ class ExplorerPage(Page):
         self.list.currentItemChanged.connect(self._on_select)
         l1.addWidget(self.list, 1)
         row = QHBoxLayout()
-        self.btn_open = button("打开…", self._open_file, tooltip="打开任意 Solution.save 写出的 .npz 文件")
+        self.btn_open = button("Open…", self._open_file, tooltip="Open any .npz file written by Solution.save")
         row.addWidget(self.btn_open)
         row.addStretch(1)
-        self.btn_reveal = button("在访达中显示", lambda: self.L and reveal(self.L.path), "flat")
+        self.btn_reveal = button("Show in Finder", lambda: self.L and reveal(self.L.path), "flat")
         row.addWidget(self.btn_reveal)
         l1.addLayout(row)
         vs.addWidget(c1)
@@ -1785,7 +2107,7 @@ class ExplorerPage(Page):
         l2 = QVBoxLayout(c2)
         l2.setContentsMargins(12, 10, 12, 10)
         l2.setSpacing(4)
-        self.info_title = label("未载入", "cardTitle", wrap=True)
+        self.info_title = label("Nothing loaded", "cardTitle", wrap=True)
         self.info_path = label("", "muted", wrap=True, selectable=True)
         l2.addWidget(self.info_title)
         l2.addWidget(self.info_path)
@@ -1797,9 +2119,9 @@ class ExplorerPage(Page):
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(3)
         self.info = {}
-        for r, (k, txt) in enumerate((("bias", "偏压"), ("anode", "阳极"), ("power", "泵浦功率"), ("spot", "光斑 w"),
-                                      ("grid", "网格 Nx×Nz"), ("cell", "最小单元"), ("I", "电流"), ("gain", "增益"),
-                                      ("other", "非默认参数"))):
+        for r, (k, txt) in enumerate((("bias", "Bias"), ("anode", "Anode"), ("power", "Pump power"), ("spot", "Spot w"),
+                                      ("grid", "Grid Nx×Nz"), ("cell", "Finest cell"), ("I", "Current"), ("gain", "Gain"),
+                                      ("other", "Non-default"))):
             kl = label(txt, "muted")
             kl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             vl = label("—", wrap=True, selectable=True)
@@ -1809,12 +2131,12 @@ class ExplorerPage(Page):
             self.info[k] = vl
         grid.setColumnStretch(1, 1)
         dl.addLayout(grid)
-        dl.addWidget(label("求解阶段", "sectionHeader"))
+        dl.addWidget(label("Solver stages", "sectionHeader"))
         self.info_log = label("", wrap=True, selectable=True)
         self.info_log.setTextFormat(Qt.TextFormat.RichText)
         dl.addWidget(self.info_log)
         row = QHBoxLayout()
-        self.btn_params = button("全部参数…", self._show_params, "flat", "查看该解保存的完整 Params")
+        self.btn_params = button("All parameters…", self._show_params, "flat", "Show the complete Params saved with this solution")
         row.addWidget(self.btn_params)
         row.addStretch(1)
         dl.addLayout(row)
@@ -1832,6 +2154,13 @@ class ExplorerPage(Page):
     def _toggle_side(self, on):
         self.side.setVisible(on)
         self.settings.setValue("explorer/side_visible", bool(on))
+
+    def heightForWidth(self, w):
+        """The app's QScrollArea holder sizes a height-for-width page to its *preferred* height (header + the
+        tallest tab's figure size hint, ~960 px), so the page overflowed the window and scrolled. Report the minimum
+        instead: the page fills the window and only scrolls when the window is smaller than that."""
+        lay = self.layout()
+        return lay.minimumHeightForWidth(w) if lay is not None and lay.hasHeightForWidth() else -1
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -1867,7 +2196,7 @@ class ExplorerPage(Page):
         self._disc_seq += 1
         seq = self._disc_seq
         run_async(discover_solutions, self._recent(), on_done=lambda e: self._on_discovered(seq, e),
-                  on_error=lambda err: self.count.setText("扫描失败"))
+                  on_error=lambda err: self.count.setText("scan failed"))
 
     def _on_discovered(self, seq, entries):
         if seq != self._disc_seq:
@@ -1886,7 +2215,7 @@ class ExplorerPage(Page):
                 self.load(first)
             else:
                 self._fill_info()
-                for tab in (self.map_tab, self.prof_tab, self.tip_tab):
+                for tab in (self.map_tab, self.field_tab, self.prof_tab, self.tip_tab):
                     tab.set_loaded(None)
 
     def _populate(self, keep=False):
@@ -1910,7 +2239,7 @@ class ExplorerPage(Page):
             for e in es:
                 m = e["meta"]
                 sub = (f"{m['V']:+.0f} V · {m['P']:.3g} mW · |I| = {abs(m['I']):.3f} mA" if m
-                       else "无法读取（不是 Solution 文件？）")
+                       else "unreadable (not a Solution file?)")
                 it = QListWidgetItem(f"{e['name']}\n    {sub}")
                 it.setData(Qt.ItemDataRole.UserRole, e["path"])
                 it.setData(Qt.ItemDataRole.UserRole + 1, gid)
@@ -1919,12 +2248,13 @@ class ExplorerPage(Page):
                 if e["path"] == cur:
                     self.list.setCurrentItem(it)
         if not self.entries and self._discovered:
-            it = QListWidgetItem("没有找到解文件。\n运行「稳态求解」后，结果会出现在这里；\n也可以点击「打开…」选择 .npz 文件。")
+            it = QListWidgetItem("No solution files found.\nRun a solve on the Steady state page\n"
+                                 "(the coarse-grid mode takes ~30 s),\nor click Open… to choose an .npz file.")
             it.setFlags(Qt.ItemFlag.NoItemFlags)
             it.setForeground(QBrush(QColor(t.muted)))
             self.list.addItem(it)
         self.list.blockSignals(False)
-        self.count.setText(f"{len(self.entries)} 个" if self._discovered else "")
+        self.count.setText(f"{len(self.entries)} found" if self._discovered else "")
         self._apply_filter()
 
     def _apply_filter(self, *_):
@@ -1960,7 +2290,7 @@ class ExplorerPage(Page):
 
     def _open_file(self):
         start = str(Path(self.L.path).parent) if self.L else str(paths.RESULTS)
-        p, _ = QFileDialog.getOpenFileName(self, "打开解文件", start, "Solution (*.npz);;所有文件 (*)")
+        p, _ = QFileDialog.getOpenFileName(self, "Open solution file", start, "Solution (*.npz);;All files (*)")
         if p:
             self.open(path=p)
 
@@ -1978,7 +2308,7 @@ class ExplorerPage(Page):
         if L is not None:
             self._on_loaded(seq, L)
             return
-        self.info_title.setText("正在载入…")
+        self.info_title.setText("Loading…")
         self.info_path.setText(paths.rel(p))
         run_async(CACHE.load, p, on_done=lambda L, s=seq: self._on_loaded(s, L),
                   on_error=lambda e, s=seq, q=p: self._on_load_error(s, q, e))
@@ -1990,7 +2320,7 @@ class ExplorerPage(Page):
         self.L = L
         self.error = None
         self._fill_info()
-        for tab in (self.map_tab, self.prof_tab, self.tip_tab, self.cmp_tab):
+        for tab in (self.map_tab, self.field_tab, self.prof_tab, self.tip_tab, self.cmp_tab):
             tab.set_loaded(L)
         if not self._select_in_list(L.path) and self._discovered:
             self.discover()
@@ -2000,19 +2330,20 @@ class ExplorerPage(Page):
             return
         self._loading = None
         self.L = None
-        self.error = f"无法载入 {paths.rel(path)}：\n{err.splitlines()[0]}"
+        self.error = f"Could not load {paths.rel(path)}:\n{err.splitlines()[0]}"
         self._fill_info()
-        for tab in (self.map_tab, self.prof_tab, self.tip_tab):
+        for tab in (self.map_tab, self.field_tab, self.prof_tab, self.tip_tab):
             tab.set_loaded(None)
 
     def empty_message(self):
         if self.error:
             return self.error
         if self._loading:
-            return "正在载入…"
+            return "Loading…"
         if self._discovered and not self.entries:
-            return "没有找到解文件：先运行「稳态求解」，或点击左侧「打开…」选择 .npz 文件"
-        return "从左侧列表选择一个解文件"
+            return ("No solution files found. Run a solve on the Steady state page (the coarse-grid mode takes ~30 s), "
+                    "or click Open… on the left to choose an .npz file.")
+        return "Select a solution file in the list on the left"
 
     def _fill_info(self):
         t = ThemeManager.instance().tokens
@@ -2022,8 +2353,8 @@ class ExplorerPage(Page):
             b.setEnabled(has)
         self.info_details.setVisible(has)
         if not has:
-            self.info_title.setText("载入失败" if self.error else "未载入")
-            self.info_path.setText(self.error or "从上方列表选择一个解，或点击「打开…」")
+            self.info_title.setText("Load failed" if self.error else "Nothing loaded")
+            self.info_path.setText(self.error or "Select a solution in the list above, or click Open…")
             for v in self.info.values():
                 v.setText("—")
             self.info_log.setText("")
@@ -2036,45 +2367,46 @@ class ExplorerPage(Page):
         I = abs(sol.I_left_mA)
         m = lambda v, f: format(v, f).replace("-", "−")
         la = electrode_titles(sol)[2]
-        side = "无（两电极等电位）" if la is None else "−x（左）电极" if la else "+x（右）电极"
-        self.info["bias"].setText(f"{m(P.V_bias, '+.4g')} V（左 {m(sol.V_left, '+.2f')} V / 右 {m(sol.V_right, '+.2f')} V）")
+        side = ("none (both electrodes at the same potential)" if la is None else
+                "−x (left) electrode" if la else "+x (right) electrode")
+        self.info["bias"].setText(f"{m(P.V_bias, '+.4g')} V (left {m(sol.V_left, '+.2f')} V / right {m(sol.V_right, '+.2f')} V)")
         self.info["anode"].setText(f"{side} · anode_side = {P.anode_side}")
         self.info["power"].setText(f"{P.P_avg_mW * gen:.3g} mW = P_avg {P.P_avg_mW:.3g} × gen_factor {gen:.3g}")
-        self.info["spot"].setText(f"{P.spot_w_um:.3g} µm（1/e² 半径）")
-        self.info["grid"].setText(f"{g.Nx} × {g.Nz}（GaAs {g.ks} 行）")
+        self.info["spot"].setText(f"{P.spot_w_um:.3g} µm (1/e² radius)")
+        self.info["grid"].setText(f"{g.Nx} × {g.Nz} ({g.ks} GaAs rows)")
         self.info["cell"].setText(f"dx {g.dx.min():.3g} µm · dz {g.dz.min():.3g} µm")
         self.info["I"].setText(f"I_left {m(sol.I_left_mA, '+.4f')} · I_right {m(sol.I_right_mA, '+.4f')} mA")
-        self.info["gain"].setText(f"{I / ug:.3f}（|I| / I_unity，I_unity = {ug:.3f} mA）" if ug else "—")
+        self.info["gain"].setText(f"{I / ug:.3f} (|I| / I_unity, I_unity = {ug:.3f} mA)" if ug else "—")
         from ltemsim import Params
         d0 = Params()
         diff = [f"{k} = {getattr(P, k)}" for k in P.__dataclass_fields__
                 if k not in _NOT_LISTED and getattr(P, k) != getattr(d0, k)]
-        self.info["other"].setText(" · ".join(diff) if diff else "无（其余均为默认值）")
+        self.info["other"].setText(" · ".join(diff) if diff else "none (all other parameters at their defaults)")
         rows = []
         for st in sol.log or []:
             c = st.get("converged")
-            mark = (f"<span style='color:{t.success}'>✓ 收敛</span>" if c else
-                    f"<span style='color:{t.danger}'>✗ 未收敛</span>" if c is not None else
+            mark = (f"<span style='color:{t.success}'>✓ converged</span>" if c else
+                    f"<span style='color:{t.danger}'>✗ not converged</span>" if c is not None else
                     f"<span style='color:{t.muted}'>—</span>")
-            bits = [f"{st.get('steps')} 步" if st.get("steps") is not None else "",
+            bits = [f"{st.get('steps')} steps" if st.get("steps") is not None else "",
                     f"t_sim = {st['t_sim']:.3g}" if isinstance(st.get("t_sim"), (int, float)) else "",
-                    f"墙钟 {st['t_wall']:.1f} s" if isinstance(st.get("t_wall"), (int, float)) else ""]
+                    f"wall time {st['t_wall']:.1f} s" if isinstance(st.get("t_wall"), (int, float)) else ""]
             rows.append(f"{mark} &nbsp;<b>{st.get('stage', '?')}</b><br><span style='color:{t.muted}'>"
                         f"&nbsp;&nbsp;&nbsp;&nbsp;{' · '.join(b for b in bits if b)}</span>")
-        self.info_log.setText("<br>".join(rows) if rows else f"<span style='color:{t.muted}'>无日志</span>")
+        self.info_log.setText("<br>".join(rows) if rows else f"<span style='color:{t.muted}'>no log</span>")
 
     def _show_params(self):
         if self.L is None:
             return
         dlg = QDialog(self)
-        dlg.setWindowTitle(f"参数 — {self.L.name}")
+        dlg.setWindowTitle(f"Parameters — {self.L.name}")
         dlg.resize(560, 640)
         lay = QVBoxLayout(dlg)
         ed = QPlainTextEdit(self.L.P.to_json())
         ed.setObjectName("log")
         ed.setReadOnly(True)
         lay.addWidget(ed)
-        lay.addWidget(button("关闭", dlg.accept))
+        lay.addWidget(button("Close", dlg.accept))
         dlg.exec()
 
     # ------------------------------------------------------------------ tabs / export

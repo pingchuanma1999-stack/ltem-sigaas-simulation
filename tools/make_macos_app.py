@@ -24,7 +24,7 @@ REPO={repo}
 PY="$REPO/.venv/bin/python"
 LOG="$HOME/Library/Logs/LTEMSim.log"
 if [ ! -x "$PY" ]; then
-  /usr/bin/osascript -e 'display alert "LTEM Sim 无法启动" message "找不到 Python 环境：'"$PY"'\\n\\n请在项目目录运行：\\npython3 -m venv .venv && .venv/bin/pip install -r requirements-gui.txt\\n然后重新运行 tools/make_macos_app.py。" as critical'
+  /usr/bin/osascript -e 'display alert "LTEM Sim cannot start" message "Python environment not found: '"$PY"'\\n\\nIn the project folder run:\\npython3 -m venv .venv && .venv/bin/pip install -r requirements-gui.txt\\nthen run tools/make_macos_app.py again." as critical'
   exit 1
 fi
 cd "$REPO" || exit 1

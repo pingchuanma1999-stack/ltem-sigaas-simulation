@@ -6,7 +6,7 @@ import os
 import sys
 import traceback
 
-from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtCore import QEvent, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QStackedWidget,
@@ -19,23 +19,23 @@ from .widgets.common import Page, label, reveal
 
 # (id, section, title, icon, module, class)
 PAGES = [
-    ("home", "概览", "首页", "home", "home", "HomePage"),
-    ("steady", "模拟", "稳态求解", "grid", "steady", "SteadyPage"),
-    ("sweep", "模拟", "参数扫描", "sliders", "sweep", "SweepPage"),
-    ("pulse", "模拟", "单脉冲发射链", "zap", "pulse_chain", "PulseChainPage"),
-    ("fdtd", "模拟", "泵浦 FDTD", "waves", "fdtd", "FdtdPage"),
-    ("tip", "模拟", "针尖位置链", "target", "tip_positions", "TipPositionsPage"),
-    ("explorer", "分析", "解查看器", "layers", "explorer", "ExplorerPage"),
-    ("results", "分析", "结果浏览", "folder", "results", "ResultsPage"),
-    ("measured", "分析", "实测数据", "table", "measured", "MeasuredPage"),
-    ("tools", "分析", "分析与作图", "chart", "tools", "ToolsPage"),
-    ("jobs", "系统", "任务中心", "list", "jobs_page", "JobsPage"),
-    ("docs", "系统", "文档", "book", "docs", "DocsPage"),
+    ("home", "Overview", "Home", "home", "home", "HomePage"),
+    ("steady", "Simulate", "Steady state", "grid", "steady", "SteadyPage"),
+    ("sweep", "Simulate", "Parameter sweep", "sliders", "sweep", "SweepPage"),
+    ("pulse", "Simulate", "Single-pulse chain", "zap", "pulse_chain", "PulseChainPage"),
+    ("fdtd", "Simulate", "Pump FDTD (optics)", "waves", "fdtd", "FdtdPage"),
+    ("tip", "Simulate", "Tip-position chain", "target", "tip_positions", "TipPositionsPage"),
+    ("explorer", "Analyze", "Solution explorer", "layers", "explorer", "ExplorerPage"),
+    ("results", "Analyze", "Results browser", "folder", "results", "ResultsPage"),
+    ("measured", "Analyze", "Measured data", "table", "measured", "MeasuredPage"),
+    ("tools", "Analyze", "Tools & figures", "chart", "tools", "ToolsPage"),
+    ("jobs", "System", "Job center", "list", "jobs_page", "JobsPage"),
+    ("docs", "System", "Docs", "book", "docs", "DocsPage"),
 ]
 
 
 class _ErrorPage(Page):
-    title = "页面加载失败"
+    title = "Page failed to load"
 
     def __init__(self, err):
         super().__init__()
@@ -45,10 +45,45 @@ class _ErrorPage(Page):
         self.body.addStretch(1)
 
 
+class _PageHolder(QScrollArea):
+    """Shows a page at exactly the viewport size; scrolls only below the page's minimum size.
+
+    (A plain widgetResizable scroll area sizes height-for-width pages to their preferred height, so pages
+    with wrapped labels and large plots would scroll as a whole even when they could shrink.)
+    """
+
+    def __init__(self, page: QWidget):
+        super().__init__()
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setWidgetResizable(False)
+        self.setWidget(page)
+        page.installEventFilter(self)
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.Type.LayoutRequest:
+            QTimer.singleShot(0, self._fit)
+        return False
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+
+    def _fit(self):
+        w = self.widget()
+        if w is None:
+            return
+        m = w.minimumSizeHint().expandedTo(w.minimumSize())
+        avail = self.maximumViewportSize()
+        need_w, need_h = m.width() > avail.width(), m.height() > avail.height()
+        width = avail.width() - (self.verticalScrollBar().sizeHint().width() if need_h else 0)
+        height = avail.height() - (self.horizontalScrollBar().sizeHint().height() if need_w else 0)
+        w.resize(max(width, m.width()), max(height, m.height()))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(paths.APP_NAME + " — SI-GaAs 近场 LTEM 模拟")
+        self.setWindowTitle(paths.APP_NAME + " — SI-GaAs near-field LTEM simulation")
         scr = QApplication.primaryScreen()
         avail = scr.availableGeometry() if scr is not None else None
         if avail is not None:
@@ -97,7 +132,7 @@ class MainWindow(QMainWindow):
         head.setContentsMargins(18, 0, 18, 10)
         head.setSpacing(2)
         head.addWidget(label("LTEM Sim", "appTitle"))
-        head.addWidget(label("SI-GaAs 近场太赫兹发射模拟", "appSubtitle"))
+        head.addWidget(label("SI-GaAs near-field THz emission", "appSubtitle"))
         lay.addLayout(head)
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
@@ -111,13 +146,13 @@ class MainWindow(QMainWindow):
                 section = sec
                 it = QListWidgetItem()
                 it.setFlags(Qt.ItemFlag.NoItemFlags)
-                it.setSizeHint(QSize(200, 30))
+                it.setSizeHint(QSize(200, 28))
                 self.nav.addItem(it)
                 self.nav.setItemWidget(it, label(sec.upper(), "navSection"))
             it = QListWidgetItem(title)
             it.setData(Qt.ItemDataRole.UserRole, pid)
             it.setData(Qt.ItemDataRole.UserRole + 1, ic)
-            it.setSizeHint(QSize(200, 36))
+            it.setSizeHint(QSize(200, 32))
             self.nav.addItem(it)
             self._items[pid] = it
         self.nav.currentItemChanged.connect(self._on_nav)
@@ -130,7 +165,7 @@ class MainWindow(QMainWindow):
         jb = QVBoxLayout(self.job_box)
         jb.setContentsMargins(10, 8, 10, 8)
         jb.setSpacing(4)
-        self.job_label = label("无运行中的任务", "muted", wrap=True)
+        self.job_label = label("No running jobs", "muted", wrap=True)
         self.job_bar = QProgressBar()
         self.job_bar.setTextVisible(False)
         self.job_bar.setFixedHeight(6)
@@ -146,7 +181,7 @@ class MainWindow(QMainWindow):
         row.setContentsMargins(12, 2, 12, 0)
         self.theme_btn = QPushButton("")
         self.theme_btn.setObjectName("flat")
-        self.theme_btn.setToolTip("切换主题：跟随系统 → 浅色 → 深色")
+        self.theme_btn.setToolTip("Switch theme: system → light → dark")
         self.theme_btn.clicked.connect(self._cycle_theme)
         row.addWidget(self.theme_btn)
         row.addStretch(1)
@@ -157,26 +192,26 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self):
         mb = self.menuBar()
-        m = mb.addMenu("文件")
-        a = QAction("打开解文件 (solution.npz)…", self)
+        m = mb.addMenu("File")
+        a = QAction("Open solution (solution.npz)…", self)
         a.setShortcut(QKeySequence.StandardKey.Open)
         a.triggered.connect(self._open_solution)
         m.addAction(a)
-        a = QAction("在访达中打开 results 文件夹", self)
+        a = QAction("Show results folder in Finder", self)
         a.triggered.connect(lambda: reveal(paths.RESULTS))
         m.addAction(a)
-        a = QAction("在访达中打开项目文件夹", self)
+        a = QAction("Show project folder in Finder", self)
         a.triggered.connect(lambda: reveal(paths.ROOT))
         m.addAction(a)
         m.addSeparator()
-        a = QAction("退出", self)
+        a = QAction("Quit", self)
         a.setShortcut(QKeySequence.StandardKey.Quit)
         a.triggered.connect(self.close)
         m.addAction(a)
 
-        m = mb.addMenu("视图")
+        m = mb.addMenu("View")
         grp = QActionGroup(self)
-        for mode, text in (("system", "跟随系统"), ("light", "浅色"), ("dark", "深色")):
+        for mode, text in (("system", "System"), ("light", "Light"), ("dark", "Dark")):
             a = QAction(text, self, checkable=True)
             a.setChecked(ThemeManager.instance().mode == mode)
             a.triggered.connect(lambda _=False, md=mode: self._set_theme(md))
@@ -191,30 +226,30 @@ class MainWindow(QMainWindow):
             a.triggered.connect(lambda _=False, p=pid: self.navigate(p))
             m.addAction(a)
 
-        m = mb.addMenu("任务")
+        m = mb.addMenu("Jobs")
         grp = QActionGroup(self)
         for n in (1, 2, 3, 4):
-            a = QAction(f"同时运行 {n} 个任务", self, checkable=True)
+            a = QAction(f"Run {n} job{'s' if n > 1 else ''} at a time", self, checkable=True)
             a.setChecked(self.jobs.max_parallel == n)
             a.triggered.connect(lambda _=False, k=n: self._set_parallel(k))
             grp.addAction(a)
             m.addAction(a)
         m.addSeparator()
-        a = QAction("任务中心", self)
+        a = QAction("Job center", self)
         a.triggered.connect(lambda: self.navigate("jobs"))
         m.addAction(a)
 
-        m = mb.addMenu("帮助")
-        a = QAction("文档", self)
+        m = mb.addMenu("Help")
+        a = QAction("Docs", self)
         a.triggered.connect(lambda: self.navigate("docs"))
         m.addAction(a)
-        a = QAction("关于 LTEM Sim", self)
+        a = QAction("About LTEM Sim", self)
         a.triggered.connect(self._about)
         m.addAction(a)
 
     def _build_status(self):
         sb = self.statusBar()
-        self.status_left = QLabel(f"项目: {paths.ROOT}")
+        self.status_left = QLabel(f"Project: {paths.ROOT}")
         sb.addWidget(self.status_left, 1)
         py = f"Python {sys.version_info.major}.{sys.version_info.minor}"
         try:
@@ -240,10 +275,7 @@ class MainWindow(QMainWindow):
                     w = getattr(m, cls)()
                 except Exception:
                     w = _ErrorPage(traceback.format_exc())
-                holder = QScrollArea()          # only scrolls when the window is smaller than the page's minimum
-                holder.setWidgetResizable(True)
-                holder.setFrameShape(QFrame.Shape.NoFrame)
-                holder.setWidget(w)
+                holder = _PageHolder(w)
                 self.stack.addWidget(holder)
                 self._holders[pid] = holder
                 self.pages[pid] = w
@@ -278,13 +310,13 @@ class MainWindow(QMainWindow):
             it.setIcon(icons.icon(it.data(Qt.ItemDataRole.UserRole + 1), t.muted, t.accent))
         mode = ThemeManager.instance().mode
         self.theme_btn.setIcon(icons.icon("moon" if t.dark else "sun", t.muted))
-        self.theme_btn.setText({"system": "跟随系统", "light": "浅色", "dark": "深色"}[mode])
+        self.theme_btn.setText({"system": "System", "light": "Light", "dark": "Dark"}[mode])
 
     def _set_theme(self, mode):
         ThemeManager.instance().apply(mode)
         self.settings.setValue("theme", mode)
         for a in self._theme_actions.actions():
-            a.setChecked(a.text() == {"system": "跟随系统", "light": "浅色", "dark": "深色"}[mode])
+            a.setChecked(a.text() == {"system": "System", "light": "Light", "dark": "Dark"}[mode])
 
     def _cycle_theme(self):
         order = ["system", "light", "dark"]
@@ -301,12 +333,12 @@ class MainWindow(QMainWindow):
         run = self.jobs.running()
         queued = [j for j in self.jobs.active() if j.status != RUNNING]
         if not run and not queued:
-            self.job_label.setText("无运行中的任务")
+            self.job_label.setText("No running jobs")
             self.job_bar.setRange(0, 1)
             self.job_bar.setValue(0)
             return
         j = run[0] if run else queued[0]
-        extra = f"（另有 {len(run) + len(queued) - 1} 个）" if len(run) + len(queued) > 1 else ""
+        extra = f" (+{len(run) + len(queued) - 1} more)" if len(run) + len(queued) > 1 else ""
         txt = f"▶ {j.title}{extra}"
         if j.progress_text:
             txt += f"\n{j.progress_text}"
@@ -319,36 +351,36 @@ class MainWindow(QMainWindow):
 
     def _on_job_finished(self, job):
         self._update_jobs_indicator()
-        msg = {"finished": "已完成", "failed": "失败", "cancelled": "已取消"}.get(job.status, job.status)
-        self.statusBar().showMessage(f"任务「{job.title}」{msg}", 8000)
+        msg = {"finished": "finished", "failed": "failed", "cancelled": "was cancelled"}.get(job.status, job.status)
+        self.statusBar().showMessage(f"Job \"{job.title}\" {msg}", 8000)
         if job.status in ("finished", "failed") and not self.isActiveWindow():
             QApplication.alert(self)
 
     # ------------------------------------------------------------------ misc
     def _open_solution(self):
-        path, _ = QFileDialog.getOpenFileName(self, "打开稳态解", str(paths.RESULTS), "Solution (*.npz)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open steady-state solution", str(paths.RESULTS), "Solution (*.npz)")
         if path:
             self.navigate("explorer", path=path)
 
     def _about(self):
-        QMessageBox.about(self, "关于 LTEM Sim",
-                          "<h3>LTEM Sim</h3><p>SI-GaAs 近场 LTEM 模拟的桌面界面。</p>"
-                          "<p>稳态漂移-扩散 + EL2 求解器、单脉冲发射链（泵浦 FDTD → 载流子动力学 → 针尖解调）、"
-                          "参数扫描与结果分析。</p>"
-                          f"<p>项目路径：{paths.ROOT}<br>Python：{sys.executable}</p>")
+        QMessageBox.about(self, "About LTEM Sim",
+                          "<h3>LTEM Sim</h3><p>Desktop interface for the SI-GaAs near-field LTEM simulation.</p>"
+                          "<p>Steady-state drift-diffusion + EL2 solver, single-pulse emission chain (pump FDTD → carrier dynamics → "
+                          "tip demodulation), parameter sweeps and result analysis.</p>"
+                          f"<p>Project: {paths.ROOT}<br>Python: {sys.executable}</p>")
 
     def closeEvent(self, e):
         dirty = [title for pid, sec, title, *_ in PAGES
                  if hasattr(self.pages.get(pid), "is_dirty") and self.pages[pid].is_dirty()]
         if dirty:
-            r = QMessageBox.question(self, "有未保存的修改", f"「{'、'.join(dirty)}」有未保存的修改。不保存直接退出吗？")
+            r = QMessageBox.question(self, "Unsaved changes", f"{', '.join(dirty)}: unsaved changes. Quit without saving?")
             if r != QMessageBox.StandardButton.Yes:
                 e.ignore()
                 return
         active = self.jobs.active()
         if active:
-            r = QMessageBox.question(self, "仍有任务在运行",
-                                     f"还有 {len(active)} 个任务在运行或排队。退出将终止它们，确定退出吗？")
+            r = QMessageBox.question(self, "Jobs still running",
+                                     f"{len(active)} job(s) are running or queued. Quitting stops them. Quit anyway?")
             if r != QMessageBox.StandardButton.Yes:
                 e.ignore()
                 return

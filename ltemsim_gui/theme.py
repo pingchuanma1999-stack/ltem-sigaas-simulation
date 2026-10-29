@@ -57,10 +57,10 @@ QFrame#sidebar {{ background: {t.sidebar}; border-right: 1px solid {t.border}; }
 QLabel#appTitle {{ font-size: 16px; font-weight: 700; }}
 QLabel#appSubtitle {{ color: {t.muted}; font-size: 11px; }}
 QListWidget#nav {{ background: transparent; border: none; padding: 4px 6px; }}
-QListWidget#nav::item {{ padding: 8px 10px; margin: 1px 0; border-radius: 8px; color: {t.text}; }}
+QListWidget#nav::item {{ padding: 6px 10px; margin: 1px 0; border-radius: 8px; color: {t.text}; }}
 QListWidget#nav::item:hover {{ background: {t.surface2}; }}
 QListWidget#nav::item:selected {{ background: {t.accent_soft}; color: {t.accent}; font-weight: 600; }}
-QLabel#navSection {{ color: {t.muted}; font-size: 11px; font-weight: 600; padding: 10px 16px 2px 16px; }}
+QLabel#navSection {{ color: {t.muted}; font-size: 11px; font-weight: 600; padding: 4px 16px 0 16px; }}
 
 /* ---------- cards & headers ---------- */
 QFrame#card {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 12px; }}
@@ -112,7 +112,7 @@ QCheckBox::indicator:checked, QGroupBox::indicator:checked, QTreeView::indicator
 QTableView::indicator:checked {{ background: {t.accent}; border-color: {t.accent}; image: url("{(ASSETS / ("check-dark.svg" if t.dark else "check-light.svg")).as_posix()}"); }}
 QCheckBox::indicator:disabled {{ background: {t.surface2}; border-color: {t.border}; }}
 QRadioButton::indicator {{ width: 14px; height: 14px; border: 1px solid {t.muted}; border-radius: 8px; background: {t.surface}; }}
-QRadioButton::indicator:checked {{ background: {t.surface}; border: 4px solid {t.accent}; }}
+QRadioButton::indicator:checked {{ width: 6px; height: 6px; background: {t.surface}; border: 5px solid {t.accent}; border-radius: 8px; }}
 QCheckBox[modified="true"] {{ color: {t.accent}; font-weight: 600; }}
 QLabel[modified="true"] {{ color: {t.accent}; font-weight: 600; }}
 

@@ -66,10 +66,10 @@ class ImageView(QWidget):
             self.caption.setMinimumWidth(40)
             self.caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)   # elided, never widens the pane
             bar.addWidget(self.caption, 1)
-            for text, tip, slot in (("适应", "适应窗口（双击图像也可）", lambda: self.view.fit()),
-                                    ("1:1", "原始大小", self.actual_size),
-                                    ("访达", "在访达中显示", lambda: self.path and reveal(self.path)),
-                                    ("打开", "用默认程序打开", lambda: self.path and open_external(self.path))):
+            for text, tip, slot in (("Fit", "Fit to window (or double-click the image)", lambda: self.view.fit()),
+                                    ("1:1", "Actual size", self.actual_size),
+                                    ("Finder", "Show in Finder", lambda: self.path and reveal(self.path)),
+                                    ("Open", "Open with the default app", lambda: self.path and open_external(self.path))):
                 b = QPushButton(text)
                 b.setObjectName("flat")
                 b.setToolTip(tip)
@@ -85,7 +85,7 @@ class ImageView(QWidget):
         self.item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self.scene.addItem(self.item)
         lay.addWidget(self.view, 1)
-        self.empty = QLabel("暂无图像", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.empty = QLabel("No image", alignment=Qt.AlignmentFlag.AlignCenter)
         self.empty.setObjectName("muted")
         self.empty.setWordWrap(True)
         self.empty.setMinimumWidth(80)
@@ -95,11 +95,11 @@ class ImageView(QWidget):
     def load(self, path):
         p = Path(path) if path else None
         if p is None or not p.exists():
-            self.clear(f"文件不存在: {path}" if path else "暂无图像")
+            self.clear(f"File not found: {path}" if path else "No image")
             return False
         pm = QPixmap(str(p))
         if pm.isNull():
-            self.clear(f"无法读取图像: {p.name}")
+            self.clear(f"Cannot read image: {p.name}")
             return False
         self.path = p
         self.item.setPixmap(pm)
@@ -114,7 +114,7 @@ class ImageView(QWidget):
         self.view.fit()
         return True
 
-    def clear(self, msg="暂无图像"):
+    def clear(self, msg="No image"):
         self.path = None
         self.item.setPixmap(QPixmap())
         self.view.hide()

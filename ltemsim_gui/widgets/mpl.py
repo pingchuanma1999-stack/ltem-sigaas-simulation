@@ -56,6 +56,12 @@ class PlotWidget(QWidget):
         self._style_toolbar()
         ThemeManager.instance().changed.connect(self._on_theme)
 
+    def sizeHint(self):
+        return QSize(480, 320)
+
+    def minimumSizeHint(self):
+        return QSize(220, 160)
+
     def _rebuild_toolbar(self):
         """New toolbar for the current canvas (matplotlib picks light/dark icons when it is created)."""
         if self.toolbar is None:
@@ -108,7 +114,7 @@ QLabel {{ color: {t.muted}; font-size: 11px; }}""")
                 self.redraw(fig)
             except Exception as e:      # show the error in the figure instead of crashing the GUI
                 fig.clear()
-                fig.text(0.5, 0.5, f"绘图失败:\n{type(e).__name__}: {e}", ha="center", va="center", wrap=True,
+                fig.text(0.5, 0.5, f"Plot failed:\n{type(e).__name__}: {e}", ha="center", va="center", wrap=True,
                          color=ThemeManager.instance().tokens.danger)
         self.canvas.draw_idle()
 
@@ -135,7 +141,7 @@ QLabel {{ color: {t.muted}; font-size: 11px; }}""")
         self.canvas.draw_idle()
 
     def save_dialog(self, default_name="figure.png"):
-        path, _ = QFileDialog.getSaveFileName(self, "保存图像", default_name, "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save figure", default_name, "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)")
         if path:
             self.export(path)
 

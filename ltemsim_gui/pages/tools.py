@@ -1,4 +1,4 @@
-"""分析与作图: catalogue of the remaining analysis, figure and maintenance scripts.
+"""Tools & figures: catalogue of the remaining analysis, figure and maintenance scripts.
 
 Every tool is one entry of TOOLS: its script, arguments (FieldSpecs and/or a picker), inputs, outputs and
 prerequisites (checked live), how it is submitted to the JobManager and how its outputs are shown (PNG tabs,
@@ -43,8 +43,9 @@ FBC = R / "field_bending_chain"
 HEIGHTS = (10, 15, 25, 45, 80, 130, 200, 270, 330, 370)
 X7 = (-7.5, -5.0, -2.5, 0.0, 2.5, 5.0, 7.5)
 X5 = (5.0, 2.5, 0.0, -2.5, -5.0)
-GROUPS = ("分析", "作图", "维护")
-PAGE_ZH = {"tip": "针尖位置链", "pulse": "单脉冲发射链", "steady": "稳态求解", "fdtd": "泵浦 FDTD", "sweep": "参数扫描"}
+GROUPS = ("Analysis", "Figures", "Maintenance")
+PAGE_NAMES = {"tip": "Tip-position chain", "pulse": "Single-pulse chain", "steady": "Steady state",
+              "fdtd": "Pump FDTD (optics)", "sweep": "Parameter sweep"}
 
 
 # ============================================================================ helpers
@@ -133,15 +134,17 @@ def _xval(p: Path):
 
 # ---------------------------------------------------------------------------- prerequisites
 PRODUCERS = {
-    "tip": ("tip", "在『针尖位置链』页面运行 simulate，输出到 results/tip_positions/P2mW_sym（约 20–50 分钟；"
-                   "这些 npz 被 gitignore，仓库中没有）"),
-    "pulse": ("pulse", "在『单脉冲发射链』页面运行对应的链（输出放到 results/pulse_chain/<运行名>/）"),
-    "steady": ("steady", "在『稳态求解』页面运行生产网格，输出文件夹设为 results/baseline（约 6–7 分钟）"),
-    "fdtd": ("fdtd", "在『泵浦 FDTD』页面运行，输出到 results/fdtd_pump"),
-    "fbc": ("tool:field_bending_chain", "运行本页的『场线弯曲对近场信号的贡献』，再把 summary.json 放到 "
-                                        "results/field_bending_chain/"),
-    "power": ("tool:power_dependence", "运行本页的『信号随泵浦功率的变化』（X = +5 与 −5），再把 JSON 放到 "
-                                       "results/pulse_chain/power/"),
+    "tip": ("tip", "Run simulate on the Tip-position chain page with output results/tip_positions/P2mW_sym "
+                   "(≈ 20–50 min; these npz files are gitignored, so the repository has none)"),
+    "pulse": ("pulse", "Run the matching chain on the Single-pulse chain page (output into "
+                       "results/pulse_chain/<run name>/)"),
+    "steady": ("steady", "Run the production grid on the Steady state page with the output folder set to "
+                         "results/baseline (≈ 6–7 min)"),
+    "fdtd": ("fdtd", "Run the Pump FDTD (optics) page with output results/fdtd_pump"),
+    "fbc": ("tool:field_bending_chain", "Run “Field-bending contribution” on this page, then copy "
+                                        "its summary.json into results/field_bending_chain/"),
+    "power": ("tool:power_dependence", "Run “Signal vs pump power” on this page (X = +5 and −5), then copy the "
+                                       "JSON files into results/pulse_chain/power/"),
 }
 
 
@@ -152,11 +155,12 @@ def req(lab: str, files, producer=None, optional=False, hard=False) -> dict:
     n = sum(have)
     ok = n == len(files)
     if len(files) == 1:
-        detail = "" if ok else "不存在"
+        detail = "" if ok else "missing"
     else:
-        detail = f"{n}/{len(files)} 个文件"
+        detail = f"{n}/{len(files)} files"
         if not ok:
-            detail += f"，缺 {files[have.index(False)].name} 等"
+            k = len(files) - n
+            detail += f", missing {files[have.index(False)].name}" + (f" and {k - 1} more" if k > 1 else "")
     return dict(label=lab, ok=ok, detail=detail, producer=PRODUCERS.get(producer), optional=optional, hard=hard)
 
 
@@ -167,14 +171,14 @@ def cond(lab: str, ok: bool, detail="", producer=None, optional=False, hard=True
 
 
 def measured_req():
-    return req(_code("data/measured_tip_scan.csv") + "（实测 X 扫描，图中叠加）", [paths.MEASURED_CSV])
+    return req(_code("data/measured_tip_scan.csv") + " (measured X scan, overlaid)", [paths.MEASURED_CSV])
 
 
 def producer_name(target: str) -> str:
     """Display name of a PRODUCERS target: a page id or "tool:<id>"."""
     if target.startswith("tool:"):
         return BY_ID[target[5:]]["title"]
-    return PAGE_ZH.get(target, target)
+    return PAGE_NAMES.get(target, target)
 
 
 def curated(folder) -> bool:
@@ -185,7 +189,7 @@ def curated(folder) -> bool:
 
 
 def new_dir_line(tid: str) -> str:
-    return "新文件夹 " + _code(f"results/gui_runs/tool_{tid}_<时间>/") + "，其中："
+    return "New folder " + _code(f"results/gui_runs/tool_{tid}_<timestamp>/") + " containing:"
 
 
 def sub(s: str) -> str:
@@ -228,16 +232,16 @@ def fb_render(target, log):
     d = Path(target)
     items = [("image", "field_bending.png", d / "field_bending.png")]
     if (d / "summary.md").exists():
-        items.append(md_table("汇总表", (d / "summary.md").read_text(encoding="utf-8")))
+        items.append(md_table("Summary", (d / "summary.md").read_text(encoding="utf-8")))
     if log:
-        items.append(("text", "日志", clean_log(log), "field_bending_log.txt"))
+        items.append(("text", "Log", clean_log(log), "field_bending_log.txt"))
     return items
 
 
 def dir_history(committed_dir: Path | None, prefix: str, marker: str):
     out = [(f"{_rel(d)}  ·  {mtime_str(d / marker)}", d) for d in gui_dirs(prefix) if (d / marker).exists()]
     if committed_dir is not None and (committed_dir / marker).exists():
-        out.append((f"{_rel(committed_dir)}（仓库）  ·  {mtime_str(committed_dir / marker)}", committed_dir))
+        out.append((f"{_rel(committed_dir)} (committed)  ·  {mtime_str(committed_dir / marker)}", committed_dir))
     return out
 
 
@@ -281,18 +285,20 @@ def fbc_render(target, log):
         b, h = bent[x], hor[x]
         rows.append([f"{x:+.1f}", f"{b['a3']:.3e}", f"{h['a3']:.3e}"] +
                     [f"{b[k] / h[k]:.4f}" for k in ("a3", "a1", "a2", "a4", "far")])
-    items = [("plot", "a3：bent vs horizontal", draw),
-             ("table", "数值表", ["X (µm)", "a3 bent", "a3 horizontal", "a3 比值", "a1 比值", "a2 比值", "a4 比值",
-                                  "far 比值"], rows, "带限幅值（0.3–2 THz，d²S/dt²），比值 = bent / horizontal。")]
+    items = [("plot", "a3: bent vs horizontal", draw),
+             ("table", "Values", ["X (µm)", "a3 bent", "a3 horizontal", "a3 ratio", "a1 ratio", "a2 ratio", "a4 ratio",
+                                  "far ratio"], rows,
+              "Band-limited amplitudes (0.3–2 THz, d²S/dt²); ratio = bent / horizontal.")]
     tf = d / "tilt.json"
     if tf.exists():
         t = _vals(json.loads(tf.read_text()))
         zs = list(next(iter(t.values())).keys()) if t else []
         trows = [[f"{x:g}"] + [f"{t[x][z]['tilt_deg']:.3g}" for z in zs] for x in sorted(t)]
-        items.append(("table", "外加场倾角", ["x (µm)"] + [f"{z} 倾角 (°)" for z in zs], trows,
-                      "外加场在不同深度的倾角 arctan(E_z / E_x)（来自 X = 0 的 bent 运行的 Poisson 解）。"))
+        items.append(("table", "Applied-field tilt", ["x (µm)"] + [f"{z} tilt (°)" for z in zs], trows,
+                      "Tilt arctan(E_z / E_x) of the applied field at several depths (from the Poisson solution of "
+                      "the X = 0 bent run)."))
     if log:
-        items.append(("text", "日志", clean_log(log), "field_bending_chain_log.txt"))
+        items.append(("text", "Log", clean_log(log), "field_bending_chain_log.txt"))
     return items
 
 
@@ -359,14 +365,15 @@ def power_render(target, log):
         for r in rr:
             rows.append([name, f"{r['P_mW']:g}", f"{r['N_surface']:.3e}", f"{r['pairs_per_cm']:.3e}"] +
                         [f"{r[k]:.3e}" for k, _ in metrics])
-    note = "图中每个指标按所有文件中的最大值归一化（保留 X = +5 与 −5 的相对幅度）。"
+    note = "Each metric is normalized to its maximum over all files (keeps the relative amplitude of X = +5 vs −5)."
     if old:
-        note += "旧版 JSON：指标是 dS₂/dt 与 dJ_x/dt 的 RMS（不是 0.3–2 THz 带限幅值），不能与新版数值直接比较。"
-    items = [("plot", "功率依赖", draw),
-             ("table", "数值表", ["文件", "P (mW)", "N_surface (cm⁻³)", "pairs / cm"] + [k for k, _ in metrics],
+        note += (" Older JSON: the metrics are RMS values of dS₂/dt and dJ_x/dt (not 0.3–2 THz band-limited "
+                 "amplitudes) and cannot be compared directly with newer values.")
+    items = [("plot", "Power dependence", draw),
+             ("table", "Values", ["File", "P (mW)", "N_surface (cm⁻³)", "pairs / cm"] + [k for k, _ in metrics],
               rows, note)]
     if log:
-        items.append(("text", "日志", clean_log(log), "power_dependence_log.txt"))
+        items.append(("text", "Log", clean_log(log), "power_dependence_log.txt"))
     return items
 
 
@@ -377,9 +384,9 @@ def power_history():
         if js:
             out.append((f"{_rel(d)}  ·  {mtime_str(js[0])}", d))
     if list((PC / "power").glob("power_dependence_*.json")):
-        out.append(("results/pulse_chain/power（仓库，X = ±5）", PC / "power"))
+        out.append(("results/pulse_chain/power (committed, X = ±5)", PC / "power"))
     for f in sorted(PC.glob("power_dependence_*.json")):
-        out.append((f"{_rel(f)}（仓库，旧版）", f))
+        out.append((f"{_rel(f)} (committed, older format)", f))
     return out
 
 
@@ -402,7 +409,7 @@ def redemod_render(target, log):
     rows = _vals(d)
     Xs = sorted(rows)
     if not Xs:
-        return [("text", "结果", "JSON 为空：运行文件夹中没有 X*.npz。", "redemod.txt")]
+        return [("text", "Result", "Empty JSON: the run folder has no X*.npz files.", "redemod.txt")]
     ns = sorted({int(m.group(1)) for k in rows[Xs[0]] for m in [re.match(r"S(\d)_rms", k)] if m})
     keys = [f"dS{n}dt_rms" for n in ns] + [f"S{n}_rms" for n in ns]
     X = np.array(Xs)
@@ -424,12 +431,13 @@ def redemod_render(target, log):
     for k in keys:
         v = np.array([rows[x][k] for x in Xs], float)
         m = v.max() if v.max() > 0 else 1.0
-        trows.append([k] + [(f"{x / m:.2f}", f"原始值 {x:.4g}") for x in v])
-    items = [("plot", "重解调 X 扫描", draw),
-             ("table", "归一化表", ["指标"] + [f"X = {x:+.1f}" for x in Xs], trows,
-              f"{_rel(f)} — 每行按自身最大值归一化（与脚本打印的表相同）；悬停查看原始值。")]
+        trows.append([k] + [(f"{x / m:.2f}", f"raw value {x:.4g}") for x in v])
+    items = [("plot", "Re-demodulated X scan", draw),
+             ("table", "Normalized table", ["Metric"] + [f"X = {x:+.1f}" for x in Xs], trows,
+              f"{_rel(f)} — each row normalized to its own maximum (as in the script's printed table); "
+              "hover for raw values.")]
     if log:
-        items.append(("text", "日志", clean_log(log), "redemodulate_log.txt"))
+        items.append(("text", "Log", clean_log(log), "redemodulate_log.txt"))
     return items
 
 
@@ -466,7 +474,7 @@ def redemod_history():
     for d in pulse_run_dirs():
         files += list(d.glob("redemod_*.json"))
     files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-    return [(f"{_rel(f)}{'（仓库）' if committed(f) else ''}  ·  {mtime_str(f)}", f) for f in files]
+    return [(f"{_rel(f)}{' (committed)' if committed(f) else ''}  ·  {mtime_str(f)}", f) for f in files]
 
 
 # ============================================================================ tool: compare_scenarios
@@ -496,9 +504,9 @@ def compare_render(target, log):
     items = [("image", png.name, png)]
     md = png.with_suffix(".md")
     if md.exists():
-        items.append(md_table("数值表", md.read_text(encoding="utf-8")))
+        items.append(md_table("Values", md.read_text(encoding="utf-8")))
     if log:
-        items.append(("text", "日志", clean_log(log), "compare_log.txt"))
+        items.append(("text", "Log", clean_log(log), "compare_log.txt"))
     return items
 
 
@@ -509,7 +517,7 @@ def compare_history():
             out.append((f"{_rel(d)}  ·  {mtime_str(d / 'compare.png')}", d / "compare.png"))
     for png in sorted((R / "coarse_scenarios").glob("*.png")):
         if png.with_suffix(".md").exists():
-            out.append((f"{_rel(png)}（仓库）", png))
+            out.append((f"{_rel(png)} (committed)", png))
     return out
 
 
@@ -517,7 +525,7 @@ def compare_history():
 def text_render(fname):
     def render(target, log):
         txt = clean_log(log)
-        return [("text", "文本输出", txt or "（没有输出）", fname)]
+        return [("text", "Text output", txt or "(no output)", fname)]
     return render
 
 
@@ -527,7 +535,7 @@ def parse_waveform(text: str):
     def shift(s):
         try:
             d = ast.literal_eval(s)
-            return f"残差 {d['residual']:.2f} · 平移 {d['shift_ps']:+.3f} ps"
+            return f"residual {d['residual']:.2f} · shift {d['shift_ps']:+.3f} ps"
         except (ValueError, SyntaxError, KeyError, TypeError):
             return s
     rows = []
@@ -548,10 +556,11 @@ def waveform_render(target, log):
     items = []
     rows = parse_waveform(txt)
     if rows:
-        items.append(("table", "相位拟合表", ["成对比较（ref vs test）", "φ0 (°)", "τ (ps)", "残差 (°)", "同号最佳平移",
-                                              "反号最佳平移"], rows,
-                      "φ0：0° 同形，180° 反相，±90° 导数关系；τ 为延迟；残差为 0.25–1.6 THz 内相位拟合的 rms。"))
-    items.append(("text", "文本输出", txt or "（没有输出）", "waveform_phase_table.txt"))
+        items.append(("table", "Phase fits", ["Pair (ref vs test)", "φ0 (°)", "τ (ps)", "Residual (°)",
+                                             "Best shift, same sign", "Best shift, opposite sign"], rows,
+                      "φ0: 0° same shape, 180° inverted, ±90° derivative relation; τ is the delay; the residual is the "
+                      "rms of the phase fit over 0.25–1.6 THz."))
+    items.append(("text", "Text output", txt or "(no output)", "waveform_phase_table.txt"))
     return items
 
 
@@ -591,17 +600,18 @@ def dember_render(target, log):
             for V, pts in sorted(b["V"].items(), reverse=True):
                 rows.append([f"{b['T']:.0f}", f"{b['Dn']:.0f}", f"{V:g}"] + [f"{v:.2f}" for _, v in pts])
         Xs = [x for x, _ in next(iter(blocks[0]["V"].values()))] if blocks[0]["V"] else []
-        items.append(("plot", "X 扫描", draw))
-        items.append(("table", "数值表", ["T (K)", "D_n (cm²/s)", "V (V)"] + [f"X = {x:+.1f}" for x in Xs], rows,
-                      "每个温度内按两种偏压的最大值归一化（旧的一阶导数 RMS 指标）。"))
-    items.append(("text", "文本输出", txt or "（没有输出）", "dember_interference.txt"))
+        items.append(("plot", "X scan", draw))
+        items.append(("table", "Values", ["T (K)", "D_n (cm²/s)", "V (V)"] + [f"X = {x:+.1f}" for x in Xs], rows,
+                      "Normalized within each temperature to the maximum over both biases (older first-derivative "
+                      "RMS metric)."))
+    items.append(("text", "Text output", txt or "(no output)", "dember_interference.txt"))
     return items
 
 
-NUMERIC_TESTS = (("poisson", "裸 Poisson 场 vs 解析解（误差 < 12 %，E_z/E_x < 5 %）"),
-                 ("equilibrium", "V = 0、G = 0 的平衡态残差为零"),
-                 ("jacobian", "耦合 Jacobian 有限差分校验（相对误差 < 1e-5）"),
-                 ("dark", "10 V 暗态：收敛、|I| < 1e-3 mA、EL2⁺ 合理"))
+NUMERIC_TESTS = (("poisson", "Bare Poisson field vs analytic solution (error < 12 %, E_z/E_x < 5 %)"),
+                 ("equilibrium", "Zero residual at equilibrium (V = 0, G = 0)"),
+                 ("jacobian", "Finite-difference check of the coupled Jacobian (relative error < 1e-5)"),
+                 ("dark", "10 V dark state: converges, |I| < 1e-3 mA, plausible EL2⁺"))
 
 
 def numerics_render(target, log):
@@ -611,15 +621,15 @@ def numerics_render(target, log):
     rows, first_bad = [], True
     for name, desc in NUMERIC_TESTS:
         if f"{name} ok" in lines:
-            rows.append([name, desc, "✓ 通过"])
+            rows.append([name, desc, "✓ Passed"])
         elif failed and first_bad:
-            rows.append([name, desc, "✗ 失败"])
+            rows.append([name, desc, "✗ Failed"])
             first_bad = False
         else:
-            rows.append([name, desc, "— 未运行"])
+            rows.append([name, desc, "— Not run"])
     n_ok = sum(r[2].startswith("✓") for r in rows)
-    return [("table", "测试结果", ["测试", "检查内容", "结果"], rows, f"{n_ok}/{len(rows)} 项通过"),
-            ("text", "文本输出", txt or "（没有输出）", "test_numerics.txt")]
+    return [("table", "Test results", ["Test", "Checks", "Result"], rows, f"{n_ok}/{len(rows)} passed"),
+            ("text", "Text output", txt or "(no output)", "test_numerics.txt")]
 
 
 # ============================================================================ fixed-output figure tools
@@ -627,16 +637,16 @@ def png_render(target, log):
     files = target if isinstance(target, (list, tuple)) else [target]
     items = [("image", Path(f).name, Path(f)) for f in files if Path(f).suffix == ".png"]
     if log and clean_log(log):
-        items.append(("text", "日志", clean_log(log), "log.txt"))
+        items.append(("text", "Log", clean_log(log), "log.txt"))
     return items
 
 
-def fixed_history(files, note="当前版本"):
+def fixed_history(files, note="current version"):
     out = []
     for f in files:
         if Path(f).exists():
-            tag = "，仓库" if committed(f) else ""
-            out.append((f"{_rel(f)}（{note}{tag}）  ·  {mtime_str(f)}", Path(f)))
+            tag = ", committed" if committed(f) else ""
+            out.append((f"{_rel(f)} ({note}{tag})  ·  {mtime_str(f)}", Path(f)))
     return out
 
 
@@ -654,50 +664,58 @@ DEMBER_FOLDERS = ("P2mW_notipmap", "P2mW_notipmap_degen", "P2mW_notipmap_degen_T
 
 def _dember_req():
     have = sum(all(f.exists() for f in pc_npz(d, X7)) for d in DEMBER_FOLDERS)
-    return [cond(_code("results/pulse_chain/") + " 下 9 个扩散模型对比运行（缺失的自动跳过）", have == len(DEMBER_FOLDERS),
-                 f"{have}/{len(DEMBER_FOLDERS)} 个文件夹齐全", "pulse", optional=True, hard=False)]
+    return [cond("9 diffusion-model comparison runs in " + _code("results/pulse_chain/")
+                 + " (missing ones are skipped)", have == len(DEMBER_FOLDERS), f"{have}/{len(DEMBER_FOLDERS)} folders complete", "pulse", optional=True,
+                 hard=False)]
 
 
 SLIDE_KEYS = [
-    dict(key="steady", zh="稳态结果总览", files=("sim_steady_state.png",), runtime="约 1.5 s",
+    dict(key="steady", name="Steady-state overview", files=("sim_steady_state.png",), runtime="≈ 1.5 s",
          reqs=lambda: [req(_code(f"results/baseline/{f}"), [R / "baseline" / f], "steady")
                        for f in ("profiles_depth0.5um.csv", "tip_scan.csv")]),
-    dict(key="positions", zh="针尖位置链（路线 2）", files=("sim_positions.png",), runtime="< 1 s",
+    dict(key="positions", name="Tip-position chain (route 2)", files=("sim_positions.png",), runtime="< 1 s",
          reqs=_slide_reqs_positions),
-    dict(key="bending", zh="场线弯曲贡献", files=("sim_field_bending.png",), runtime="约 1.5 s（首次最多约 15 s）",
+    dict(key="bending", name="Field-line bending contribution", files=("sim_field_bending.png",),
+         runtime="≈ 1.5 s (first run up to ≈ 15 s)",
          reqs=lambda: [req(_code("results/field_bending_chain/summary.json"), [FBC / "summary.json"], "fbc")]),
-    dict(key="pump", zh="泵浦 FDTD", files=("sim_pump_fdtd.png",), runtime="约 2 s",
+    dict(key="pump", name="Pump FDTD", files=("sim_pump_fdtd.png",), runtime="≈ 2 s",
          reqs=lambda: [req(_code("results/fdtd_pump/{tip, notip, ratio}.npz"),
                            [R / "fdtd_pump" / f"{n}.npz" for n in ("tip", "notip", "ratio")], "fdtd")]),
-    dict(key="dynamics", zh="载流子动力学", files=("sim_dynamics.png",), runtime="约 3–4 s（含 0.6 ps PulseSim）",
+    dict(key="dynamics", name="Carrier dynamics", files=("sim_dynamics.png",),
+         runtime="≈ 3–4 s (includes a 0.6 ps PulseSim)",
          reqs=lambda: [req(_code("results/pulse_chain/P2mW_notipmap_degen/X+0.0.npz"),
                            pc_npz("P2mW_notipmap_degen", (0.0,)), "pulse")]),
-    dict(key="nearfield", zh="近场与解调", files=("sim_nearfield_demod.png",), runtime="约 1 s",
+    dict(key="nearfield", name="Near field and demodulation", files=("sim_nearfield_demod.png",), runtime="≈ 1 s",
          reqs=lambda: [req(_code("results/pulse_chain/P2mW_notipmap_degen/X{±5, ±2.5, 0}.npz"),
                            pc_npz("P2mW_notipmap_degen", X5), "pulse")]),
-    dict(key="xscan", zh="X 扫描对比", files=("sim_xscan.png", "xscan_A180.json"), runtime="约 1 s",
-         reqs=lambda: [req(_code("results/pulse_chain/P2mW_notipmap_degen/X*.npz（7 个 X）"),
+    dict(key="xscan", name="X-scan comparison", files=("sim_xscan.png", "xscan_A180.json"), runtime="≈ 1 s",
+         reqs=lambda: [req(_code("results/pulse_chain/P2mW_notipmap_degen/X*.npz (7 X values)"),
                            pc_npz("P2mW_notipmap_degen", X7), "pulse"),
                        req(_code("results/pulse_chain/P30mW_notipmap_degen/X*.npz"), pc_npz("P30mW_notipmap_degen", X7),
                            "pulse", optional=True),
-                       req(_code("results/tip_positions/*/demod_A180_h10.json（4 个路线 2 运行）"),
+                       req(_code("results/tip_positions/*/demod_A180_h10.json (4 route-2 runs)"),
                            [TP / f / "demod_A180_h10.json" for f in ("P2mW_sym", "P2mW_tipmap", "P30mW_sym",
                                                                       "P2mW_sym_Vtip12")], "tip", optional=True)]),
-    dict(key="dember", zh="扩散模型 / Dember", files=("sim_dember.png",), runtime="约 2 s", reqs=_dember_req),
-    dict(key="power", zh="功率依赖", files=("sim_power.png",), runtime="约 1 s",
+    dict(key="dember", name="Diffusion model / Dember", files=("sim_dember.png",), runtime="≈ 2 s", reqs=_dember_req),
+    dict(key="power", name="Power dependence", files=("sim_power.png",), runtime="≈ 1 s",
          reqs=lambda: [req(_code("results/pulse_chain/power/power_dependence_X±5.0_nsat2e+19.json"),
                            [PC / "power" / f"power_dependence_X{x}_nsat2e+19.json" for x in ("+5.0", "-5.0")],
                            "power")]),
-    dict(key="dipole", zh="偶极几何（英文）", files=("sim_dipole_geometry.png",), runtime="约 2 s", reqs=lambda: []),
+    dict(key="dipole", name="Dipole geometry (English)", files=("sim_dipole_geometry.png",), runtime="≈ 2 s",
+         reqs=lambda: []),
 ]
 CARTOON_KEYS = [
-    dict(key="distortions", zh="三种场畸变", files=("cartoon_distortions.png",), runtime="< 1 s", reqs=lambda: []),
-    dict(key="chain", zh="三段链路示意", files=("cartoon_chain.png",), runtime="< 1 s", reqs=lambda: []),
-    dict(key="oddeven", zh="X 扫描的奇偶分解", files=("cartoon_oddeven.png",), runtime="< 1 s", reqs=lambda: []),
-    dict(key="tippot", zh="针尖直流电势", files=("cartoon_tippot.png",), runtime="< 1 s", reqs=lambda: []),
-    dict(key="power", zh="光斑随功率展宽", files=("cartoon_power.png",), runtime="< 1 s", reqs=lambda: []),
-    dict(key="all", zh="全部 5 张", files=("cartoon_distortions.png", "cartoon_chain.png", "cartoon_oddeven.png",
-                                          "cartoon_tippot.png", "cartoon_power.png"), runtime="约 1.5 s", reqs=lambda: []),
+    dict(key="distortions", name="Three field distortions", files=("cartoon_distortions.png",), runtime="< 1 s",
+         reqs=lambda: []),
+    dict(key="chain", name="Three-stage chain", files=("cartoon_chain.png",), runtime="< 1 s", reqs=lambda: []),
+    dict(key="oddeven", name="Odd/even split of the X scan", files=("cartoon_oddeven.png",), runtime="< 1 s",
+         reqs=lambda: []),
+    dict(key="tippot", name="Tip DC potential", files=("cartoon_tippot.png",), runtime="< 1 s", reqs=lambda: []),
+    dict(key="power", name="Spot broadening with power", files=("cartoon_power.png",), runtime="< 1 s",
+         reqs=lambda: []),
+    dict(key="all", name="All 5 cartoons", files=("cartoon_distortions.png", "cartoon_chain.png", "cartoon_oddeven.png",
+                                                 "cartoon_tippot.png", "cartoon_power.png"), runtime="≈ 1.5 s",
+         reqs=lambda: []),
 ]
 KEYSETS = {"slide_keys": SLIDE_KEYS, "cartoon_keys": CARTOON_KEYS}
 
@@ -725,10 +743,11 @@ def keyed_history(keys):
             files = [SLIDES / f for f in k["files"]]
             if k["key"] == "all":
                 if all(f.exists() for f in files):
-                    out.append((f"all · 全部 {len(files)} 张（当前版本）", files, "all"))
+                    out.append((f"all · all {len(files)} figures (current version)", files, "all"))
             elif files[0].exists():
-                tag = "，仓库" if committed(files[0]) else ""
-                out.append((f"{k['key']} · {files[0].name}（当前版本{tag}）  ·  {mtime_str(files[0])}", files, k["key"]))
+                tag = ", committed" if committed(files[0]) else ""
+                out.append((f"{k['key']} · {files[0].name} (current version{tag})  ·  {mtime_str(files[0])}", files,
+                            k["key"]))
         return out
     return hist
 
@@ -741,23 +760,25 @@ def _v(ctx, k, default=None):
 def _rundir_inputs(ctx):
     d = ctx.get("rundir")
     if not d:
-        return ["（请在右侧选择一个单脉冲链运行文件夹）"]
-    return [_code(f"{_rel(d)}/X*.npz") + " — run_pulse_chain 的输出，需含 t、heights_nm、Ez_tip、n_center"]
+        return ["(pick a single-pulse chain run folder on the right)"]
+    return [_code(f"{_rel(d)}/X*.npz") + " — run_pulse_chain output with t, heights_nm, Ez_tip and n_center"]
 
 
 def _rundir_prereq(ctx):
     d = ctx.get("rundir")
     if not d:
-        return [cond("选择一个运行文件夹", False, "尚未选择", sel=True)]
+        return [cond("Pick a run folder", False, "none selected", sel=True)]
     xs = x_files(d)
-    out = [cond(_code(f"{_rel(d)}/X*.npz"), bool(xs), f"{len(xs)} 个 X" if xs else "文件夹中没有 X*.npz", "pulse")]
+    out = [cond(_code(f"{_rel(d)}/X*.npz"), bool(xs), f"{len(xs)} X values" if xs else "no X*.npz in the folder",
+                "pulse")]
     if xs:
         try:
             with np.load(xs[0]) as z:
                 miss = [k for k in ("t", "heights_nm", "Ez_tip", "n_center") if k not in z.files]
         except Exception as e:      # unreadable / truncated npz
-            miss = [f"无法读取 {xs[0].name}: {type(e).__name__}"]
-        out.append(cond("npz 含 t / heights_nm / Ez_tip / n_center", not miss, "缺 " + ", ".join(miss) if miss else ""))
+            miss = [f"cannot read {xs[0].name}: {type(e).__name__}"]
+        out.append(cond("npz contains t / heights_nm / Ez_tip / n_center", not miss,
+                        "missing " + ", ".join(miss) if miss else ""))
     return out
 
 
@@ -772,38 +793,41 @@ def _power_runtime(ctx):
     n = len(_v(ctx, "powers", ()) or ())
     if not n:
         return "—"
-    return f"约 {max(1, round(n * 22 / 60))}–{max(1, round(n * 55 / 60))} 分钟（{n} 个功率 × 22–55 s）"
+    return f"≈ {max(1, round(n * 22 / 60))}–{max(1, round(n * 55 / 60))} min ({n} powers × 22–55 s)"
 
 
 def _power_outputs(ctx):
     X, ns = float(_v(ctx, "X", 5.0)), float(_v(ctx, "n_sat", 2e19))
     return [new_dir_line("power_dependence"),
             sub(_code(f"power_dependence_X{X:+.1f}_nsat{ns:.0e}.json") +
-                " — 每个功率一行：P_mW、N_surface、pairs_per_cm、det2_band、det3_band、far_band"),
-            sub(_code(f"power_X{X:+.1f}_nsat{ns:.0e}_P*.npz") + " — 每个功率的波形"),
-            "幻灯片图 sim_power.png 读取的是固定的 results/pulse_chain/power/ 下 X = ±5 的 JSON，不受这里影响。"]
+                " — one row per power: P_mW, N_surface, pairs_per_cm, det2_band, det3_band, far_band"),
+            sub(_code(f"power_X{X:+.1f}_nsat{ns:.0e}_P*.npz") + " — waveforms for each power"),
+            "The slide figure sim_power.png reads the fixed X = ±5 JSON files in results/pulse_chain/power/ and is "
+            "not affected by this run."]
 
 
 def _power_prereq(ctx):
     P = _v(ctx, "powers", ()) or ()
-    return [cond("泵浦功率列表非空且全部 > 0", len(P) > 0 and all(p > 0 for p in P), f"{len(P)} 个功率")]
+    return [cond("Pump-power list is non-empty and all values > 0", len(P) > 0 and all(p > 0 for p in P),
+                 f"{len(P)} powers")]
 
 
 def _compare_inputs(ctx):
     sols = ctx.get("solutions") or []
-    out = [f"已选 {len(sols)} 个稳态解（右侧表格勾选）"]
+    out = [f"{len(sols)} steady-state solutions selected (tick them in the table on the right)"]
     out += [_code(_rel(p)) + f" → “{_esc(l)}”" for l, p in sols[:6]]
     if len(sols) > 6:
-        out.append(f"… 另有 {len(sols) - 6} 个")
-    return out + [_code("data/measured_tip_scan.csv") + " — 实测 +25 V 点"]
+        out.append(f"… and {len(sols) - 6} more")
+    return out + [_code("data/measured_tip_scan.csv") + " — measured +25 V points"]
 
 
 def _compare_prereq(ctx):
     sols = ctx.get("solutions") or []
     gone = [p for _, p in sols if not Path(p).exists()]
-    out = [cond("至少勾选 1 个稳态解", bool(sols), f"已选 {len(sols)} 个", sel=True)]
+    out = [cond("Tick at least 1 steady-state solution", bool(sols), f"{len(sols)} selected", sel=True)]
     if gone:
-        out.append(cond("所选的解文件都存在", False, f"已不存在：{', '.join(Path(p).name for p in gone[:3])}"))
+        out.append(cond("All selected solution files exist", False,
+                        f"no longer exist: {', '.join(Path(p).name for p in gone[:3])}"))
     return out + [measured_req()]
 
 
@@ -832,79 +856,99 @@ def _tool(**t):
 
 
 TOOLS = [
-    _tool(id="field_bending", group="分析", title="外加场弯曲（裸场静电）", short="5 种晶片/背面边界的场线倾斜", tag="≈1 s",
-         desc="只计算外加偏压的静电场（无载流子、无 EL2）：对 5 种晶片厚度 / 背面边界（30 µm 浮空参考；350 µm 与 "
-              "500 µm，背面浮空或接地）各做一次线性 Poisson 求解，给出场线随深度的倾角、竖直/水平极化比 ∫P_z/∫P_x "
-              "以及针尖 E_z 随 X 的扫描。情形与宽网格（CASES / BOX）写死在脚本中，没有可调参数。"
-              "注意：表中 tip peak X 只是 ±1.5 µm 两个反对称峰之间的平局判定，没有物理意义。",
+    _tool(id="field_bending", group="Analysis", title="Applied-field bending",
+         short="Bare electrostatics: field-line tilt, 5 cases", tag="≈1 s",
+         desc="Electrostatics of the applied bias only (no carriers, no EL2): one linear Poisson solve for each of "
+              "5 wafer-thickness / back-side cases (30 µm floating reference; 350 µm and 500 µm with a floating or "
+              "grounded back side), giving the field-line tilt vs depth, the vertical/horizontal polarization ratio "
+              "∫P_z/∫P_x and the tip E_z scanned over X. The cases and the wide grid (CASES / BOX) are hard-coded in "
+              "the script; there are no adjustable parameters. Note: “tip peak X” in the table is only a tie-break "
+              "between two antisymmetric peaks at ±1.5 µm and has no physical meaning.",
          script="scripts/field_bending.py", func="main", out=True,
-         runtime="约 1–2 秒（5 个网格，各一次线性 Poisson 求解 + 3 次针尖扫描求解）",
-         inputs=lambda c: [_code("data/measured_tip_scan.csv") + " — 实测 +25 V 针尖扫描（图中叠加）"],
+         runtime="≈ 1–2 s (5 grids, one linear Poisson solve each + 3 tip-scan solves)",
+         inputs=lambda c: [_code("data/measured_tip_scan.csv") + " — measured +25 V tip scan (overlaid)"],
          outputs=lambda c: [new_dir_line("field_bending"),
-                            sub(_code("field_bending.png") + " — 2×2：深度方向倾角、表面 E_z、带符号与绝对值的针尖 E_z"),
-                            sub(_code("summary.json") + " / " + _code("summary.md") + " — 5 种情形的汇总表")],
+                            sub(_code("field_bending.png") + " — 2×2: tilt vs depth, surface E_z, signed and "
+                                                             "absolute tip E_z"),
+                            sub(_code("summary.json") + " / " + _code("summary.md")
+                                + " — summary table of the 5 cases")],
          prereq=lambda c: [measured_req()],
          build=lambda c, out: (dict(kwargs=dict(out=_rel(out))), ""),
          target=out_target, render=fb_render,
          history=lambda: dir_history(R / "field_bending", "tool_field_bending", "summary.json")),
 
-    _tool(id="field_bending_chain", group="分析", title="场线弯曲对近场信号的贡献", short="单脉冲链：完整外加场 vs 去掉 E_z",
-         tag="5–10 min",
-         desc="路线 1（无针尖近场 E_z(h,t) + Pizzuto 有限偶极模型解调，简并扩散，t_end = 4 ps）：7 个光斑位置 "
-              "X = −7.5…+7.5 µm 各运行两次——完整外加场（E_x + E_z，bent）与去掉竖直分量（horizontal），"
-              "比较 1–4 次谐波与远场在 0.3–2 THz 的带限幅值。X = 0 的 bent 运行同时写出外加场倾角 tilt.json。"
-              "X 列表、偏压（25 V）、温度与解调设置固定在脚本中。",
+    _tool(id="field_bending_chain", group="Analysis", title="Field-bending contribution",
+         short="Pulse chain: full applied field vs E_z removed", tag="5–10 min",
+         desc="Route 1 (near-field E_z(h,t) without the tip + Pizzuto finite-dipole demodulation, degenerate "
+              "diffusion, t_end = 4 ps): two runs at each of 7 spot positions X = −7.5…+7.5 µm — the full applied "
+              "field (E_x + E_z, bent) and the field with its vertical component removed (horizontal) — comparing "
+              "the 0.3–2 THz band-limited amplitudes of harmonics 1–4 and of the far field. The X = 0 bent run also "
+              "writes the applied-field tilt tilt.json. The X list, bias (25 V), temperature and demodulation "
+              "settings are fixed in the script.",
          script="scripts/field_bending_chain.py", func="main", out=True,
-         runtime="约 5–10 分钟（14 次 PulseSim，每次约 17–40 s）",
-         specs=lambda: [FieldSpec("P_avg_mW", 2.0, "float", "平均泵浦功率 P_avg", "mW",
-                                  "泵浦平均功率。其余设置（X 列表、V_bias、T、解调）固定在脚本中。", "参数", minimum=1e-4)],
-         inputs=lambda c: ["无（纯模拟，不依赖其它结果）"],
+         runtime="≈ 5–10 min (14 PulseSim runs, ≈ 17–40 s each)",
+         specs=lambda: [FieldSpec("P_avg_mW", 2.0, "float", "Pump power P_avg", "mW",
+                                  "Average pump power. Everything else (X list, V_bias, T, demodulation) is fixed in "
+                                  "the script.", "Parameters", minimum=1e-4)],
+         inputs=lambda c: ["None (pure simulation; needs no other results)"],
          outputs=lambda c: [new_dir_line("field_bending_chain"),
-                            sub(_code("summary.json") + " — bent / horizontal 的 a1…a4、far，以及 a3 比值"),
-                            sub(_code("tilt.json") + "、" + _code("applied_field.npz") + " — 外加场倾角与场分布"),
-                            sub(_code("bent_X*.npz") + "、" + _code("horizontal_X*.npz") + " — 每次运行的波形"),
-                            "幻灯片图 sim_field_bending.png 只读取固定的 results/field_bending_chain/summary.json，"
-                            "不会用到这里的新结果。"],
+                            sub(_code("summary.json") + " — a1…a4 and far for bent / horizontal, plus the a3 ratio"),
+                            sub(_code("tilt.json") + ", " + _code("applied_field.npz") + " — applied-field tilt and "
+                                                                                       "field map"),
+                            sub(_code("bent_X*.npz") + ", " + _code("horizontal_X*.npz") + " — waveforms of each run"),
+                            "The slide figure sim_field_bending.png only reads the fixed "
+                            "results/field_bending_chain/summary.json and does not use this new result."],
          progress=lambda c: {"type": "count", "pattern": r"^(bent|horizontal)\s+X=", "total": 14},
          build=lambda c, out: (dict(kwargs=dict(P_avg_mW=_v(c, "P_avg_mW", 2.0), out=_rel(out))),
                                f"P = {_v(c, 'P_avg_mW', 2.0):g} mW"),
          target=out_target, render=fbc_render,
          history=lambda: dir_history(FBC, "tool_field_bending_chain", "summary.json")),
 
-    _tool(id="power_dependence", group="分析", title="信号随泵浦功率的变化", short="固定 X 扫描泵浦功率（带限幅值）",
-         tag="4–9 min",
-         desc="在固定光斑偏移 X 下对一组泵浦功率运行单脉冲链（路线 1：无针尖近场 + FDM，对称高斯光斑，无 FDTD 针尖图，"
-              "t_end = 4 ps），记录探测波形 d²S/dt² 在 0.3–2 THz 的带限谱幅（2、3 次谐波）、由 J_x 得到的远场参考、"
-              "表面密度 N_surface 与片载流子对数。V_bias = 25 V、T = 300 K、w = 3 µm、A = 180 nm 固定。"
-              "JSON 在全部功率算完后才写出，中途停止只留下各功率的 npz。",
+    _tool(id="power_dependence", group="Analysis", title="Signal vs pump power",
+         short="Pump-power sweep at fixed X (band-limited)", tag="4–9 min",
+         desc="Runs the single-pulse chain at a fixed spot offset X for a list of pump powers (route 1: near field "
+              "without the tip + FDM, symmetric Gaussian spot, no FDTD tip map, t_end = 4 ps) and records the "
+              "0.3–2 THz band-limited spectral amplitude of the detected waveform d²S/dt² (harmonics 2 and 3), the "
+              "far-field reference from J_x, the surface density N_surface and the number of pairs per cm. "
+              "V_bias = 25 V, T = 300 K, w = 3 µm and A = 180 nm are fixed. The JSON is written only after all "
+              "powers have finished; stopping early leaves only the per-power npz files.",
          script="scripts/power_dependence.py", func="main", out=True, runtime=_power_runtime,
-         specs=lambda: [FieldSpec("X", 5.0, "float", "光斑位置 X", "µm", "光斑相对针尖的位置；X > 0：针尖在光斑的阳极侧",
-                                  "扫描参数"),
-                        FieldSpec("n_sat", 2e19, "float", "饱和密度 n_sat", "cm⁻³", "单脉冲载流子密度的软饱和上限",
-                                  "扫描参数", minimum=1e12),
-                        FieldSpec("powers", (0.25, 0.5, 1, 2, 4, 8, 16, 30, 60, 120), "tuple", "泵浦功率列表", "mW",
-                                  "逗号分隔；每个功率一次 PulseSim（22–55 s）", "扫描参数"),
-                        FieldSpec("degenerate", True, "bool", "简并扩散（Fermi-Dirac）", "",
-                                  "广义 Einstein 关系；与 run_pulse_chain 的默认值（关）不同", "扫描参数")],
-         inputs=lambda c: ["无（纯模拟，不依赖其它结果）"], outputs=_power_outputs, prereq=_power_prereq,
+         specs=lambda: [FieldSpec("X", 5.0, "float", "Spot position X", "µm",
+                                  "Spot position relative to the tip; X > 0: the tip is on the anode side of the spot",
+                                  "Sweep"),
+                        FieldSpec("n_sat", 2e19, "float", "Saturation n_sat", "cm⁻³",
+                                  "Saturation density: soft upper limit of the single-pulse carrier density", "Sweep",
+                                  minimum=1e12),
+                        FieldSpec("powers", (0.25, 0.5, 1, 2, 4, 8, 16, 30, 60, 120), "tuple", "Pump powers", "mW",
+                                  "Comma-separated; one PulseSim per power (22–55 s)", "Sweep"),
+                        FieldSpec("degenerate", True, "bool", "Degenerate diffusion", "",
+                                  "Fermi–Dirac statistics via the generalized Einstein relation; differs from the "
+                                  "run_pulse_chain default (off)",
+                                  "Sweep")],
+         inputs=lambda c: ["None (pure simulation; needs no other results)"], outputs=_power_outputs,
+         prereq=_power_prereq,
          progress=lambda c: {"type": "count", "pattern": r"^P=", "total": max(1, len(_v(c, "powers", ()) or ()))},
          build=lambda c, out: (dict(kwargs=dict(X=float(_v(c, "X", 5.0)), n_sat=float(_v(c, "n_sat", 2e19)),
                                                 powers=list(_v(c, "powers", ())), out=_rel(out),
                                                 degenerate=1.0 if _v(c, "degenerate", True) else 0.0)),
-                               f"X = {float(_v(c, 'X', 5.0)):+g} µm · {len(_v(c, 'powers', ()))} 个功率"),
+                               f"X = {float(_v(c, 'X', 5.0)):+g} µm · {len(_v(c, 'powers', ()))} powers"),
          target=out_target, render=power_render, history=power_history),
 
-    _tool(id="redemodulate", group="分析", title="重新解调脉冲链结果", short="用新的 A / h_min 重解调已有运行", tag="数秒",
-         desc="纯后处理，不重新模拟：对一次已保存的单脉冲链运行（文件夹中的 X*.npz）用新的敲击振幅 A、最小针尖高度 h_min "
-              "或 LTEM (1−β) 因子重新做 Pizzuto 有限偶极解调（谐波 1–4），计算每个 X 的低通 dS_n/dt 与 S_n 的 RMS，"
-              "下方以归一化曲线和表格显示。注意：脚本文档写的默认 A = 200 nm，实际默认是 180 nm。",
+    _tool(id="redemodulate", group="Analysis", title="Re-demodulate a run",
+         short="New A / h_min on a saved pulse-chain run", tag="seconds",
+         desc="Post-processing only, no new simulation: repeats the Pizzuto finite-dipole demodulation (harmonics "
+              "1–4) of a saved single-pulse chain run (the X*.npz files in its folder) with a new tapping amplitude "
+              "A, minimum tip height h_min or the LTEM (1−β) factor, computes the RMS of the low-passed dS_n/dt and "
+              "S_n for every X and shows them below as normalized curves and a table. Note: the script's docstring "
+              "gives A = 200 nm as the default; the actual default is 180 nm.",
          script="scripts/redemodulate.py", func="main", out=False, extra="rundir",
-         runtime="数秒（每个 X 约 0.2–0.5 s）",
-         specs=lambda: [FieldSpec("A_nm", 180.0, "float", "敲击振幅 A", "nm", "针尖敲击振幅", "解调参数", minimum=1e-3),
-                        FieldSpec("h_min_nm", 0.0, "float", "最小针尖高度 h_min", "nm", "敲击周期中针尖的最低高度",
-                                  "解调参数", minimum=0.0),
-                        FieldSpec("ltem_factor", False, "bool", "LTEM (1−β) 因子", "",
-                                  "按 Pizzuto 的 LTEM FDM 把 α 乘以 (1 − β)", "解调参数")],
+         runtime="A few seconds (≈ 0.2–0.5 s per X)",
+         specs=lambda: [FieldSpec("A_nm", 180.0, "float", "Tapping amplitude A", "nm", "Tip tapping amplitude",
+                                  "Demodulation", minimum=1e-3),
+                        FieldSpec("h_min_nm", 0.0, "float", "Min. tip height h_min", "nm",
+                                  "Lowest tip height in the tapping cycle", "Demodulation", minimum=0.0),
+                        FieldSpec("ltem_factor", False, "bool", "LTEM (1−β) factor", "",
+                                  "Multiply α by (1 − β) as in Pizzuto's LTEM FDM", "Demodulation")],
          inputs=_rundir_inputs,
          writes_input=_rundir_writes, prereq=_rundir_prereq,
          build=lambda c, out: (dict(kwargs=dict(run_dir=_rel(c["rundir"]), A_nm=float(_v(c, "A_nm", 180.0)),
@@ -914,44 +958,52 @@ TOOLS = [
                                f"h_min = {float(_v(c, 'h_min_nm', 0.0)):g} nm" + (" · LTEM" if _v(c, "ltem_factor") else "")),
          target=redemod_target, render=redemod_render, history=redemod_history, prefer=redemod_prefer),
 
-    _tool(id="compare_scenarios", group="分析", title="对比多个稳态解", short="叠加多个解的场、载流子与针尖扫描", tag="≈1 s",
-         desc="把若干已保存的稳态解（solution.npz）叠加到一张 2×2 图：0.5 µm 深处的 E_x、n 与 EL2⁺、发射权重 "
-              "n_pulse·|E|、归一化 |针尖信号| vs X（叠加实测 +25 V），并写出各情形关键数值（P、τ_srh、S、I、n(0)、"
-              "E_x(±5)、峰值 X）的 Markdown 表。坐标范围固定（E_x −1…6 kV/cm，密度 1e10…1e18 cm⁻³），极端情形"
-              "可能被裁剪；实测点只对 25 V 偏压有意义。",
+    _tool(id="compare_scenarios", group="Analysis", title="Compare steady states",
+         short="Overlay fields, carriers and tip scans", tag="≈1 s",
+         desc="Overlays several saved steady-state solutions (solution.npz) in one 2×2 figure: E_x, n and EL2⁺ at "
+              "0.5 µm depth, the emission weight n_pulse·|E| and the normalized |tip signal| vs X (with the measured "
+              "+25 V points), and writes a Markdown table of key values per case (P, τ_srh, S, I, n(0), E_x(±5), "
+              "peak X). The axis ranges are fixed (E_x −1…6 kV/cm, densities 1e10…1e18 cm⁻³), so extreme cases may "
+              "be clipped; the measured points are only meaningful at 25 V bias.",
          script="scripts/compare_scenarios.py", func="main", out=True, extra="solutions",
-         runtime="每个解约 0.3 s（粗网格）；生产网格每个约 1–2 s",
+         runtime="≈ 0.3 s per solution (coarse grid); ≈ 1–2 s each on the production grid",
          inputs=_compare_inputs,
          outputs=lambda c: [new_dir_line("compare_scenarios"),
-                            sub(_code("compare.png") + " — 2×2 对比图"),
-                            sub(_code("compare.md") + " — 各情形的数值表")],
+                            sub(_code("compare.png") + " — 2×2 comparison figure"),
+                            sub(_code("compare.md") + " — table of values per case")],
          prereq=_compare_prereq,
          build=lambda c, out: (dict(kwargs=dict(out=_rel(Path(out) / "compare.png"),
                                                 items=[[l, _rel(p)] for l, p in c["solutions"]])),
-                               f"{len(c['solutions'])} 个解"),
+                               f"{len(c['solutions'])} solutions"),
          target=compare_target, render=compare_render, history=compare_history),
 
-    _tool(id="show_solution", group="分析", title="稳态解文本报告", short="打印解的电流、剖面与针尖扫描", tag="<1 s",
-         desc="载入一个已保存的稳态解（.npz），以文本形式打印：偏压与电极电势、功率、光电流与增益、各阶段收敛情况、"
-              "4 个深度（0.2 / 0.5 / 1 / 2 µm，取最近的网格中心，粗网格上会变成 0.12 / 0.62 µm 等）的横向剖面表，"
-              "以及针尖扫描表和远场偶极。不写任何文件。交互式查看同一个解请用『解查看器』。",
-         script="scripts/show_solution.py", func="main", out=False, extra="solution", runtime="< 1 秒",
-         inputs=lambda c: [_code(_rel(c["solution"])) if c.get("solution") else "（请在右侧选择一个 .npz）"],
-         outputs=lambda c: ["仅文本输出（显示在下方，可另存为 .txt）"],
-         prereq=lambda c: [cond("选择一个存在的 .npz 稳态解", bool(c.get("solution")) and Path(c["solution"]).exists(),
-                                "" if c.get("solution") else "尚未选择", sel=not c.get("solution"))],
+    _tool(id="show_solution", group="Analysis", title="Steady-state text report",
+         short="Print currents, profiles and tip scan", tag="<1 s",
+         desc="Loads a saved steady-state solution (.npz) and prints a text report: bias and electrode potentials, "
+              "power, photocurrent and gain, convergence of each stage, lateral profile tables at 4 depths "
+              "(0.2 / 0.5 / 1 / 2 µm, nearest grid centre — 0.12 / 0.62 µm etc. on a coarse grid), the tip-scan "
+              "table and the far-field dipole. Writes no files. To explore the same solution interactively, use the "
+              "Solution explorer page.",
+         script="scripts/show_solution.py", func="main", out=False, extra="solution", runtime="< 1 s",
+         inputs=lambda c: [_code(_rel(c["solution"])) if c.get("solution") else "(pick a .npz on the right)"],
+         outputs=lambda c: ["Text output only (shown below; can be saved as .txt)"],
+         prereq=lambda c: [cond("Pick an existing steady-state .npz",
+                                bool(c.get("solution")) and Path(c["solution"]).exists(),
+                                "" if c.get("solution") else "none selected", sel=not c.get("solution"))],
          build=lambda c, out: (dict(args=[_rel(c["solution"])]), Path(c["solution"]).name),
          render=text_render("show_solution.txt")),
 
-    _tool(id="band_check", group="分析", title="探测带宽检验", short="弱侧发射是否落在探测带外", tag="≈1 s",
-         desc="检查弱侧（X = −5 µm）的发射是否只是落在探测带宽之外：对路线 1（无针尖场 + FDM，P2mW_notipmap_degen）"
-              "与路线 2（针尖作为等势体参与 Poisson，P2mW_sym），在 X = +5、−5、0 计算 d²S₃/dt² 的频谱、6 个频带的"
-              "带限幅值、10–90 % 上升时间以及各频带的 −5/+5 比值，并绘制归一化频谱（阴影为 0.3–2 THz 探测带）。"
-              "图在两条路线都算完后才保存。",
-         script="scripts/band_check.py", func=None, out=False, runtime="约 1–3 秒",
-         inputs=lambda c: [_code("results/pulse_chain/P2mW_notipmap_degen/X{+5, −5, 0}.npz") + " — 路线 1",
-                           _code("results/tip_positions/P2mW_sym/") + " meta.json + X{+5, −5, 0}_h*.npz — 路线 2"],
-         outputs=lambda c: ["终端表格（显示在下方）"],
+    _tool(id="band_check", group="Analysis", title="Detection-band check",
+         short="Is the weak-side emission outside the band?", tag="≈1 s",
+         desc="Checks whether the emission on the weak side (X = −5 µm) merely falls outside the detection band: "
+              "for route 1 (no tip field + FDM, P2mW_notipmap_degen) and route 2 (tip as an equipotential in "
+              "Poisson, P2mW_sym) at X = +5, −5 and 0 it computes the spectrum of d²S₃/dt², band-limited amplitudes "
+              "in 6 bands, the 10–90 % rise time and the −5/+5 ratio per band, and plots the normalized spectra "
+              "(shaded: the 0.3–2 THz detection band). The figure is saved only after both routes have finished.",
+         script="scripts/band_check.py", func=None, out=False, runtime="≈ 1–3 s",
+         inputs=lambda c: [_code("results/pulse_chain/P2mW_notipmap_degen/X{+5, −5, 0}.npz") + " — route 1",
+                           _code("results/tip_positions/P2mW_sym/") + " meta.json + X{+5, −5, 0}_h*.npz — route 2"],
+         outputs=lambda c: ["Terminal tables (shown below)"],
          fixed=lambda c: [SLIDES / "sim_band_check.png"],
          prereq=lambda c: [req(_code("results/pulse_chain/P2mW_notipmap_degen/X{+5, −5, 0}.npz"),
                                pc_npz("P2mW_notipmap_degen", (5.0, -5.0, 0.0)), "pulse"),
@@ -961,86 +1013,104 @@ TOOLS = [
          target=lambda spec: SLIDES / "sim_band_check.png", render=png_render,
          history=lambda: fixed_history([SLIDES / "sim_band_check.png"])),
 
-    _tool(id="waveform_phase", group="分析", title="波形相位比较", short="FFT 相位差拟合 φ0 + 2πfτ", tag="数秒",
-         desc="按实测 ±25 V 分析的同样方式比较两条模拟探测波形（d²S₃/dt²，2.2 THz 低通）：在 0.25–1.6 THz 内拟合相位差 "
-              "φ(test) − φ(ref) = φ0 + 2πfτ，给出 φ0（0° 同形，180° 反相，±90° 导数关系）、延迟 τ 与相位残差，并做"
-              "同号/反号模板的时域最佳平移检查。成对比较来自路线 1（pulse_chain/P2mW_notipmap_degen）与路线 2"
-              "（tip_positions/P2mW_sym）；若存在针尖电势运行（P2mW_sym_Vtip12 / Vtipm12）再加 3 行。"
-              "表格在全部算完后一次性打印。",
-         script="scripts/waveform_phase.py", func=None, out=False, runtime="数秒",
-         inputs=lambda c: [_code("results/pulse_chain/P2mW_notipmap_degen/X{±5, +2.5, 0, −2.5}.npz") + " — 路线 1",
-                           _code("results/tip_positions/P2mW_sym/") + " meta.json + X*_h*.npz — 路线 2",
-                           _code("results/tip_positions/P2mW_sym_Vtip12, P2mW_sym_Vtipm12/") + " — 可选"],
-         outputs=lambda c: ["仅标准输出：相位拟合表（显示在下方，可另存为文本；仓库中的 "
-                            + _code("results/tip_positions/waveform_phase_table.txt") + " 就是这份输出）"],
+    _tool(id="waveform_phase", group="Analysis", title="Waveform phase fit",
+         short="FFT phase-difference fit φ0 + 2πfτ", tag="seconds",
+         desc="Compares two simulated detected waveforms (d²S₃/dt², 2.2 THz low-pass) the same way as the measured "
+              "±25 V analysis: fits the phase difference φ(test) − φ(ref) = φ0 + 2πfτ over 0.25–1.6 THz, giving φ0 "
+              "(0° same shape, 180° inverted, ±90° derivative relation), the delay τ and the phase residual, plus a "
+              "time-domain best-shift check against same-sign and opposite-sign templates. The pairs come from "
+              "route 1 (pulse_chain/P2mW_notipmap_degen) and route 2 (tip_positions/P2mW_sym); 3 more rows are added "
+              "when the tip-potential runs (P2mW_sym_Vtip12 / Vtipm12) exist. The table is printed once at the end.",
+         script="scripts/waveform_phase.py", func=None, out=False, runtime="A few seconds",
+         inputs=lambda c: [_code("results/pulse_chain/P2mW_notipmap_degen/X{±5, +2.5, 0, −2.5}.npz") + " — route 1",
+                           _code("results/tip_positions/P2mW_sym/") + " meta.json + X*_h*.npz — route 2",
+                           _code("results/tip_positions/P2mW_sym_Vtip12, P2mW_sym_Vtipm12/") + " — optional"],
+         outputs=lambda c: ["Stdout only: the phase-fit table (shown below; can be saved as text — the committed "
+                            + _code("results/tip_positions/waveform_phase_table.txt") + " is this output)"],
          prereq=lambda c: [req(_code("results/pulse_chain/P2mW_notipmap_degen/X{±5, +2.5, 0, −2.5}.npz"),
                                pc_npz("P2mW_notipmap_degen", X5), "pulse"),
                            req(_code("results/tip_positions/P2mW_sym/meta.json"), [TP / "P2mW_sym" / "meta.json"], "tip"),
                            req(_code("results/tip_positions/P2mW_sym/X{±5, +2.5, 0, −2.5}_h*.npz"),
                                tp_npz("P2mW_sym", X5), "tip"),
-                           req(_code("results/tip_positions/P2mW_sym_Vtipm12/X+5.0_h370.npz") + "（针尖电势附加行）",
+                           req(_code("results/tip_positions/P2mW_sym_Vtipm12/X+5.0_h370.npz")
+                               + " (extra tip-potential rows)",
                                [TP / "P2mW_sym_Vtipm12" / "X+5.0_h370.npz"], "tip", optional=True)],
          render=waveform_render,
-         history=lambda: fixed_history([TP / "waveform_phase_table.txt"], "仓库中保存的输出")),
+         history=lambda: fixed_history([TP / "waveform_phase_table.txt"], "saved output")),
 
-    _tool(id="dember_interference", group="分析", title="Dember 项干涉检验", short="横向 Dember 项与漂移前沿的干涉",
-         tag="5–10 min",
-         desc="检验单侧性是否来自横向光致 Dember 项（对 X 偶、与偏压无关）与漂移前沿（对 X 奇、∝ V）的干涉：在 "
-              "V = 25 V 与 0 V、冷（300 K）与热（1500 K）载流子下扫描 X = −5…+5 µm（经典扩散、无针尖、2 mW、"
-              "t_end = 3 ps，共 20 次 PulseSim），输出低通 dS₃/dt 的 RMS（每个温度内归一化）。注意：这里用的是旧的"
-              "一阶导数 RMS 指标，数值不能与其它表格（d²S/dt² 带限幅值）直接比较。脚本没有可调参数，也不写文件。",
+    _tool(id="dember_interference", group="Analysis", title="Dember interference",
+         short="Lateral Dember term vs drift front", tag="5–10 min",
+         desc="Tests whether the one-sidedness comes from interference between the lateral photo-Dember term (even "
+              "in X, bias-independent) and the drift front (odd in X, ∝ V): scans X = −5…+5 µm at V = 25 V and 0 V "
+              "with cold (300 K) and hot (1500 K) carriers (classical diffusion, no tip, 2 mW, t_end = 3 ps; 20 "
+              "PulseSim runs in total) and prints the RMS of the low-passed dS₃/dt, normalized per temperature. "
+              "Note: this is the older first-derivative RMS metric, so the values cannot be compared directly with "
+              "the other tables (d²S/dt² band-limited amplitudes). The script has no parameters and writes no files.",
          script="scripts/dember_interference.py", func=None, out=False,
-         runtime="约 5–10 分钟（20 次 PulseSim）；两个温度块之间约 3–5 分钟没有输出，属正常",
-         inputs=lambda c: ["无（纯模拟）"],
-         outputs=lambda c: ["仅标准输出：每个温度一块（下方解析为曲线与表格，可另存为文本）"],
+         runtime="≈ 5–10 min (20 PulseSim runs); 3–5 min without output between the two temperature blocks is normal",
+         inputs=lambda c: ["None (pure simulation)"],
+         outputs=lambda c: ["Stdout only: one block per temperature (parsed below into curves and a table; can be "
+                            "saved as text)"],
          progress=lambda c: {"type": "count", "pattern": r"^\s+V =", "total": 4},
          render=dember_render),
 
-    _tool(id="fig_slides", group="作图", title="幻灯片图（模拟结果）", short="渲染英文幻灯片图 sim_*.png", tag="1–4 s",
-         desc="从磁盘上已保存的结果渲染英文幻灯片图（results/slides/sim_*.png，约 2550 px 宽）。每次只渲染一张——脚本的 "
-              "all 模式会在第一张缺少输入的图处中止，所以这里按图单独运行。dynamics 会在进程内跑一个 0.6 ps 的 "
-              "PulseSim，bending 会做一次裸场 Poisson 求解。右侧列表的“输入”列实时显示每张图的前置文件是否齐全。",
+    _tool(id="fig_slides", group="Figures", title="Slide figures", short="Simulation slides sim_*.png",
+         tag="1–4 s",
+         desc="Renders the English slide figures (results/slides/sim_*.png, ≈ 2550 px wide) from results saved on "
+              "disk. One figure per run: the script's all mode aborts at the first figure whose inputs are missing, "
+              "so each figure runs on its own here. dynamics runs a 0.6 ps PulseSim in-process and bending does one "
+              "bare-field Poisson solve. The “Inputs” column of the list on the right shows live whether each "
+              "figure's input files are present.",
          script="scripts/fig_slides.py", func=None, out=False, extra="slide_keys",
-         inputs=lambda c: [f"所选的图：{_code(c.get('key'))} — {keyinfo(SLIDE_KEYS, c.get('key'))['zh']}",
-                           _code("data/measured_tip_scan.csv") + "（导入时读取）"]),
+         inputs=lambda c: [f"Selected figure: {_code(c.get('key'))} — {keyinfo(SLIDE_KEYS, c.get('key'))['name']}",
+                           _code("data/measured_tip_scan.csv") + " (read on import)"]),
 
-    _tool(id="fig_cartoons", group="作图", title="物理示意图（卡通）", short="无需数据的示意图 cartoon_*.png", tag="≈1 s",
-         desc="为幻灯片绘制物理示意图，只用解析形状，不需要任何模拟数据：三种场畸变、三段链路、X 扫描的奇偶分解、"
-              "针尖直流电势、光斑随功率展宽。可单独渲染一张或全部 5 张。注意 cartoon_power.png 与幻灯片图 "
-              "sim_power.png 是两张不同的图。",
+    _tool(id="fig_cartoons", group="Figures", title="Physics cartoons", short="Data-free schematics cartoon_*.png",
+         tag="≈1 s",
+         desc="Draws physics schematics for the slides from analytic shapes only, with no simulation data: three "
+              "field distortions, the three-stage chain, the odd/even decomposition of the X scan, the tip DC "
+              "potential and spot broadening with power. Render one of them or all 5. Note that cartoon_power.png "
+              "and the slide figure sim_power.png are different figures.",
          script="scripts/fig_cartoons.py", func=None, out=False, extra="cartoon_keys",
-         inputs=lambda c: ["无（解析示意图）"]),
+         inputs=lambda c: ["None (analytic schematics)"]),
 
-    _tool(id="fig_mechanism", group="作图", title="单脉冲机制图（中文）", short="0.6 ps 模拟 → mechanism.png", tag="≈3 s",
-         desc="由模型本身计算的中文机制示意：运行一个 0.6 ps 的 PulseSim（2 mW，光斑在 x = 0），绘制 (a) 0.15 ps 时的"
-              "净空间电荷分布，(b) 沿 x 的电子、空穴与净片密度，(c) h = 100 nm 处近场 E_z 随针尖位置的变化（奇项，来自"
-              "模型），以及示意性的偶项（宽 4 µm 的高斯，不是模型结果）与二者的单侧叠加。中文标签使用系统字体。",
+    _tool(id="fig_mechanism", group="Figures", title="Mechanism figure (Chinese)",
+         short="0.6 ps simulation → mechanism.png", tag="≈3 s",
+         desc="Mechanism schematic with Chinese labels, computed from the model itself: runs a 0.6 ps PulseSim "
+              "(2 mW, spot at x = 0) and draws (a) the net space charge at 0.15 ps, (b) electron, hole and net sheet "
+              "densities along x, (c) the near-field E_z at h = 100 nm vs tip position (odd term, from the model), "
+              "together with an illustrative even term (a 4 µm wide Gaussian, not a model result) and their "
+              "one-sided sum. The Chinese labels use a system font.",
          script="scripts/fig_mechanism.py", func=None, out=False,
-         runtime="约 3 秒（首次运行可能多 10–15 秒用于建立字体缓存）",
-         inputs=lambda c: ["无（进程内运行一个 0.6 ps 的 PulseSim）"],
+         runtime="≈ 3 s (the first run may take 10–15 s longer while the font cache is built)",
+         inputs=lambda c: ["None (runs a 0.6 ps PulseSim in-process)"],
          fixed=lambda c: [R / "mechanism.png"],
          target=lambda spec: R / "mechanism.png", render=png_render,
          history=lambda: fixed_history([R / "mechanism.png"])),
 
-    _tool(id="fig_dipole_geometry", group="作图", title="偶极几何示意（中文）", short="竖直 vs 横向偶极 → dipole_geometry.png",
-         tag="≈1 s",
-         desc="二维线电荷偶极场的中文解析示意：比较竖直偶极（经典光致 Dember）与横向偶极（漂移分离）的场线，并绘制针尖"
-              "在 h = 50、200、500 nm 处感受到的 E_z 随 x 的变化。不使用模拟数据。英文版是『幻灯片图』中的 dipole"
-              "（sim_dipole_geometry.png）。",
-         script="scripts/fig_dipole_geometry.py", func=None, out=False, runtime="约 1 秒",
-         inputs=lambda c: ["无（解析计算）"],
+    _tool(id="fig_dipole_geometry", group="Figures", title="Dipole geometry (Chinese)",
+         short="Vertical vs lateral dipole → dipole_geometry.png", tag="≈1 s",
+         desc="Analytic schematic, with Chinese labels, of 2-D line-charge dipole fields: compares the field lines "
+              "of a vertical dipole (classical photo-Dember) and a lateral dipole (drift separation) and plots the "
+              "E_z seen by the tip at h = 50, 200 and 500 nm vs x. Uses no simulation data. The English version is "
+              "dipole (sim_dipole_geometry.png) under Slide figures.",
+         script="scripts/fig_dipole_geometry.py", func=None, out=False, runtime="≈ 1 s",
+         inputs=lambda c: ["None (analytic)"],
          fixed=lambda c: [R / "dipole_geometry.png"],
          target=lambda spec: R / "dipole_geometry.png", render=png_render,
          history=lambda: fixed_history([R / "dipole_geometry.png"])),
 
-    _tool(id="numerics", group="维护", title="数值自检", short="Poisson / 平衡态 / Jacobian / 暗电流", tag="≈2 s",
-         desc="稳态求解器的验证套件（86×50 小网格）：① 共面薄电极间的裸 Poisson 场与解析解 V/(π√(a²−x²)) 相差 < 12 %，"
-              "间隙中心 E_z/E_x < 5 %；② V = 0、G = 0 的平衡态残差为零；③ 完整耦合 Jacobian 的有限差分校验"
-              "（inv_dt = 0 与 3，各块相对误差 < 1e-5）；④ 10 V 暗态：收敛、|I| < 1e-3 mA、平均 EL2⁺ 在 "
-              "0.5–3 × 10¹⁵ cm⁻³ 之间。用于确认安装与数值环境正常；第一项失败后其余项不再运行。",
-         script="tests/test_numerics.py", func=None, out=False, runtime="约 2 秒",
-         inputs=lambda c: ["无（ltemsim 库本身）"],
-         outputs=lambda c: ["仅标准输出：每通过一项打印一行 “… ok”（下方显示为检查表）"],
+    _tool(id="numerics", group="Maintenance", title="Numerical self-test",
+         short="Poisson / equilibrium / Jacobian / dark current", tag="≈2 s",
+         desc="Validation suite of the steady-state solver (small 86×50 grid): (1) bare Poisson field between "
+              "coplanar thin electrodes within 12 % of the analytic V/(π√(a²−x²)), E_z/E_x < 5 % at the gap centre; "
+              "(2) zero residual at equilibrium (V = 0, G = 0); (3) finite-difference check of the full coupled "
+              "Jacobian (inv_dt = 0 and 3, relative error < 1e-5 per block); (4) 10 V dark state: converges, "
+              "|I| < 1e-3 mA, mean EL2⁺ between 0.5 and 3 × 10¹⁵ cm⁻³. Confirms that the installation and the "
+              "numerical environment work; the remaining tests are skipped after the first failure.",
+         script="tests/test_numerics.py", func=None, out=False, runtime="≈ 2 s",
+         inputs=lambda c: ["None (the ltemsim library itself)"],
+         outputs=lambda c: ["Stdout only: one “… ok” line per passed test (shown below as a checklist)"],
          progress=lambda c: {"type": "count", "pattern": r"^(poisson|equilibrium|jacobian|dark) ok", "total": 4},
          render=numerics_render),
 ]
@@ -1064,14 +1134,14 @@ class _PathPicker(QWidget):
         self.lay = QVBoxLayout(self)
         self.lay.setContentsMargins(0, 0, 0, 0)
         self.lay.setSpacing(4)
-        self.lay.addWidget(label(title, "cardTitle"))
+        self.lay.addWidget(label(title, "cardTitle", wrap=True))
         row = QHBoxLayout()
         self.combo = QComboBox()
         self.combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.combo.setMinimumContentsLength(16)
         self.combo.currentIndexChanged.connect(self._on_change)
         row.addWidget(self.combo, 1)
-        row.addWidget(button("浏览…", self._browse))
+        row.addWidget(button("Browse…", self._browse))
         self.lay.addLayout(row)
 
     # subclasses: candidates() -> [Path], text(Path) -> str, _browse(); optional default() -> Path | None
@@ -1109,7 +1179,7 @@ class RunDirPicker(_PathPicker):
     """Single pulse-chain run folder (results/pulse_chain/*, results/gui_runs/pulse_*, or any folder with X*.npz)."""
 
     def __init__(self, parent=None):
-        super().__init__("运行文件夹（单脉冲链输出，含 X*.npz）", parent)
+        super().__init__("Run folder (single-pulse chain output with X*.npz)", parent)
         self.info = label("", "muted", wrap=True)
         self.lay.addWidget(self.info)
         self.refresh()
@@ -1119,33 +1189,34 @@ class RunDirPicker(_PathPicker):
 
     @staticmethod
     def text(d: Path) -> str:
-        return f"{_rel(d).removeprefix('results/')}  ·  {len(x_files(d))} 个 X"
+        return f"{_rel(d).removeprefix('results/')}  ·  {len(x_files(d))} X"
 
     def _browse(self):
-        d = QFileDialog.getExistingDirectory(self, "选择单脉冲链运行文件夹", str(PC))
+        d = QFileDialog.getExistingDirectory(self, "Choose a single-pulse chain run folder", str(PC))
         if d:
             self.set(d)
 
     def _on_change(self, *_):
         d = self.value()
         if d is None:
-            self.info.setText("没有找到含 X*.npz 的运行文件夹。")
+            self.info.setText("No run folder with X*.npz files found.")
         else:
             xs = [x for x in (_xval(f) for f in x_files(d)) if x is not None]
             done = sorted(f.name for f in d.glob("redemod_*.json"))
-            txt = f"X = {', '.join(f'{x:+g}' for x in sorted(xs))} µm" if xs else "该文件夹中没有 X*.npz"
+            txt = f"X = {', '.join(f'{x:+g}' for x in sorted(xs))} µm" if xs else "No X*.npz in this folder"
             if done:
-                txt += "  ·  已有：" + ", ".join(done)
+                txt += "  ·  existing: " + ", ".join(done)
             self.info.setText(txt)
         self.changed.emit()
 
 
 class SolutionPicker(_PathPicker):
     def __init__(self, parent=None):
-        super().__init__("稳态解 (.npz)", parent)
-        self.lay.addWidget(label("粗网格解来自 results/coarse_scenarios；solution.npz 只在本机运行后才有（未提交）。",
+        super().__init__("Steady-state solution (.npz)", parent)
+        self.lay.addWidget(label("Coarse-grid solutions come from results/coarse_scenarios; solution.npz files exist "
+                                 "only after a local run (they are not committed).",
                                  "muted", wrap=True))
-        self.lay.addWidget(button("在解查看器中打开", self._explore, "flat"), 0, Qt.AlignmentFlag.AlignLeft)
+        self.lay.addWidget(button("Open in Solution explorer", self._explore, "flat"), 0, Qt.AlignmentFlag.AlignLeft)
         self.refresh()
 
     def candidates(self):
@@ -1160,7 +1231,7 @@ class SolutionPicker(_PathPicker):
         return _rel(p)
 
     def _browse(self):
-        f, _ = QFileDialog.getOpenFileName(self, "选择稳态解", str(R), "Solution (*.npz)")
+        f, _ = QFileDialog.getOpenFileName(self, "Choose a steady-state solution", str(R), "Solution (*.npz)")
         if f:
             self.set(f)
 
@@ -1179,9 +1250,10 @@ class SolutionTable(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
-        lay.addWidget(label("勾选要对比的稳态解；“图例标签”列可双击编辑", "cardTitle"))
+        lay.addWidget(label("Solutions to compare (tick them; double-click a legend label to edit it)", "cardTitle",
+                            wrap=True))
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["", "图例标签", "文件"])
+        self.table.setHorizontalHeaderLabels(["", "Legend label", "File"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(True)
@@ -1197,7 +1269,7 @@ class SolutionTable(QWidget):
         row = QHBoxLayout()
         self.count = label("", "muted")
         row.addWidget(self.count, 1)
-        for text, slot in (("添加文件…", self._browse), ("全部取消", self.clear_checks)):
+        for text, slot in (("Add files…", self._browse), ("Uncheck all", self.clear_checks)):
             b = button(text, slot, "flat")
             row.addWidget(b)
         lay.addLayout(row)
@@ -1232,7 +1304,7 @@ class SolutionTable(QWidget):
         self.table.blockSignals(False)
 
     def _browse(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "添加稳态解", str(R), "Solution (*.npz)")
+        files, _ = QFileDialog.getOpenFileNames(self, "Add steady-state solutions", str(R), "Solution (*.npz)")
         for f in files:
             self._add(Path(f), True)
         self._changed()
@@ -1263,7 +1335,7 @@ class SolutionTable(QWidget):
 
     def _changed(self):
         n = len(self.value())
-        self.count.setText(f"已选 {n} 个 / 共 {len(self._paths)} 个")
+        self.count.setText(f"{n} of {len(self._paths)} selected")
         self.changed.emit()
 
 
@@ -1277,9 +1349,9 @@ class KeyPicker(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
-        lay.addWidget(label(title, "cardTitle"))
+        lay.addWidget(label(title, "cardTitle", wrap=True))
         self.table = QTableWidget(len(keys), 3)
-        self.table.setHorizontalHeaderLabels(["图", "内容", "输入"])
+        self.table.setHorizontalHeaderLabels(["Figure", "Content", "Inputs"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1291,9 +1363,11 @@ class KeyPicker(QWidget):
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         for r, k in enumerate(keys):
             a = QTableWidgetItem(k["key"])
-            a.setToolTip("输出：" + ", ".join(f"results/slides/{f}" for f in k["files"]))
+            a.setToolTip("Output: " + ", ".join(f"results/slides/{f}" for f in k["files"]))
             self.table.setItem(r, 0, a)
-            self.table.setItem(r, 1, QTableWidgetItem(k["zh"]))
+            b = QTableWidgetItem(k["name"])
+            b.setToolTip(k["name"])
+            self.table.setItem(r, 1, b)
             self.table.setItem(r, 2, QTableWidgetItem(""))
         self.table.resizeRowsToContents()
         self.table.currentCellChanged.connect(lambda *_: self.changed.emit())
@@ -1307,15 +1381,15 @@ class KeyPicker(QWidget):
             rq = k["reqs"]()
             miss = [q for q in rq if not q["ok"] and not q["optional"]]
             if not rq:
-                txt, col = "— 无需输入", t.muted
+                txt, col = "— none needed", t.muted
             elif miss:
-                txt, col = f"✗ 缺 {len(miss)} 项", t.danger
+                txt, col = f"✗ {len(miss)} missing", t.danger
             else:
-                txt, col = "✓ 齐全", t.success
+                txt, col = "✓ complete", t.success
             it = self.table.item(r, 2)
             it.setText(txt)
             it.setForeground(QColor(col))
-            it.setToolTip("\n".join(_plain(q["label"]) + (f"（{q['detail']}）" if q["detail"] else "") for q in miss))
+            it.setToolTip("\n".join(_plain(q["label"]) + (f" ({q['detail']})" if q["detail"] else "") for q in miss))
 
     def value(self) -> str:
         r = self.table.currentRow()
@@ -1354,7 +1428,7 @@ class _ToolItem(QWidget):
 
     def set_state(self, job, accent: str):
         active = job is not None and job.active
-        text = ("排队中" if job.status == QUEUED else "运行中") if active else self._tag
+        text = ("Queued" if job.status == QUEUED else "Running") if active else self._tag
         style = f"font-size: 11px; color: {accent}; font-weight: 600;" if active else "font-size: 11px;"
         if (text, style) != (self.tag.text(), self.tag.styleSheet()):     # called every second while a job runs
             self.tag.setText(text)
@@ -1393,10 +1467,19 @@ class _Elided(QLabel):
         super().setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, max(20, self.width())))
 
 
+class _VSplitter(QSplitter):
+    """Vertical splitter whose preferred height is its minimum: the page then fills the window instead of growing
+    to the size hints of the output views (the app's page holder sizes pages by height-for-width)."""
+
+    def sizeHint(self):
+        return QSize(super().sizeHint().width(), self.minimumSizeHint().height())
+
+
 # ============================================================================ page
 class ToolsPage(Page):
-    title = "分析与作图"
-    subtitle = "其余的分析、作图与维护脚本：选择工具，查看说明与前置条件（实时检查），设置参数后运行；输出的图、表与文本显示在下方。"
+    title = "Tools & figures"
+    subtitle = ("The remaining analysis, figure and maintenance scripts: pick a tool, check its description and live "
+                "prerequisites, set the parameters and run; figures, tables and text output appear below.")
 
     def __init__(self):
         super().__init__()
@@ -1408,9 +1491,10 @@ class ToolsPage(Page):
         self._plots: list[PlotWidget] = []
         self._items: dict = {}
 
-        self.btn_check = button("  刷新检查", self.refresh_all, "flat", "重新检查前置文件、可选的解和已有输出")
+        self.btn_check = button("  Recheck", self.refresh_all, "flat",
+                                "Re-check prerequisite files, available solutions and existing outputs")
         self.header.add_action(self.btn_check)
-        self.run_btn = button("  运行", self.run, "primary", "在后台子进程中运行所选工具")
+        self.run_btn = button("  Run", self.run, "primary", "Run the selected tool in a background subprocess")
         self.header.add_action(self.run_btn)
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -1439,7 +1523,7 @@ class ToolsPage(Page):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("搜索工具（名称 / 脚本 / 说明）…")
+        self.search.setPlaceholderText("Search tools (name / script / description)…")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
         lay.addWidget(self.search)
@@ -1478,23 +1562,28 @@ class ToolsPage(Page):
         rl = QVBoxLayout(right)
         rl.setContentsMargins(6, 0, 0, 0)
         rl.setSpacing(8)
+        head = QVBoxLayout()                            # title row + meta row (badges and runtime)
+        head.setSpacing(2)
         tr = QHBoxLayout()
         tr.setSpacing(8)
         self.t_title = _Elided("cardTitle")             # long titles elide instead of widening the page
         self.t_title.setStyleSheet("font-size: 18px;")
-        tr.addWidget(self.t_title)
-        self.t_group = label("", "badge")
-        tr.addWidget(self.t_group)
-        self.t_prereq = label("", "badgeOk")
-        tr.addWidget(self.t_prereq)
-        self.t_fixed = label("固定输出路径", "badgeWarn")
-        tr.addWidget(self.t_fixed)
-        tr.addStretch(1)
-        self.t_runtime = _Elided("muted")
-        tr.addWidget(self.t_runtime)
-        self.btn_script = button("查看脚本", self._open_script, "flat", "用默认程序打开脚本源码")
+        tr.addWidget(self.t_title, 1)
+        self.btn_script = button("View script", self._open_script, "flat", "Open the script source in the default app")
         tr.addWidget(self.btn_script)
-        rl.addLayout(tr)
+        head.addLayout(tr)
+        mr = QHBoxLayout()
+        mr.setSpacing(10)
+        self.t_group = label("", "badge")
+        mr.addWidget(self.t_group)
+        self.t_prereq = label("", "badgeOk")
+        mr.addWidget(self.t_prereq)
+        self.t_fixed = label("Fixed output path", "badgeWarn")
+        mr.addWidget(self.t_fixed)
+        self.t_runtime = _Elided("muted")
+        mr.addWidget(self.t_runtime, 1)
+        head.addLayout(mr)
+        rl.addLayout(head)
 
         self.warn = QFrame()
         self.warn.setObjectName("warnBox")
@@ -1508,7 +1597,7 @@ class ToolsPage(Page):
         self.note.hide()
         rl.addWidget(self.note)
 
-        vs = QSplitter(Qt.Orientation.Vertical)
+        vs = _VSplitter(Qt.Orientation.Vertical)
         vs.setChildrenCollapsible(False)
         top = QSplitter(Qt.Orientation.Horizontal)
         top.setChildrenCollapsible(False)
@@ -1516,7 +1605,7 @@ class ToolsPage(Page):
         il = QVBoxLayout(ic)
         il.setContentsMargins(14, 10, 6, 10)
         il.setSpacing(4)
-        il.addWidget(label("说明", "cardTitle"))
+        il.addWidget(label("Description", "cardTitle"))
         # a text browser rather than a QLabel: long paths wrap anywhere when the card is narrow (no sideways scroll)
         self.info = QTextBrowser()
         self.info.setObjectName("toolInfo")
@@ -1535,7 +1624,7 @@ class ToolsPage(Page):
         pl = QVBoxLayout(pc)
         pl.setContentsMargins(12, 10, 12, 10)
         pl.setSpacing(6)
-        pl.addWidget(label("参数与输入", "cardTitle"))
+        pl.addWidget(label("Parameters & inputs", "cardTitle"))
         self.param_stack = QStackedWidget()
         pl.addWidget(self.param_stack, 1)
         pc.setMinimumWidth(300)                         # raised per tool in _activate
@@ -1552,16 +1641,18 @@ class ToolsPage(Page):
         ol.setSpacing(4)
         srow = QHBoxLayout()
         srow.setSpacing(6)
-        srow.addWidget(label("输出来源", "muted"))
+        srow.addWidget(label("Output source", "muted"))
         self.src = QComboBox()
         self.src.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.src.setMinimumContentsLength(18)
-        self.src.setToolTip("这个工具已有的输出：本程序运行过的任务、results/gui_runs 下的结果以及仓库中提交的结果")
+        self.src.setToolTip("Existing outputs of this tool: jobs run in this app, results under results/gui_runs and "
+                            "committed results")
         self.src.view().setMinimumWidth(520)
         self.src.view().setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.src.currentIndexChanged.connect(self._on_src)
         srow.addWidget(self.src, 1)
-        self.btn_folder = button("打开文件夹", self._open_folder, "flat", "在访达中显示当前输出所在的文件夹")
+        self.btn_folder = button("Show in Finder", self._open_folder, "flat",
+                                 "Reveal the folder of the current output in Finder")
         srow.addWidget(self.btn_folder)
         ol.addLayout(srow)
         self.tabs = QTabWidget()
@@ -1571,7 +1662,7 @@ class ToolsPage(Page):
         rtl.setContentsMargins(12, 12, 12, 12)
         self.panel = RunPanel()
         rtl.addWidget(self.panel)
-        self.tabs.addTab(run_tab, "运行")
+        self.tabs.addTab(run_tab, "Run")
         self.tabs.tabBar().setElideMode(Qt.TextElideMode.ElideMiddle)
         ol.addWidget(self.tabs, 1)
         vs.addWidget(outw)
@@ -1680,7 +1771,7 @@ class ToolsPage(Page):
         kind = tool.get("extra")
         pickers = {"rundir": RunDirPicker, "solution": SolutionPicker, "solutions": SolutionTable}
         if kind in KEYSETS:
-            extra = KeyPicker(KEYSETS[kind], "选择要渲染的图（输出到 results/slides/）")
+            extra = KeyPicker(KEYSETS[kind], "Figure to render (output to results/slides/)")
         else:
             extra = pickers[kind]() if kind in pickers else None
         tall = kind in ("solutions", "slide_keys", "cartoon_keys")      # tables that take the card's height
@@ -1739,7 +1830,7 @@ class ToolsPage(Page):
         try:
             pre = tool["prereq"](ctx)
         except Exception as e:      # never let a check break the page
-            pre = [cond(f"前置检查出错：{_esc(e)}", False, hard=False)]
+            pre = [cond(f"Prerequisite check failed: {_esc(e)}", False, hard=False)]
         fixed = tool["fixed"](ctx) if tool.get("fixed") else []
         writes = tool["writes_input"](ctx) if tool.get("writes_input") else None
         return pre, fixed, writes
@@ -1753,43 +1844,45 @@ class ToolsPage(Page):
         ctx = self._ctx(tid)
         pre, fixed, writes = self._checks(tool, ctx)
         runtime = tool["runtime"](ctx) if callable(tool["runtime"]) else tool["runtime"]
-        self.t_runtime.setText("预计 " + runtime.split("（")[0].split("；")[0].removeprefix("约 "))
+        head = runtime.split(" (")[0].split("; ")[0]
+        self.t_runtime.setText("Runtime: " + head[:1].lower() + head[1:])
         self.t_runtime.setToolTip(runtime)
 
         missing = [p for p in pre if not p["ok"] and not p["optional"]]
         if not pre:
-            self.t_prereq.setText("无前置条件")
+            self.t_prereq.setText("No prerequisites")
             self.t_prereq.setObjectName("badgeOk")
         elif missing and all(p.get("sel") for p in missing):
-            self.t_prereq.setText("请先在右侧选择输入")
+            self.t_prereq.setText("Pick an input on the right")
             self.t_prereq.setObjectName("badgeWarn")
         elif missing:
-            self.t_prereq.setText(f"✗ 缺少 {len(missing)} 项前置")
+            self.t_prereq.setText(f"✗ {len(missing)} prerequisite{'s' if len(missing) > 1 else ''} missing")
             self.t_prereq.setObjectName("badgeErr")
         else:
-            self.t_prereq.setText("✓ 前置条件满足")
+            self.t_prereq.setText("✓ Prerequisites met")
             self.t_prereq.setObjectName("badgeOk")
         repolish(self.t_prereq)
         self.t_fixed.setVisible(bool(fixed) or writes is not None)
-        self.t_fixed.setText("写入所选文件夹" if writes is not None else "固定输出路径")
+        self.t_fixed.setText("Writes into input folder" if writes is not None else "Fixed output path")
 
         # warning banner
         warn = ""
         if fixed:
             n_ex = sum(f.exists() for f in fixed)
             n_git = sum(committed(f) for f in fixed if f.exists())
-            warn = (f"<b style='color:{t.warning}'>⚠ 固定输出路径</b>　此脚本只能写到 "
-                    + "、".join(_code(_rel(f)) for f in fixed) + "。")
+            warn = (f"<b style='color:{t.warning}'>⚠ Fixed output path</b>&nbsp;&nbsp;This script can only write to "
+                    + ", ".join(_code(_rel(f)) for f in fixed) + ".")
             if n_ex:
-                warn += (f"运行会覆盖已有的 {n_ex} 个文件" + (f"（其中 {n_git} 个已提交到 git）" if n_git else "")
-                         + "；运行前会请你确认，并可先自动备份到 results/gui_runs/。")
+                warn += (f" Running it overwrites {n_ex} existing file{'s' if n_ex > 1 else ''}"
+                         + (f" ({n_git} committed to git)" if n_git else "")
+                         + "; you will be asked to confirm first and can back them up to results/gui_runs/.")
         elif writes is not None:
-            warn = (f"<b style='color:{t.warning}'>⚠ 写入输入文件夹</b>　结果 JSON 直接写入所选运行文件夹（不是新文件夹）："
-                    + _code(_rel(writes)))
+            warn = (f"<b style='color:{t.warning}'>⚠ Writes into the input folder</b>&nbsp;&nbsp;The result JSON goes "
+                    "straight into the selected run folder (not a new folder): " + _code(_rel(writes)))
             if Path(writes).exists():
-                warn += "　——同名文件已存在，运行前会请你确认覆盖。"
+                warn += " — a file with this name already exists; you will be asked before it is overwritten."
             elif curated(Path(writes).parent):
-                warn += "　——这是仓库中的结果文件夹，运行前会请你确认。"
+                warn += " — this is a committed result folder; you will be asked to confirm first."
         self.warn_text.setText(warn)
         self.warn.setVisible(bool(warn))
 
@@ -1801,7 +1894,7 @@ class ToolsPage(Page):
 
         def bullets(lines):
             if not lines:
-                H.append(f"<span style='color:{t.muted}'>无</span>")
+                H.append(f"<span style='color:{t.muted}'>None</span>")
                 return
             rows = []
             for s in lines:
@@ -1812,9 +1905,9 @@ class ToolsPage(Page):
                     rows.append(f"<tr><td valign='top' style='color:{t.muted}'>•&nbsp;</td><td>{s}</td></tr>")
             H.append("<table cellspacing='0' cellpadding='1'>" + "".join(rows) + "</table>")
 
-        sec("前置条件")
+        sec("Prerequisites")
         if not pre:
-            H.append(f"<span style='color:{t.success}'>✓</span> 无（不依赖其它脚本的结果）")
+            H.append(f"<span style='color:{t.success}'>✓</span> None (does not depend on results of other scripts)")
         else:
             rows = []
             for p in pre:
@@ -1826,37 +1919,39 @@ class ToolsPage(Page):
                     mark, col = "✗", t.danger
                 txt = p["label"]
                 if p["optional"]:
-                    txt += f" <span style='color:{t.muted}'>（可选）</span>"
+                    txt += f" <span style='color:{t.muted}'>(optional)</span>"
                 if p["detail"]:
                     txt += f" <span style='color:{t.muted if p['ok'] else col}'>— {_esc(p['detail'])}</span>"
                 if not p["ok"] and p.get("producer"):
                     target, how = p["producer"]
-                    txt += (f"<br><span style='color:{t.muted}'>生成方法：{_esc(how)}</span> <a href='go:{target}'>"
-                            f"<span style='color:{t.accent}'>前往『{_esc(producer_name(target))}』</span></a>")
+                    txt += (f"<br><span style='color:{t.muted}'>How to get it: {_esc(how)}.</span> "
+                            f"<a href='go:{target}'>"
+                            f"<span style='color:{t.accent}'>Go to {_esc(producer_name(target))}</span></a>")
                 rows.append(f"<tr><td valign='top' style='color:{col}; font-weight:700'>{mark}&nbsp;</td>"
                             f"<td style='padding-bottom:3px'>{txt}</td></tr>")
             H.append("<table cellspacing='0' cellpadding='1'>" + "".join(rows) + "</table>")
-        sec("输入")
+        sec("Inputs")
         bullets(tool["inputs"](ctx))
-        sec("输出")
+        sec("Outputs")
         outs = list(tool["outputs"](ctx))
         for f in fixed:
-            notes = ["固定路径"]
+            notes = ["fixed path"]
             if f.exists():
-                notes.append("已存在，运行会覆盖")
+                notes.append("exists, will be overwritten")
                 if committed(f):
-                    notes.append("已提交到 git")
-            outs.append(_code(_rel(f)) + f" <span style='color:{t.warning}'>（{'，'.join(notes)}）</span>")
+                    notes.append("committed to git")
+            outs.append(_code(_rel(f)) + f" <span style='color:{t.warning}'>({'; '.join(notes)})</span>")
         if writes is not None:
-            outs.append(_code(_rel(writes)) + f" <span style='color:{t.warning}'>（写入所选运行文件夹"
-                        + ("，已存在，将覆盖" if Path(writes).exists() else "") + "）</span>")
+            outs.append(_code(_rel(writes)) + f" <span style='color:{t.warning}'>(written into the selected run folder"
+                        + ("; exists, will be overwritten" if Path(writes).exists() else "") + ")</span>")
         bullets(outs)
-        sec("运行时间")
+        sec("Runtime")
         H.append(_esc(runtime))
-        sec("脚本")
+        sec("Script")
         H.append(_code(tool["script"]) + f" <span style='color:{t.muted}'>— "
-                 + (f"在子进程中调用 {_esc(tool['func'])}()" if tool["func"] else "在子进程中作为 __main__ 运行")
-                 + "，工作目录为仓库根目录</span>")
+                 + (f"calls {_esc(tool['func'])}() in a subprocess" if tool["func"]
+                    else "runs as __main__ in a subprocess")
+                 + ", working directory = repository root</span>")
         sb = self.info.verticalScrollBar()
         pos = sb.value()                                # keep the reading position while parameters are edited
         self.info.setHtml("".join(H))
@@ -1881,7 +1976,7 @@ class ToolsPage(Page):
         j = self._active_job(self.current) if self.current else None
         busy = j is not None
         self.run_btn.setEnabled(bool(self.current) and not busy)
-        self.run_btn.setText(("  排队中…" if j.status == QUEUED else "  运行中…") if busy else "  运行")
+        self.run_btn.setText(("  Queued…" if j.status == QUEUED else "  Running…") if busy else "  Run")
 
     def run(self):
         tid = self.current
@@ -1890,14 +1985,15 @@ class ToolsPage(Page):
         tool = BY_ID[tid]
         _, form, _ = self._param_page(tid)
         if form is not None and not form.is_valid():
-            error_box(self, "参数无效", "以下参数的值无法解析或超出范围：\n" + ", ".join(form.invalid_fields()))
+            error_box(self, "Invalid parameters", "These values cannot be parsed or are out of range:\n"
+                      + ", ".join(form.invalid_fields()))
             return None
         ctx = self._ctx(tid)
         pre, fixed, writes = self._checks(tool, ctx)
         hard = [p for p in pre if p.get("hard") and not p["ok"]]
         if hard:
-            error_box(self, "无法运行", "\n".join("• " + _plain(p["label"]) + (f"（{p['detail']}）" if p["detail"] else "")
-                                               for p in hard))
+            error_box(self, "Cannot run", "\n".join("• " + _plain(p["label"])
+                                                 + (f" ({p['detail']})" if p["detail"] else "") for p in hard))
             return None
         missing = [p for p in pre if not p["ok"] and not p["optional"]]
         if missing:
@@ -1917,7 +2013,7 @@ class ToolsPage(Page):
                 try:
                     backup = self._backup(tid, fixed)
                 except OSError as e:
-                    error_box(self, "备份失败", f"无法备份将被覆盖的文件：{e}")
+                    error_box(self, "Backup failed", f"Could not back up the files that would be overwritten: {e}")
                     return None
         if writes is not None and (Path(writes).exists() or curated(Path(writes).parent)) \
                 and not self._confirm_write(Path(writes)):
@@ -1933,7 +2029,8 @@ class ToolsPage(Page):
         self.panel.attach(job)
         self.tabs.setCurrentIndex(0)
         if backup is not None:
-            self.note.setText(f"已把将被覆盖的 {len(fixed)} 个文件备份到 {_rel(backup)}（已提交的文件也可用 git checkout 恢复）。")
+            self.note.setText(f"Backed up {len(fixed)} file{'s' if len(fixed) > 1 else ''} to {_rel(backup)} before "
+                              "overwriting (committed files can also be restored with git checkout).")
             self.note.show()
         else:
             self.note.hide()
@@ -1944,22 +2041,22 @@ class ToolsPage(Page):
     def _confirm_missing(self, tool, missing):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("缺少前置文件")
-        box.setText(f"「{tool['title']}」需要的部分输入文件不存在，脚本很可能会中途报错。")
-        lines = ["• " + _plain(p["label"]) + (f"（{p['detail']}）" if p["detail"] else "") for p in missing]
+        box.setWindowTitle("Missing prerequisite files")
+        box.setText(f"Some input files of “{tool['title']}” do not exist; the script will probably fail partway.")
+        lines = ["• " + _plain(p["label"]) + (f" ({p['detail']})" if p["detail"] else "") for p in missing]
         prods = []
         for p in missing:
             if p.get("producer") and p["producer"] not in prods:
                 prods.append(p["producer"])
-        info = "缺少：\n" + "\n".join(lines)
+        info = "Missing:\n" + "\n".join(lines)
         if prods:
-            info += "\n\n生成方法：\n" + "\n".join("• " + how for _, how in prods)
+            info += "\n\nHow to get them:\n" + "\n".join("• " + how for _, how in prods)
         box.setInformativeText(info)
         go = None
         if prods:
-            go = box.addButton(f"前往『{producer_name(prods[0][0])}』", QMessageBox.ButtonRole.ActionRole)
-        anyway = box.addButton("仍然运行", QMessageBox.ButtonRole.DestructiveRole)
-        cancel = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            go = box.addButton(f"Go to {producer_name(prods[0][0])}", QMessageBox.ButtonRole.ActionRole)
+        anyway = box.addButton("Run anyway", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(go or cancel)
         box.exec()
         c = box.clickedButton()
@@ -1972,14 +2069,14 @@ class ToolsPage(Page):
     def _confirm_overwrite(self, tool, files):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("覆盖固定路径的输出？")
-        box.setText(f"「{tool['title']}」只能写到固定路径，运行会覆盖以下文件：")
-        lines = [f"• {_rel(f)}" + ("（已提交到 git）" if committed(f) else "") for f in files]
-        box.setInformativeText("\n".join(lines) + "\n\n建议先备份（复制到 results/gui_runs/ 下的新文件夹）；"
-                               "已提交的文件也可以之后用 git checkout 恢复。")
-        b_backup = box.addButton("备份后运行", QMessageBox.ButtonRole.AcceptRole)
-        b_over = box.addButton("直接覆盖", QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setWindowTitle("Overwrite fixed-path outputs?")
+        box.setText(f"“{tool['title']}” can only write to fixed paths; running it overwrites these files:")
+        lines = [f"• {_rel(f)}" + (" (committed to git)" if committed(f) else "") for f in files]
+        box.setInformativeText("\n".join(lines) + "\n\nBack them up first (copied into a new folder under "
+                               "results/gui_runs/); committed files can also be restored later with git checkout.")
+        b_backup = box.addButton("Back up and run", QMessageBox.ButtonRole.AcceptRole)
+        b_over = box.addButton("Overwrite", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(b_backup)
         box.exec()
         c = box.clickedButton()
@@ -1988,13 +2085,14 @@ class ToolsPage(Page):
     def _confirm_write(self, path: Path) -> bool:
         """Writing into the selected input folder: asks before overwriting, and before adding to a curated folder."""
         if path.exists():
-            title = "覆盖已有结果？"
-            text = (f"{_rel(path)} 已存在" + ("（已提交到 git）" if committed(path) else "")
-                    + "，重新解调会覆盖它。继续吗？")
+            title = "Overwrite existing result?"
+            text = (f"{_rel(path)} already exists" + (" (committed to git)" if committed(path) else "")
+                    + "; re-demodulating will overwrite it. Continue?")
         else:
-            title = "写入仓库中的结果文件夹？"
-            text = (f"脚本只能把结果写到所选运行文件夹本身，将新建 {_rel(path)}"
-                    f"（{_rel(path.parent)} 是仓库中的结果文件夹，不是 results/gui_runs/ 下的新文件夹）。继续吗？")
+            title = "Write into a committed result folder?"
+            text = (f"The script can only write its result into the selected run folder itself and will create "
+                    f"{_rel(path)} ({_rel(path.parent)} is a committed result folder, not a new folder under "
+                    "results/gui_runs/). Continue?")
         return QMessageBox.question(self, title, text) == QMessageBox.StandardButton.Yes
 
     def _backup(self, tid, files) -> Path:
@@ -2063,7 +2161,7 @@ class ToolsPage(Page):
                 continue                        # output deleted since (e.g. a cleaned-up gui_runs folder)
             when = time.strftime("%m-%d %H:%M", time.localtime(j.finished or j.created))
             key = key_of_spec(j.spec) if tool.get("extra") in KEYSETS else None
-            entries.append(dict(label=f"任务 {when} · {j.title}", target=target, job=j, key=key))
+            entries.append(dict(label=f"Job {when} · {j.title}", target=target, job=j, key=key))
             if target is not None:
                 seen.add(self._tkey(target))
         try:
@@ -2099,7 +2197,7 @@ class ToolsPage(Page):
             self.src.addItem(e["label"])
             self.src.setItemData(i, e["label"], Qt.ItemDataRole.ToolTipRole)
         if not entries:
-            self.src.addItem("（暂无输出）")
+            self.src.addItem("(no outputs yet)")
         self.src.setEnabled(bool(entries))
         idx = 0
         if select_job is not None:
@@ -2120,9 +2218,11 @@ class ToolsPage(Page):
     def _show_empty(self, key=None):
         self._entry = None
         if BY_ID[self.current].get("extra") in KEYSETS and key:
-            msg = f"图 {key} 还没有生成（results/slides/ 中没有对应文件）。点击右上角『运行』渲染它。"
+            msg = (f"Figure {key} has not been rendered yet (no matching file in results/slides/). "
+                   "Click Run (top right) to render it.")
         else:
-            msg = "还没有输出。设置好参数后点击右上角『运行』，完成后结果会自动显示在这里。"
+            msg = ("No outputs yet. Set the parameters and click Run (top right); the results appear here "
+                   "automatically when the job finishes.")
         self._set_items([], empty=msg)
         self.btn_folder.setEnabled(False)
 
@@ -2146,7 +2246,7 @@ class ToolsPage(Page):
         try:
             items = tool["render"](e["target"], log)
         except Exception as ex:
-            items = [("text", "错误", f"无法显示这个输出：{type(ex).__name__}: {ex}", "error.txt")]
+            items = [("text", "Error", f"Cannot display this output: {type(ex).__name__}: {ex}", "error.txt")]
         self._entry = e
         cur = self.tabs.currentIndex()
         self._set_items(items)
@@ -2202,12 +2302,12 @@ class ToolsPage(Page):
         if not items:
             w = QWidget()
             l = QVBoxLayout(w)
-            msg = label(empty or "没有找到输出文件。", "muted", wrap=True)
+            msg = label(empty or "No output files found.", "muted", wrap=True)
             msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
             l.addStretch(1)
             l.addWidget(msg)
             l.addStretch(1)
-            self.tabs.addTab(w, "输出")
+            self.tabs.addTab(w, "Output")
 
     def _table_widget(self, headers, rows, note=""):
         t = ThemeManager.instance().tokens
@@ -2216,9 +2316,10 @@ class ToolsPage(Page):
         l.setContentsMargins(10, 8, 10, 10)
         l.setSpacing(6)
         top = QHBoxLayout()
-        top.addWidget(label(note or f"{len(rows)} 行", "muted", wrap=True), 1)
+        top.addWidget(label(note or f"{len(rows)} row{'s' if len(rows) != 1 else ''}", "muted", wrap=True), 1)
         tw = QTableWidget(len(rows), len(headers))
-        top.addWidget(button("复制表格", lambda: self._copy_table(headers, rows), "flat", "以制表符分隔复制到剪贴板"), 0,
+        top.addWidget(button("Copy table", lambda: self._copy_table(headers, rows), "flat",
+                             "Copy to the clipboard as tab-separated text"), 0,
                       Qt.AlignmentFlag.AlignTop)
         l.addLayout(top)
         tw.setHorizontalHeaderLabels([str(h) for h in headers])
@@ -2261,10 +2362,10 @@ class ToolsPage(Page):
         l.setContentsMargins(10, 8, 10, 10)
         l.setSpacing(6)
         top = QHBoxLayout()
-        top.addWidget(label(f"{len(text.splitlines())} 行", "muted"), 1)
-        top.addWidget(button("复制", lambda: QGuiApplication.clipboard().setText(text), "flat"))
-        top.addWidget(button("保存为文本…", lambda: self._save_text(text, fname), "flat",
-                             "把这份文本输出保存为 .txt 文件"))
+        top.addWidget(label(f"{len(text.splitlines())} lines", "muted"), 1)
+        top.addWidget(button("Copy", lambda: QGuiApplication.clipboard().setText(text), "flat"))
+        top.addWidget(button("Save as text…", lambda: self._save_text(text, fname), "flat",
+                             "Save this text output as a .txt file"))
         l.addLayout(top)
         lv = LogView()
         lv.set_text(text)
@@ -2276,12 +2377,12 @@ class ToolsPage(Page):
         stem, ext = Path(fname).stem, Path(fname).suffix or ".txt"
         folder = paths.GUI_RUNS if paths.GUI_RUNS.is_dir() else Path.home()
         default = folder / f"{stem}_{time.strftime('%Y%m%d-%H%M%S')}{ext}"
-        path, _ = QFileDialog.getSaveFileName(self, "保存文本输出", str(default), "Text (*.txt);;所有文件 (*)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save text output", str(default), "Text (*.txt);;All files (*)")
         if path:
             try:
                 Path(path).write_text(text + "\n", encoding="utf-8")
             except OSError as e:
-                error_box(self, "保存失败", str(e))
+                error_box(self, "Save failed", str(e))
 
     # ------------------------------------------------------------------ misc
     def _open_script(self):

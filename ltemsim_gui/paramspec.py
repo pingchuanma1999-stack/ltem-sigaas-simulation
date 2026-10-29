@@ -120,43 +120,45 @@ def specs_for(cls, labels: dict | None = None, basic: set | None = None, choices
         out.append(FieldSpec(
             name=f.name, default=v, type=kind, label=labels.get(f.name, f.name),
             unit=units.get(f.name, unit), help=rest,
-            section=section_zh.get(sec, sec) or "其他", advanced=(basic is not None and f.name not in basic),
+            section=section_zh.get(sec, sec) or "Other", advanced=(basic is not None and f.name not in basic),
             choices=tuple(choices.get(f.name, ())), minimum=lo, maximum=hi))
     return out
 
 
 # ----------------------------------------------------------------------------- Params (steady state)
-PARAMS_SECTIONS_ZH = {
-    "bias": "偏压与温度",
-    "geometry": "几何与网格",
-    "GaAs bulk, 300 K": "GaAs 体材料",
-    "shallow compensation": "浅能级补偿",
-    "EL2 (0/+)": "EL2 深能级",
-    "pump": "泵浦光",
-    "tip model": "针尖",
-    "numerics": "数值求解",
+PARAMS_SECTIONS_ZH = {          # section titles shown in the form (name kept for compatibility)
+    "bias": "Bias & temperature",
+    "geometry": "Geometry & grid",
+    "GaAs bulk, 300 K": "GaAs bulk",
+    "shallow compensation": "Shallow compensation",
+    "EL2 (0/+)": "EL2 deep level",
+    "pump": "Pump",
+    "tip model": "Tip",
+    "numerics": "Numerics",
 }
 
 PARAMS_LABELS = {
-    "V_bias": "偏压 V_bias", "anode_side": "阳极位置 anode_side", "T": "温度 T",
-    "gap": "电极间隙 gap", "x_half": "计算区半宽 x_half", "depth": "GaAs 厚度 depth", "air_height": "空气层高度",
-    "back_boundary": "背面边界条件", "V_back": "背面电位 V_back",
-    "dx_fine": "细网格 dx", "x_fine": "细网格范围 |x|≤", "dx_coarse": "粗网格 dx", "dz_fine": "细网格 dz",
-    "z_fine": "细网格 z 范围", "dz_coarse_semi": "粗网格 dz (GaAs)", "dz_coarse_air": "粗网格 dz (空气)",
-    "eps_r": "相对介电常数 ε_r", "Eg": "带隙 E_g", "Nc": "导带有效态密度 N_c", "Nv": "价带有效态密度 N_v",
-    "mu_n": "电子迁移率 μ_n", "mu_p": "空穴迁移率 μ_p", "v_sat_n": "电子饱和速度", "v_sat_p": "空穴饱和速度",
-    "field_dependent_mobility": "场依赖迁移率 μ(E)", "B_rad": "辐射复合系数 B", "S_surface": "表面复合速度 S",
-    "contact_density": "注入接触密度", "tau_srh_ns": "额外 SRH 寿命",
-    "N_A": "浅受主 N_A", "N_D": "浅施主 N_D",
-    "N_T": "EL2 总浓度 N_T", "E_T_below_Ec": "EL2 能级 E_c−E_T", "sigma_n": "电子俘获截面 σ_n",
-    "sigma_p": "空穴俘获截面 σ_p", "sigma_n_opt": "光电离截面 σ_n°", "sigma_p_opt": "光电离截面 σ_p°",
-    "m_eff_n": "电子有效质量", "m_eff_p": "空穴有效质量",
-    "wavelength_nm": "波长 λ", "rep_rate": "重复频率", "P_avg_mW": "平均功率 P_avg", "spot_w_um": "光斑半径 w (1/e²)",
-    "spot_x0_um": "光斑中心 x0", "reflectivity": "反射率 R", "alpha_cm": "吸收系数 α", "optical_emission_on": "EL2 光电离",
-    "tip_height_um": "针尖采样高度", "tip_x_scan_um": "针尖扫描位置",
-    "gummel_max_iter": "Gummel 最大迭代", "gummel_tol": "Gummel 容差", "poisson_max_iter": "Poisson 最大迭代",
-    "poisson_tol": "Poisson 容差", "generation_ramp": "光生成率爬升序列", "bias_ramp_steps": "偏压爬升步数",
-    "n_floor": "密度下限",
+    "V_bias": "Bias V_bias", "anode_side": "Anode side", "T": "Temperature T",
+    "gap": "Electrode gap", "x_half": "Box half-width x_half", "depth": "GaAs depth", "air_height": "Air height",
+    "back_boundary": "Back-surface boundary", "V_back": "Back-surface potential V_back",
+    "dx_fine": "Fine grid dx", "x_fine": "Fine grid for |x| ≤", "dx_coarse": "Coarse grid dx", "dz_fine": "Fine grid dz",
+    "z_fine": "Fine grid z extent", "dz_coarse_semi": "Coarse dz (GaAs)", "dz_coarse_air": "Coarse dz (air)",
+    "eps_r": "Permittivity ε_r", "Eg": "Band gap E_g", "Nc": "Conduction-band DOS N_c", "Nv": "Valence-band DOS N_v",
+    "mu_n": "Electron mobility μ_n", "mu_p": "Hole mobility μ_p", "v_sat_n": "Electron v_sat", "v_sat_p": "Hole v_sat",
+    "field_dependent_mobility": "Field-dependent mobility μ(E)", "B_rad": "Radiative coefficient B",
+    "S_surface": "Surface recombination S", "contact_density": "Injecting-contact density",
+    "tau_srh_ns": "Extra SRH lifetime",
+    "N_A": "Shallow acceptors N_A", "N_D": "Shallow donors N_D",
+    "N_T": "EL2 density N_T", "E_T_below_Ec": "EL2 level E_c − E_T", "sigma_n": "Electron capture σ_n",
+    "sigma_p": "Hole capture σ_p", "sigma_n_opt": "Optical cross-section σ_n°", "sigma_p_opt": "Optical cross-section σ_p°",
+    "m_eff_n": "Electron effective mass", "m_eff_p": "Hole effective mass",
+    "wavelength_nm": "Wavelength λ", "rep_rate": "Repetition rate", "P_avg_mW": "Average power P_avg",
+    "spot_w_um": "Spot radius w (1/e²)", "spot_x0_um": "Spot centre x0", "reflectivity": "Reflectivity R",
+    "alpha_cm": "Absorption α", "optical_emission_on": "EL2 photo-ionisation",
+    "tip_height_um": "Tip sampling height", "tip_x_scan_um": "Tip scan positions",
+    "gummel_max_iter": "Gummel max iterations", "gummel_tol": "Gummel tolerance", "poisson_max_iter": "Poisson max iterations",
+    "poisson_tol": "Poisson tolerance", "generation_ramp": "Generation ramp", "bias_ramp_steps": "Bias ramp steps",
+    "n_floor": "Density floor",
 }
 
 PARAMS_BASIC = {
@@ -179,17 +181,18 @@ def params_specs() -> list[FieldSpec]:
 
 # ----------------------------------------------------------------------------- PulseConfig (single pulse)
 PULSE_LABELS = {
-    "V_bias": "偏压 V_bias", "anode_side": "阳极位置", "P_avg_mW": "平均功率 P_avg", "rep_rate": "重复频率",
-    "fwhm_fs": "脉宽 FWHM", "w_um": "光斑半径 w", "theta_deg": "入射角 θ", "absorbed_fraction": "吸收比例 (1−R)",
-    "alpha_cm": "吸收系数 α", "x_beam_um": "光束位置 X", "n_sat": "饱和密度 n_sat", "m_n": "电子有效质量",
-    "m_p": "空穴有效质量", "tau_n_ps": "电子动量弛豫 τ_n", "tau_p_ps": "空穴动量弛豫 τ_p", "v_sat": "饱和速度",
-    "T": "载流子温度 T", "degenerate_diffusion": "简并扩散 (Fermi–Dirac)", "tip_in_poisson": "针尖作为等势体",
-    "tip_height_nm": "针尖高度", "tip_half_angle_deg": "针尖半角", "tip_apex_radius_um": "针尖曲率半径",
-    "V_tip": "针尖电位 V_tip", "applied_vertical": "保留外场竖直分量", "dt_fs": "时间步长 dt", "t_end_ps": "模拟时长",
-    "record_every_fs": "记录间隔", "tip_x_um": "针尖 x", "heights_nm": "近场高度列表", "snapshot_times_ps": "快照时刻",
-    "x_fine": "细网格范围", "dx_fine": "细网格 dx", "x_half": "计算区半宽", "depth": "GaAs 厚度", "air_height": "空气层高度",
+    "V_bias": "Bias V_bias", "anode_side": "Anode side", "P_avg_mW": "Average power P_avg", "rep_rate": "Repetition rate",
+    "fwhm_fs": "Pulse width (FWHM)", "w_um": "Spot radius w", "theta_deg": "Incidence angle θ",
+    "absorbed_fraction": "Absorbed fraction (1−R)", "alpha_cm": "Absorption α", "x_beam_um": "Beam position X",
+    "n_sat": "Saturation density n_sat", "m_n": "Electron effective mass", "m_p": "Hole effective mass",
+    "tau_n_ps": "Electron momentum relaxation τ_n", "tau_p_ps": "Hole momentum relaxation τ_p", "v_sat": "Saturation velocity",
+    "T": "Carrier temperature T", "degenerate_diffusion": "Degenerate diffusion (Fermi–Dirac)",
+    "tip_in_poisson": "Tip as equipotential", "tip_height_nm": "Tip height", "tip_half_angle_deg": "Tip half-angle",
+    "tip_apex_radius_um": "Tip apex radius", "V_tip": "Tip potential V_tip", "applied_vertical": "Keep vertical applied field",
+    "dt_fs": "Time step dt", "t_end_ps": "Simulated time", "record_every_fs": "Record interval", "tip_x_um": "Tip x",
+    "heights_nm": "Near-field heights", "snapshot_times_ps": "Snapshot times", "x_fine": "Fine grid extent",
+    "dx_fine": "Fine grid dx", "x_half": "Box half-width", "depth": "GaAs depth", "air_height": "Air height",
 }
-
 
 PULSE_UNITS = {
     "V_bias": "V", "P_avg_mW": "mW", "rep_rate": "Hz", "fwhm_fs": "fs", "w_um": "um", "theta_deg": "deg",
@@ -201,12 +204,12 @@ PULSE_UNITS = {
 }
 PULSE_SECTION_OF = {}
 for _sec, _names in (
-        ("偏压", ("V_bias", "anode_side")),
-        ("激发", ("P_avg_mW", "rep_rate", "fwhm_fs", "w_um", "theta_deg", "absorbed_fraction", "alpha_cm", "x_beam_um", "n_sat")),
-        ("输运", ("m_n", "m_p", "tau_n_ps", "tau_p_ps", "v_sat", "T", "degenerate_diffusion")),
-        ("针尖", ("tip_in_poisson", "tip_height_nm", "tip_half_angle_deg", "tip_apex_radius_um", "V_tip", "applied_vertical", "tip_x_um")),
-        ("运行", ("dt_fs", "t_end_ps", "record_every_fs", "heights_nm", "snapshot_times_ps")),
-        ("网格", ("x_fine", "dx_fine", "x_half", "depth", "air_height"))):
+        ("Bias", ("V_bias", "anode_side")),
+        ("Excitation", ("P_avg_mW", "rep_rate", "fwhm_fs", "w_um", "theta_deg", "absorbed_fraction", "alpha_cm", "x_beam_um", "n_sat")),
+        ("Transport", ("m_n", "m_p", "tau_n_ps", "tau_p_ps", "v_sat", "T", "degenerate_diffusion")),
+        ("Tip", ("tip_in_poisson", "tip_height_nm", "tip_half_angle_deg", "tip_apex_radius_um", "V_tip", "applied_vertical", "tip_x_um")),
+        ("Run", ("dt_fs", "t_end_ps", "record_every_fs", "heights_nm", "snapshot_times_ps")),
+        ("Grid", ("x_fine", "dx_fine", "x_half", "depth", "air_height"))):
     for _n in _names:
         PULSE_SECTION_OF[_n] = _sec
 PULSE_BASIC = {"V_bias", "anode_side", "P_avg_mW", "w_um", "theta_deg", "x_beam_um", "n_sat", "tau_n_ps", "tau_p_ps",

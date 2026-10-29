@@ -8,33 +8,33 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QRectF, Qt, QTimer
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QIcon, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLineEdit,
                                QMenu, QMessageBox, QSplitter, QStackedWidget, QStyle, QStyledItemDelegate,
                                QStyleOptionViewItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 
 from .. import icons, nav, paths
-from ..jobs import CANCELLED, FAILED, FINISHED, QUEUED, RUNNING, STATUS_ZH, JobManager
+from ..jobs import CANCELLED, FAILED, FINISHED, QUEUED, RUNNING, STATUS_TEXT, JobManager
 from ..theme import ThemeManager
 from ..widgets.common import Page, button, label, reveal
 from ..widgets.runpanel import RunPanel, fmt_elapsed
-from .home import KIND_ICON, KIND_ZH, Elided, status_color
+from .home import KIND_ICON, KIND_TEXT, Elided, plural, status_color
 
-COLS = ("状态", "名称", "类型", "开始时间", "用时", "进度", "输出")
+COLS = ("Status", "Name", "Type", "Started", "Elapsed", "Progress", "Output")
 C_STATUS, C_NAME, C_KIND, C_START, C_ELAPSED, C_PROG, C_OUT = range(7)
 SORT_ROLE = Qt.ItemDataRole.UserRole + 1
 PROG_ROLE = Qt.ItemDataRole.UserRole + 2
 STATUS_ROLE = Qt.ItemDataRole.UserRole + 3
 STATUS_ORDER = {RUNNING: 0, QUEUED: 1, FAILED: 2, CANCELLED: 3, FINISHED: 4}
-FILTERS = (("全部状态", None), ("运行中 / 排队", (RUNNING, QUEUED)), ("已完成", (FINISHED,)), ("失败", (FAILED,)),
-           ("已取消", (CANCELLED,)))
-# job kind -> (page id, open() keyword) for "打开结果"; finished "tool" jobs open in the tools page (by job id)
+FILTERS = (("All statuses", None), ("Running / queued", (RUNNING, QUEUED)), ("Finished", (FINISHED,)),
+           ("Failed", (FAILED,)), ("Cancelled", (CANCELLED,)))
+# job kind -> (page id, open() keyword) for "Open results"; finished "tool" jobs open in the tools page (by job id)
 RESULT_PAGE = {"steady": ("steady", "path"), "sweep": ("sweep", "path"), "pulse": ("pulse", "run_dir"),
                "redemod": ("pulse", "run_dir"), "fdtd": ("fdtd", "path"), "fdtd_heights": ("fdtd", "path"),
                "tip_sim": ("tip", "path"), "tip_demod": ("tip", "path")}
-PAGE_ZH = {"steady": "稳态求解", "sweep": "参数扫描", "pulse": "单脉冲发射链", "fdtd": "泵浦 FDTD", "tip": "针尖位置链",
-           "results": "结果浏览", "tools": "分析与作图"}
+PAGE_TEXT = {"steady": "Steady state", "sweep": "Parameter sweep", "pulse": "Single-pulse chain", "fdtd": "Pump FDTD (optics)",
+             "tip": "Tip-position chain", "results": "Results browser", "tools": "Tools & figures"}     # sidebar names
 
 
 # ----------------------------------------------------------------------------- helpers (pure)
@@ -87,12 +87,15 @@ def rerun_warning(job) -> str | None:
     dirs = [paths.absolute(d) for d in _spec_dirs(job)]
     committed = [d for d in dirs if _inside(d, paths.RESULTS) and not _inside(d, paths.GUI_RUNS)]
     if committed:
-        return ("此任务写入仓库中已提交的结果文件夹：\n" + "\n".join(f"  {paths.rel(d)}" for d in committed)
-                + "\n\n重新运行会覆盖其中的同名文件（原页面运行前的确认与备份不会再进行）。")
+        return ("This job writes into result folders committed to the repository:\n"
+                + "\n".join(f"  {paths.rel(d)}" for d in committed)
+                + "\n\nRe-running it overwrites files with the same names there (the confirmation and backup that "
+                  "the original page does before a run are skipped).")
     spec = job.spec or {}
     if not dirs and job.kind == "tool" and spec.get("func", "main") is None and spec.get("script", "").startswith("scripts/"):
-        return ("此脚本没有单独的输出文件夹，会把图直接写到固定位置（例如 results/slides/ 中已提交的图）。\n\n"
-                "重新运行会直接覆盖这些文件（「分析与作图」页面运行前的确认与备份不会再进行）。")
+        return ("This script has no output folder of its own: it writes its figures to fixed locations (e.g. the "
+                "committed figures in results/slides/).\n\nRe-running it overwrites those files directly (the "
+                "confirmation and backup that Tools & figures does before a run are skipped).")
     return None
 
 
@@ -156,8 +159,10 @@ def fmt_start(job) -> str:
     if not ts:
         return "—"
     lt = time.localtime(ts)
-    s = time.strftime("%H:%M:%S", lt) if time.strftime("%Y%m%d", lt) == time.strftime("%Y%m%d") else time.strftime("%m-%d %H:%M", lt)
-    return ("排队于 " + s) if job.status == QUEUED else s
+    today = time.strftime("%Y%m%d", lt) == time.strftime("%Y%m%d")
+    if job.status == QUEUED:                # not started yet: when it was queued (seconds in the tooltip)
+        return "queued " + time.strftime("%H:%M" if today else "%m-%d %H:%M", lt)
+    return time.strftime("%H:%M:%S", lt) if today else time.strftime("%m-%d %H:%M", lt)
 
 
 _dot_cache: dict[str, QIcon] = {}
@@ -200,7 +205,7 @@ class _Item(QTreeWidgetItem):
 
 
 class ProgressDelegate(QStyledItemDelegate):
-    """Rounded progress bar + percentage inside the 进度 cell."""
+    """Rounded progress bar + percentage inside the Progress cell."""
 
     def paint(self, p: QPainter, opt, index):
         o = QStyleOptionViewItem(opt)
@@ -213,7 +218,7 @@ class ProgressDelegate(QStyledItemDelegate):
         frac = index.data(PROG_ROLE)
         status = index.data(STATUS_ROLE)
         r = QRectF(opt.rect).adjusted(8, 0, -8, 0)
-        text_w = 44
+        text_w = 52
         bar = QRectF(r.x(), r.center().y() - 3.5, max(10.0, r.width() - text_w), 7)
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -227,7 +232,7 @@ class ProgressDelegate(QStyledItemDelegate):
             c = QColor(col)
             c.setAlpha(90)
             p.fillPath(track, c)
-            txt = "进行中"
+            txt = "running"
         elif frac is not None:
             f = max(0.0, min(1.0, float(frac)))
             if f > 0:
@@ -244,10 +249,18 @@ class ProgressDelegate(QStyledItemDelegate):
         p.restore()
 
 
+class _Splitter(QSplitter):
+    """Prefers its minimum height: the page sits in the window's scroll area, which sizes it by its preferred height,
+    so the natural heights of the table and the log would push the page past small windows (e.g. 1120 x 700)."""
+
+    def sizeHint(self):
+        return QSize(super().sizeHint().width(), self.minimumSizeHint().height())
+
+
 # ----------------------------------------------------------------------------- page
 class JobsPage(Page):
-    title = "任务中心"
-    subtitle = "所有模拟任务（含以前的会话）的实时进度、日志与输出；任务在独立的进程中运行。"
+    title = "Job center"
+    subtitle = "Live progress, logs and outputs of every job, including earlier sessions."
 
     def __init__(self):
         super().__init__()
@@ -263,15 +276,17 @@ class JobsPage(Page):
         self.filter.currentIndexChanged.connect(self._apply_filter)
         self.header.add_action(self.filter)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("搜索名称 / 脚本 / 输出…")
+        self.search.setPlaceholderText("Search jobs…")
+        self.search.setToolTip("Search by name, type, script, output folder or job ID (all words must match)")
         self.search.setClearButtonEnabled(True)
         self.search.setFixedWidth(200)
         self.search.textChanged.connect(self._apply_filter)
         self.header.add_action(self.search)
-        self.btn_clear = button("清除已完成", self.clear_finished, tooltip="从列表中移除已结束的任务（不会删除任何结果文件）")
+        self.btn_clear = button("Clear finished", self.clear_finished,
+                                tooltip="Remove ended jobs from the list (no result files are deleted)")
         self.header.add_action(self.btn_clear)
 
-        split = QSplitter(Qt.Orientation.Vertical)
+        split = _Splitter(Qt.Orientation.Vertical)
         split.setChildrenCollapsible(False)
 
         # ---------------- table
@@ -295,10 +310,10 @@ class JobsPage(Page):
         h = self.tree.header()
         h.setStretchLastSection(False)
         h.setSectionResizeMode(C_NAME, QHeaderView.ResizeMode.Stretch)
-        for c, w in ((C_STATUS, 92), (C_KIND, 120), (C_START, 112), (C_ELAPSED, 100), (C_PROG, 140), (C_OUT, 250)):
+        for c, w in ((C_STATUS, 100), (C_KIND, 128), (C_START, 112), (C_ELAPSED, 88), (C_PROG, 124), (C_OUT, 250)):
             h.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
             self.tree.setColumnWidth(c, w)
-        # the stretched 名称 column must not collapse on narrow windows: the 输出 column gives way (until the user sizes it)
+        # the stretched Name column must not collapse on narrow windows: the Output column gives way (until the user sizes it)
         self._out_user_w = False
         self._fitting = False
         h.sectionResized.connect(self._on_section_resized)
@@ -315,7 +330,7 @@ class JobsPage(Page):
         empty = QFrame()
         empty.setObjectName("card")
         el = QVBoxLayout(empty)
-        self.detail_empty = label("在上方选择一个任务，查看它的日志、参数与输出。", "muted", wrap=True)
+        self.detail_empty = label("Select a job above to see its log, parameters and output.", "muted", wrap=True)
         self.detail_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         el.addWidget(self.detail_empty)
         self.detail_stack.addWidget(empty)
@@ -327,13 +342,14 @@ class JobsPage(Page):
         dl.setSpacing(8)
         bar = QHBoxLayout()
         bar.setSpacing(6)
-        bar.addWidget(label("任务详情", "cardTitle"))
+        bar.addWidget(label("Job details", "cardTitle"))
         bar.addStretch(1)
-        self.btn_stop = button("停止", self.stop, "danger", "停止此任务（排队中的任务直接取消）")
-        self.btn_rerun = button("重新运行", lambda: self.rerun(), None, "用相同的脚本、参数与输出文件夹再运行一次")
-        self.btn_open = button("打开结果", self.open_result, "primary")
-        self.btn_reveal = button("在访达中显示", self.reveal_output, None, "在访达中显示输出文件夹（没有输出文件夹时显示日志文件）")
-        self.btn_copy = button("复制命令", self.copy_command, None, "复制可在终端中复现此任务的命令")
+        self.btn_stop = button("Stop", self.stop, "danger", "Stop this job (a queued job is simply cancelled)")
+        self.btn_rerun = button("Re-run", lambda: self.rerun(), None, "Run it again with the same script, parameters and output folder")
+        self.btn_open = button("Open results", self.open_result, "primary")
+        self.btn_reveal = button("Show in Finder", self.reveal_output, None,
+                                 "Show the output folder in Finder (the log file when the job has no output folder)")
+        self.btn_copy = button("Copy command", self.copy_command, None, "Copy a terminal command that reproduces this job")
         for b in (self.btn_stop, self.btn_rerun, self.btn_reveal, self.btn_copy, self.btn_open):
             bar.addWidget(b)
         dl.addLayout(bar)
@@ -343,7 +359,7 @@ class JobsPage(Page):
         meta.setHorizontalSpacing(12)
         meta.setVerticalSpacing(3)
         self.meta = {}
-        for i, (k, text) in enumerate((("call", "调用"), ("out", "输出"), ("time", "时间"), ("log", "日志"))):
+        for i, (k, text) in enumerate((("call", "Call"), ("out", "Output"), ("time", "Time"), ("log", "Log"))):
             meta.addWidget(label(text, "metricLabel"), i, 0, Qt.AlignmentFlag.AlignTop)
             if k in ("out", "log"):         # long paths: one elided line (full path in the tooltip) leaves room for the log
                 v = Elided("", None, Qt.TextElideMode.ElideMiddle)
@@ -363,7 +379,7 @@ class JobsPage(Page):
 
         self._copy_timer = QTimer(self)
         self._copy_timer.setSingleShot(True)
-        self._copy_timer.timeout.connect(lambda: self.btn_copy.setText("复制命令"))
+        self._copy_timer.timeout.connect(lambda: self.btn_copy.setText("Copy command"))
 
         self._rebuild()                     # rows are filled with the current theme's colours
         self.mgr.job_added.connect(self._on_added)
@@ -397,7 +413,7 @@ class JobsPage(Page):
     def _fill(self, it: _Item, job):
         t = ThemeManager.instance().tokens
         col = QColor(status_color(job.status, t))
-        it.setText(C_STATUS, STATUS_ZH.get(job.status, job.status))
+        it.setText(C_STATUS, STATUS_TEXT.get(job.status, job.status))
         it.setIcon(C_STATUS, dot_icon(col.name()))
         it.setForeground(C_STATUS, col)
         f = QFont(self.tree.font())
@@ -407,7 +423,7 @@ class JobsPage(Page):
         it.setText(C_NAME, job.title)
         it.setToolTip(C_NAME, job.title)
         it.setData(C_NAME, SORT_ROLE, job.title.lower())
-        it.setText(C_KIND, KIND_ZH.get(job.kind, job.kind))
+        it.setText(C_KIND, KIND_TEXT.get(job.kind, job.kind))
         it.setIcon(C_KIND, kind_icon(job.kind, t.muted))
         it.setData(C_KIND, SORT_ROLE, job.kind)
         it.setText(C_START, fmt_start(job))
@@ -419,11 +435,11 @@ class JobsPage(Page):
                    (1.0 if job.status == FINISHED else None))
         it.setData(C_PROG, STATUS_ROLE, job.status)
         it.setData(C_PROG, SORT_ROLE, float(job.progress or (1.0 if job.status == FINISHED else 0.0)))
-        it.setToolTip(C_PROG, job.progress_text or STATUS_ZH.get(job.status, ""))
+        it.setToolTip(C_PROG, job.progress_text or STATUS_TEXT.get(job.status, ""))
         d = result_folder(job)
         out = paths.rel(d) if d is not None else ""
         it.setText(C_OUT, out or "—")
-        it.setToolTip(C_OUT, str(d) if d is not None else "此任务没有输出文件夹")
+        it.setToolTip(C_OUT, str(d) if d is not None else "This job has no output folder")
         it.setData(C_OUT, SORT_ROLE, out)
         it.setData(0, Qt.ItemDataRole.UserRole, job.id)
 
@@ -472,13 +488,13 @@ class JobsPage(Page):
     def _update_counts(self):
         js = self.mgr.jobs
         n = {s: sum(1 for j in js if j.status == s) for s in (RUNNING, QUEUED, FAILED)}
-        parts = [f"共 {len(js)} 个"]
+        parts = [plural(len(js), "job")]
         if n[RUNNING]:
-            parts.append(f"{n[RUNNING]} 运行中")
+            parts.append(f"{n[RUNNING]} running")
         if n[QUEUED]:
-            parts.append(f"{n[QUEUED]} 排队")
+            parts.append(f"{n[QUEUED]} queued")
         if n[FAILED]:
-            parts.append(f"{n[FAILED]} 失败")
+            parts.append(f"{n[FAILED]} failed")
         self.counts.setText(" · ".join(parts))
         self.btn_clear.setEnabled(any(not j.active for j in js))
 
@@ -488,7 +504,7 @@ class JobsPage(Page):
             return False
         q = self.search.text().strip().lower()
         if q:
-            hay = " ".join(str(x) for x in (job.title, job.kind, KIND_ZH.get(job.kind, ""), job.spec.get("script", ""),
+            hay = " ".join(str(x) for x in (job.title, job.kind, KIND_TEXT.get(job.kind, ""), job.spec.get("script", ""),
                                             *_spec_dirs(job), job.id)).lower()
             return all(w in hay for w in q.split())
         return True
@@ -502,10 +518,11 @@ class JobsPage(Page):
             it.setHidden(not ok)
             shown += ok
         if not self.mgr.jobs:
-            self.table_empty.setText("还没有任务。\n在「稳态求解」「单脉冲发射链」等页面启动一次模拟后，它会出现在这里，并显示实时进度和日志。")
+            self.table_empty.setText("No jobs yet.\nStart a simulation on a page such as Steady state or Single-pulse chain, "
+                                     "and it appears here with live progress and its log.")
             self.top_stack.setCurrentIndex(1)
         elif shown == 0:
-            self.table_empty.setText("没有符合筛选条件的任务。")
+            self.table_empty.setText("No jobs match the filter.")
             self.top_stack.setCurrentIndex(1)
         else:
             self.top_stack.setCurrentIndex(0)
@@ -537,10 +554,11 @@ class JobsPage(Page):
         if j is None:
             return
         self.btn_stop.setVisible(j.active)
-        self.btn_stop.setText("取消排队" if j.status == QUEUED else "停止")
+        self.btn_stop.setText("Cancel" if j.status == QUEUED else "Stop")
         self.btn_rerun.setEnabled(not j.active)
-        self.btn_rerun.setToolTip("任务结束后才能重新运行（避免两个任务同时写同一个输出文件夹）" if j.active else
-                                  "用相同的脚本、参数与输出文件夹再运行一次")
+        self.btn_rerun.setToolTip("A job can be re-run once it has ended (so that two jobs never write to the same "
+                                  "output folder)" if j.active else
+                                  "Run it again with the same script, parameters and output folder")
         ok, tip = self._open_state(j)
         self.btn_open.setEnabled(ok)
         self.btn_open.setToolTip(tip)
@@ -551,34 +569,34 @@ class JobsPage(Page):
             call = f"{spec.get('script', '')} : {spec.get('func', 'main')}({call_args(spec)})"
         self.meta["call"].setText(call)
         d = result_folder(j)
-        self.meta["out"].setText(str(d) if d is not None else "—（此任务没有输出文件夹）")
+        self.meta["out"].setText(str(d) if d is not None else "— (this job has no output folder)")
         self.meta["out"].setToolTip(str(d) if d is not None else "")
         fmt = lambda ts: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "—"
-        tm = f"创建 {fmt(j.created)}   开始 {fmt(j.started)}   结束 {fmt(j.finished)}"
+        tm = f"created {fmt(j.created)}   started {fmt(j.started)}   ended {fmt(j.finished)}"
         if j.exit_code is not None:
-            tm += f"   退出码 {j.exit_code}"
+            tm += f"   exit code {j.exit_code}"
         if j.after is not None and j.status == QUEUED:
-            tm += f"   等待「{j.after.title}」完成"
+            tm += f"   waiting for “{j.after.title}” to finish"
         self.meta["time"].setText(tm)
-        self.meta["log"].setText(f"任务 ID {j.id}   ·   {j.log_path}")
+        self.meta["log"].setText(f"job ID {j.id}   ·   {j.log_path}")
         self.meta["log"].setToolTip(str(j.log_path))
 
     # ------------------------------------------------------------------ actions
     @staticmethod
     def _open_state(j) -> tuple[bool, str]:
-        """(can open, tooltip) for 打开结果."""
+        """(can open, tooltip) for Open results."""
         if j.active:
-            return False, "任务结束后可打开结果"
+            return False, "Results can be opened once the job has ended"
         tgt = result_target(j)
         if tgt is None:
-            return False, "此任务没有输出文件夹"
-        page = PAGE_ZH.get(tgt[0], tgt[0])
+            return False, "This job has no output folder"
+        page = PAGE_TEXT.get(tgt[0], tgt[0])
         if tgt[0] == "tools":
-            return True, f"在「{page}」中查看此任务的输出"
+            return True, f"Show this job's output in {page}"
         d = Path(next(iter(tgt[1].values())))
         if not d.exists():
-            return False, "输出文件夹不存在（任务未产生输出，或已被删除）"
-        return True, f"在「{page}」中打开 {paths.rel(d)}"
+            return False, "The output folder does not exist (the job wrote no output, or it was deleted)"
+        return True, f"Open {paths.rel(d)} in {page}"
 
     def stop(self):
         if self.current is not None and self.current.active:
@@ -590,7 +608,7 @@ class JobsPage(Page):
             return None
         warn = rerun_warning(j)
         if warn and confirm:
-            r = QMessageBox.question(self, "重新运行会覆盖已有结果", warn + "\n\n仍要重新运行吗？")
+            r = QMessageBox.question(self, "Re-running overwrites existing results", warn + "\n\nRe-run anyway?")
             if r != QMessageBox.StandardButton.Yes:
                 return None
         job = self.mgr.rerun(j)
@@ -622,7 +640,7 @@ class JobsPage(Page):
         if self.current is None:
             return
         QGuiApplication.clipboard().setText(shell_command(self.current))
-        self.btn_copy.setText("已复制 ✓")
+        self.btn_copy.setText("Copied ✓")
         self._copy_timer.start(1600)
 
     def clear_finished(self, confirm=True):
@@ -630,8 +648,9 @@ class JobsPage(Page):
         if not done:
             return
         if confirm:
-            r = QMessageBox.question(self, "清除已完成的任务",
-                                     f"从任务列表中移除 {len(done)} 个已结束的任务？\n结果文件夹和日志文件不会被删除。")
+            r = QMessageBox.question(self, "Clear finished jobs",
+                                     f"Remove {plural(len(done), 'ended job')} from the job list?\n"
+                                     "Result folders and log files are not deleted.")
             if r != QMessageBox.StandardButton.Yes:
                 return
         self.mgr.clear_finished()
@@ -643,11 +662,11 @@ class JobsPage(Page):
         self.tree.setCurrentItem(it)
         j = self.current
         m = QMenu(self)
-        for text, slot, enabled in (("打开结果", self.open_result, self.btn_open.isEnabled()),
-                                    ("在访达中显示", self.reveal_output, True),
-                                    ("复制命令", self.copy_command, True),
-                                    ("重新运行", lambda: self.rerun(), bool(j and not j.active)),
-                                    ("停止", self.stop, bool(j and j.active))):
+        for text, slot, enabled in (("Open results", self.open_result, self.btn_open.isEnabled()),
+                                    ("Show in Finder", self.reveal_output, True),
+                                    ("Copy command", self.copy_command, True),
+                                    ("Re-run", lambda: self.rerun(), bool(j and not j.active)),
+                                    ("Stop", self.stop, bool(j and j.active))):
             a = QAction(text, m)
             a.setEnabled(enabled)
             a.triggered.connect(slot)

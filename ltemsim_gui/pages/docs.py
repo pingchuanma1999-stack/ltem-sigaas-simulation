@@ -24,19 +24,21 @@ PARAMS, SOURCES = ":params", ":sources"
 FONT_MIN, FONT_MAX, FONT_DEFAULT = 11, 22, 14
 MAX_TEXT_W = 920                      # comfortable reading width of the markdown column
 
-# repo-relative path -> Chinese title (others get "folder / stem")
+# repo-relative path -> list title (others get "folder / stem")
 TITLES = {
-    "README.md": "项目说明 README",
-    "LICENSE": "许可证 LICENSE",
-    "docs/model.md": "模型与方程",
-    "docs/pulse_chain.md": "单脉冲发射链",
-    "docs/reference/pizzuto_fdm_demod_reference.m": "Pizzuto FDM 解调参考代码",
-    "results/coarse_scenarios/contact_scenarios.md": "接触情景（粗网格）",
-    "results/coarse_scenarios/lifetime_scenarios.md": "寿命情景（粗网格）",
-    "results/coarse_scenarios/power_sweep.md": "功率扫描（粗网格）",
-    "results/field_bending/summary.md": "场弯曲汇总",
-    "results/pulse_chain/summary_table.md": "单脉冲链汇总表",
+    "README.md": "README",
+    "LICENSE": "License",
+    "docs/model.md": "Model and equations",
+    "docs/pulse_chain.md": "Single-pulse chain",
+    "docs/reference/pizzuto_fdm_demod_reference.m": "Pizzuto FDM demod (MATLAB)",
+    "results/coarse_scenarios/contact_scenarios.md": "Contact scenarios (coarse grid)",
+    "results/coarse_scenarios/lifetime_scenarios.md": "Lifetime scenarios (coarse grid)",
+    "results/coarse_scenarios/power_sweep.md": "Power sweep (coarse grid)",
+    "results/field_bending/summary.md": "Field bending summary",
+    "results/pulse_chain/summary_table.md": "Single-pulse chain summary",
 }
+STEADY, PULSE = "Steady", "Pulse"                                     # values of the Model column
+MODEL_NAMES = {STEADY: "Steady-state Params", PULSE: "Single-pulse PulseConfig"}
 SOURCE_TERMS = {"McGregor1994": ("McGregor",), "StoutKushner1996": ("Stout",), "Pizzuto2023": ("Pizzuto",),
                 "RalphGrischkowsky1991": ("Ralph", "Grischkowsky"), "Murakami2016": ("Murakami",),
                 "memory": ("from memory", "Mitonneau", "Chantre")}
@@ -44,6 +46,12 @@ UNIT_PRETTY = (("um", "µm"), ("cm^-3", "cm⁻³"), ("cm^-1", "cm⁻¹"), ("cm^2
                ("cm^2", "cm²"), ("deg", "°"))
 MONO = ["Menlo", "SF Mono", "Monaco", "Courier New"]
 PULSE_CLI = {"P_avg_mW", "T", "V_bias", "w_um", "x_fine", "t_end_ps"}     # PulseConfig fields run_pulse_chain.py accepts
+REFERENCE = "Quick reference"                                         # list group of the generated pages
+
+
+def no_path_break(s: str) -> str:
+    """A word joiner after each '/', so that wrapped labels do not break paths there."""
+    return s.replace("/", "/\u2060")
 
 
 def pretty_unit(u: str) -> str:
@@ -69,18 +77,18 @@ def discover() -> list[tuple[str, list[Path]]]:
     docs = sorted(paths.DOCS.glob("*.md")) if paths.DOCS.exists() else []
     ref = sorted(p for p in (paths.DOCS / "reference").glob("*") if p.is_file()) if (paths.DOCS / "reference").exists() else []
     results = sorted(p for p in paths.RESULTS.rglob("*.md") if paths.GUI_RUNS not in p.parents) if paths.RESULTS.exists() else []
-    return [("项目", project), ("模型文档", docs + ref), ("结果摘要", results)]
+    return [("Project", project), ("Model notes", docs + ref), ("Result summaries", results)]
 
 
 _specs_cache = None
 
 
 def all_specs():
-    """[(model label, FieldSpec)] for the steady Params and the single-pulse PulseConfig (parsed once)."""
+    """[(model, FieldSpec)] for the steady Params (STEADY) and the single-pulse PulseConfig (PULSE), parsed once."""
     global _specs_cache
     if _specs_cache is None:
         from ..paramspec import params_specs, pulse_specs
-        _specs_cache = [("稳态 Params", s) for s in params_specs()] + [("单脉冲 PulseConfig", s) for s in pulse_specs()]
+        _specs_cache = [(STEADY, s) for s in params_specs()] + [(PULSE, s) for s in pulse_specs()]
     return _specs_cache
 
 
@@ -88,18 +96,19 @@ def sources_markdown() -> str:
     try:
         from ltemsim.params import SOURCES
     except Exception as e:         # keep the page usable if the package cannot be imported
-        return f"# 文献来源\n\n无法读取 `ltemsim.params.SOURCES`：{e}"
+        return f"# Literature sources\n\nCould not read `ltemsim.params.SOURCES`: {e}"
     specs = all_specs()
-    out = ["# 文献来源", "",
-           "`ltemsim/params.py` 中 `SOURCES` 字典列出的参数来源。参数默认值的行内注释引用了这些文献；"
-           "每条下面列出注释中提到它的参数（详见「参数速查」的说明列）。", ""]
+    out = ["# Literature sources", "",
+           "The parameter sources listed in the `SOURCES` dictionary of `ltemsim/params.py`. The inline comments on "
+           "the parameter defaults cite them; under each source are the parameters whose comments mention it (see the "
+           "Description column of the Parameter reference).", ""]
     for key, text in SOURCES.items():
         terms = SOURCE_TERMS.get(key, (re.sub(r"\d+", "", key),))
         cited = [s.name for _, s in specs if any(t.lower() in s.help.lower() for t in terms)]
         cited = list(dict.fromkeys(cited))
         out += [f"## {key}", "", text, ""]
         if cited:
-            out += ["**引用此来源的参数：** " + ", ".join(f"`{c}`" for c in cited), ""]
+            out += ["**Parameters citing this source:** " + ", ".join(f"`{c}`" for c in cited), ""]
     return "\n".join(out)
 
 
@@ -296,12 +305,12 @@ class Reader(QTextBrowser):
 
 class ParamsView(QWidget):
     """Filterable table of every Params / PulseConfig field."""
-    COLS = ("模型", "分组", "级别", "参数", "中文名", "默认值", "单位", "说明")
-    WIDTHS = (52, 108, 46, 140, 112, 100, 60)
-    OPTIONAL = (1, 2)                     # 分组 / 级别: hidden when the 说明 column would get too narrow
-    C_ZH, C_HELP = 4, 7                   # narrower still: 说明 moves into a line under the table
-    HINT = ("双击一行复制 name=默认值：稳态标量参数可直接用作 python scripts/run_baseline.py 的命令行覆盖（如 V_bias=-25），"
-            "run_pulse_chain.py 接受的单脉冲参数同理；其余参数复制为 Python 关键字参数形式。")
+    COLS = ("Model", "Section", "Level", "Parameter", "Label", "Default", "Unit", "Description")
+    WIDTHS = (72, 132, 74, 140, 150, 100, 60)
+    OPTIONAL = (1, 2)                     # Section / Level: hidden when the Description column would get too narrow
+    C_LABEL, C_HELP = 4, 7                # narrower still: Description moves into a line under the table
+    HINT = ("Double-click a row to copy name=default: a command-line override for scripts/run_baseline.py (steady "
+            "scalars, e.g. V_bias=-25) or scripts/run_pulse_chain.py, otherwise a Python keyword argument.")
 
     def __init__(self):
         super().__init__()
@@ -312,16 +321,17 @@ class ParamsView(QWidget):
         lay.setSpacing(8)
         bar = QHBoxLayout()
         self.filter = QLineEdit()
-        self.filter.setPlaceholderText("筛选参数：名称、中文名、单位、分组或说明…  (⌘F)")
+        self.filter.setPlaceholderText("Filter parameters…  (⌘F)")
+        self.filter.setToolTip("Matches name, label, unit, section and description (all words must match)")
         self.filter.setClearButtonEnabled(True)
         self.filter.textChanged.connect(self.apply_filter)
         bar.addWidget(self.filter, 1)
         self.model = QComboBox()
-        self.model.addItems(["全部模型", "稳态 Params", "单脉冲 PulseConfig"])
+        self.model.addItems(["All models", MODEL_NAMES[STEADY], MODEL_NAMES[PULSE]])
         self.model.currentIndexChanged.connect(self.apply_filter)
         bar.addWidget(self.model)
         self.count = label("", "muted")
-        self.count.setMinimumWidth(96)
+        self.count.setMinimumWidth(110)
         self.count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         bar.addWidget(self.count)
         lay.addLayout(bar)
@@ -345,18 +355,18 @@ class ParamsView(QWidget):
         self.detail.hide()
         lay.addWidget(self.detail)
         self.table.currentCellChanged.connect(lambda *_: self._update_detail())
-        self.hint = label(self.HINT, "muted", wrap=True)
+        self.hint = label(no_path_break(self.HINT), "muted", wrap=True)
         lay.addWidget(self.hint)
         self._hint_timer = QTimer(self)
         self._hint_timer.setSingleShot(True)
         self._hint_timer.setInterval(4000)
-        self._hint_timer.timeout.connect(lambda: self.hint.setText(self.HINT))
-        # word-wrapped rows must be re-measured when the 说明 column changes width
+        self._hint_timer.timeout.connect(lambda: self.hint.setText(no_path_break(self.HINT)))
+        # word-wrapped rows must be re-measured when the Label / Description columns change width
         self._rows_timer = QTimer(self)
         self._rows_timer.setSingleShot(True)
         self._rows_timer.setInterval(100)
         self._rows_timer.timeout.connect(self.table.resizeRowsToContents)
-        h.sectionResized.connect(lambda c, *_: c in (self.C_ZH, self.C_HELP) and self.loaded and self._rows_timer.start())
+        h.sectionResized.connect(lambda c, *_: c in (self.C_LABEL, self.C_HELP) and self.loaded and self._rows_timer.start())
         self.table.viewport().installEventFilter(self)
 
     def eventFilter(self, obj, e):
@@ -374,9 +384,10 @@ class ParamsView(QWidget):
             self.narrow = narrow
             h = self.table.horizontalHeader()
             self.table.setColumnHidden(self.C_HELP, narrow)
-            h.setSectionResizeMode(self.C_ZH, QHeaderView.ResizeMode.Stretch if narrow else QHeaderView.ResizeMode.Interactive)
+            h.setSectionResizeMode(self.C_LABEL, QHeaderView.ResizeMode.Stretch if narrow else
+                                   QHeaderView.ResizeMode.Interactive)
             if not narrow:
-                self.table.setColumnWidth(self.C_ZH, self.WIDTHS[self.C_ZH])
+                self.table.setColumnWidth(self.C_LABEL, self.WIDTHS[self.C_LABEL])
             self.detail.setVisible(narrow)
             self._update_detail()
             if self.loaded:
@@ -388,12 +399,13 @@ class ParamsView(QWidget):
         r = self.table.currentRow()
         it = self.table.item(r, 0) if r >= 0 else None
         if it is None:
-            self.detail.setText(f"<span style='color:{ThemeManager.instance().tokens.muted}'>选择一行查看参数说明</span>")
+            self.detail.setText(f"<span style='color:{ThemeManager.instance().tokens.muted}'>"
+                                "Select a row to see the parameter's description</span>")
             return
         cell = lambda c: html.escape(self.table.item(r, c).text()) if self.table.item(r, c) else ""
         unit = f" {cell(6)}" if cell(6) else ""
-        self.detail.setText(f"<b>{cell(3)}</b>（{cell(4) or '—'}，{cell(1)}）= {cell(5)}{unit}"
-                            f"<br>{cell(7) or '（源码中没有说明）'}")
+        self.detail.setText(f"<b>{cell(3)}</b> ({cell(4) or '—'}, {cell(1)}) = {cell(5)}{unit}"
+                            f"<br>{cell(7) or '(no description in the source)'}")
 
     def load(self):
         if self.loaded:
@@ -410,14 +422,11 @@ class ParamsView(QWidget):
                 default = format_value(s, s.default)
             except Exception:
                 default = str(s.default)
-            label_zh = s.label if s.label != s.name else ""
-            if label_zh.endswith(s.name):
-                label_zh = label_zh[: -len(s.name)].strip()
             shown = default
             if s.type == "tuple" and isinstance(s.default, (tuple, list)) and len(s.default) > 6:
                 parts = default.split(", ")
-                shown = f"{', '.join(parts[:3])}, …, {parts[-1]}（{len(parts)} 个）"
-            vals = (model.split()[0], s.section, "高级" if s.advanced else "基本", s.name, label_zh, shown,
+                shown = f"{', '.join(parts[:3])}, …, {parts[-1]} ({len(parts)} values)"
+            vals = (model, s.section, "Advanced" if s.advanced else "Basic", s.name, short_label(s), shown,
                     pretty_unit(s.unit), s.help)
             for c, v in enumerate(vals):
                 it = QTableWidgetItem(v)
@@ -425,7 +434,7 @@ class ParamsView(QWidget):
                     it.setFont(mono)
                 if c == 2 and s.advanced:
                     it.setForeground(QColor(muted))
-                it.setToolTip(f"{model} · {s.name} = {default} {pretty_unit(s.unit)}\n{s.help}".strip())
+                it.setToolTip(f"{MODEL_NAMES[model]} · {s.name} = {default} {pretty_unit(s.unit)}\n{s.help}".strip())
                 self.table.setItem(r, c, it)
             self.table.item(r, 0).setData(ROLE, (s.name, copy_text(model, s, default)))
         self.table.setSortingEnabled(True)
@@ -438,14 +447,14 @@ class ParamsView(QWidget):
     def apply_filter(self, *_):
         q = self.filter.text().strip().lower().split()
         m = self.model.currentIndex()
-        want = {0: None, 1: "稳态", 2: "单脉冲"}[m]
+        want = {0: None, 1: STEADY, 2: PULSE}[m]
         shown = 0
         for r in range(self.table.rowCount()):
             cells = [self.table.item(r, c).text() if self.table.item(r, c) else "" for c in range(len(self.COLS))]
             ok = (want is None or cells[0] == want) and all(w in " ".join(cells).lower() for w in q)
             self.table.setRowHidden(r, not ok)
             shown += ok
-        self.count.setText(f"{shown} / {self.table.rowCount()} 个参数")
+        self.count.setText(f"{shown} / {self.table.rowCount()} parameters")
 
     def _copy_row(self, row, _col):
         d = self.table.item(row, 0).data(ROLE)
@@ -453,8 +462,18 @@ class ParamsView(QWidget):
             name, (text, usage) = d
             QGuiApplication.clipboard().setText(text)
             short = text if len(text) <= 60 else text[:57] + "…"
-            self.hint.setText(f"已复制：{short}　{usage}")
+            self.hint.setText(f"Copied {short}  ·  {no_path_break(usage)}")
             self._hint_timer.start()
+
+
+def short_label(s) -> str:
+    """The label without a trailing symbol that repeats the name ("Bias V_bias" -> "Bias"); "" when it is the name.
+
+    Plain lower-case names are words of the label and stay ("Electrode gap" for gap)."""
+    lab = s.label if s.label != s.name else ""
+    if lab.endswith(" " + s.name) and not (s.name.isalpha() and s.name.islower()):
+        lab = lab[: -len(s.name)].strip()
+    return lab
 
 
 def copy_text(model: str, s, formatted: str) -> tuple[str, str]:
@@ -462,19 +481,19 @@ def copy_text(model: str, s, formatted: str) -> tuple[str, str]:
 
     Steady scalars and the PulseConfig fields run_pulse_chain.py parses use the command-line form (name=value); the
     rest (tuples, other PulseConfig fields) cannot be given on a command line and are copied as name=repr(value)."""
-    if model.startswith("稳态") and s.type != "tuple":
-        return f"{s.name}={formatted.replace(' ', '')}", "可直接用于 python scripts/run_baseline.py 的命令行覆盖"
+    if model == STEADY and s.type != "tuple":
+        return f"{s.name}={formatted.replace(' ', '')}", "a command-line override for python scripts/run_baseline.py"
     if s.name in PULSE_CLI:
-        return f"{s.name}={formatted.replace(' ', '')}", "可直接用于 python scripts/run_pulse_chain.py 的命令行"
+        return f"{s.name}={formatted.replace(' ', '')}", "a command-line argument for python scripts/run_pulse_chain.py"
     v = tuple(s.default) if isinstance(s.default, list) else s.default
-    where = "Params(...) / run_baseline.main(...)" if model.startswith("稳态") else "PulseConfig(...)"
-    return f"{s.name}={v!r}", f"Python 关键字参数形式，用于 {where}（命令行不支持此参数）"
+    where = "Params(...) / run_baseline.main(...)" if model == STEADY else "PulseConfig(...)"
+    return f"{s.name}={v!r}", f"a Python keyword argument for {where} (not available on the command line)"
 
 
 # ----------------------------------------------------------------------------- page
 class DocsPage(Page):
-    title = "文档"
-    subtitle = "项目说明、模型与方程、结果摘要表，以及由源码生成的参数速查与文献来源。"
+    title = "Docs"
+    subtitle = "README, model notes and result summaries, plus a parameter reference generated from the source."
 
     def __init__(self):
         super().__init__()
@@ -500,7 +519,7 @@ class DocsPage(Page):
         self.tree.setStyleSheet("QTreeView::item { padding: 5px 4px; }")
         self.tree.currentItemChanged.connect(self._on_select)
         ll.addWidget(self.tree, 1)
-        rb = button("刷新列表", self.refresh_list, "flat", "重新扫描 docs/ 与 results/ 中的 Markdown 文件")
+        rb = button("Refresh list", self.refresh_list, "flat", "Scan docs/ and results/ again for Markdown files")
         ll.addWidget(rb, 0, Qt.AlignmentFlag.AlignLeft)
         left.setMinimumWidth(220)
         left.setMaximumWidth(380)
@@ -527,19 +546,19 @@ class DocsPage(Page):
         fb.setContentsMargins(0, 0, 0, 0)
         fb.setSpacing(4)
         self.find = QLineEdit()
-        self.find.setPlaceholderText("查找  ⌘F")
+        self.find.setPlaceholderText("Find  ⌘F")
         self.find.setClearButtonEnabled(True)
         self.find.setFixedWidth(200)
         self.find.textChanged.connect(self._search)
         self.find.returnPressed.connect(self.find_next)
         self.find.installEventFilter(self)
         fb.addWidget(self.find)
-        self.btn_prev = button("↑", self.find_prev, "flat", "上一个  ⇧⌘G / ⇧↩")
-        self.btn_next = button("↓", self.find_next, "flat", "下一个  ⌘G / ↩")
+        self.btn_prev = button("↑", self.find_prev, "flat", "Previous match  ⇧⌘G / ⇧↩")
+        self.btn_next = button("↓", self.find_next, "flat", "Next match  ⌘G / ↩")
         fb.addWidget(self.btn_prev)
         fb.addWidget(self.btn_next)
         self.find_count = label("", "muted")
-        self.find_count.setMinimumWidth(56)
+        self.find_count.setMinimumWidth(72)
         fb.addWidget(self.find_count)
         top.addWidget(self.find_box)
         top.addStretch(1)
@@ -547,15 +566,15 @@ class DocsPage(Page):
         zb = QHBoxLayout(self.font_box)
         zb.setContentsMargins(8, 0, 0, 0)
         zb.setSpacing(0)
-        zb.addWidget(button("A−", lambda: self.zoom(-1), "flat", "缩小字号  ⌘−"))
+        zb.addWidget(button("A−", lambda: self.zoom(-1), "flat", "Smaller text  ⌘−"))
         self.font_lbl = label("", "muted")
         zb.addWidget(self.font_lbl)
-        zb.addWidget(button("A+", lambda: self.zoom(+1), "flat", "放大字号  ⌘+"))
+        zb.addWidget(button("A+", lambda: self.zoom(+1), "flat", "Larger text  ⌘+"))
         top.addWidget(self.font_box)
-        self.btn_reveal = button("在访达中显示", lambda: self.current and Path(self.current).exists() and reveal(self.current),
-                                 "flat", "在访达中显示此文件")
-        self.btn_ext = button("用默认程序打开", lambda: self.current and Path(self.current).exists() and open_external(self.current),
-                              "flat", "用默认程序打开此文件")
+        self.btn_reveal = button("Show in Finder", lambda: self.current and Path(self.current).exists() and reveal(self.current),
+                                 "flat", "Show this file in Finder")
+        self.btn_ext = button("Open in app", lambda: self.current and Path(self.current).exists() and open_external(self.current),
+                              "flat", "Open this file in its default app")
         self._compact = None
         top.addWidget(self.btn_reveal)
         top.addWidget(self.btn_ext)
@@ -604,7 +623,7 @@ class DocsPage(Page):
         self._items = {}
         self._other = None
         t = ThemeManager.instance().tokens
-        for group, files in discover() + [("速查", [])]:
+        for group, files in discover() + [(REFERENCE, [])]:
             g = QTreeWidgetItem([group])
             g.setFlags(Qt.ItemFlag.ItemIsEnabled)
             f = g.font(0)
@@ -614,9 +633,10 @@ class DocsPage(Page):
             self.tree.addTopLevelItem(g)
             for p in files:
                 self._add_doc(g, str(p), doc_title(p), "book" if p.suffix == ".md" else "file", paths.rel(p))
-            if group == "速查":
-                self._add_doc(g, PARAMS, "参数速查", "table", "由 ltemsim/params.py 与 pulse_dynamics.PulseConfig 生成")
-                self._add_doc(g, SOURCES, "文献来源", "list", "ltemsim.params.SOURCES")
+            if group == REFERENCE:
+                self._add_doc(g, PARAMS, "Parameter reference", "table",
+                              "Generated from ltemsim/params.py and pulse_dynamics.PulseConfig")
+                self._add_doc(g, SOURCES, "Literature sources", "list", "ltemsim.params.SOURCES")
             g.setExpanded(True)
         self.tree.blockSignals(False)
         self._retheme_icons()
@@ -651,8 +671,8 @@ class DocsPage(Page):
         compact = self.width() < 1000           # ~1100 px windows: icon-only buttons
         if compact != self._compact:
             self._compact = compact
-            self.btn_reveal.setText("" if compact else "在访达中显示")
-            self.btn_ext.setText("" if compact else "用默认程序打开")
+            self.btn_reveal.setText("" if compact else "Show in Finder")
+            self.btn_ext.setText("" if compact else "Open in app")
 
     # ------------------------------------------------------------------ showing documents
     def _on_select(self, cur, _prev):
@@ -670,10 +690,10 @@ class DocsPage(Page):
                 self.params.load()
             finally:
                 QGuiApplication.restoreOverrideCursor()
-            self.doc_title.setText("参数速查")
+            self.doc_title.setText("Parameter reference")
             self.doc_title.setToolTip("")
             self.doc_path.setToolTip("")
-            self.doc_path.setText("Params（ltemsim/params.py）＋ PulseConfig（ltemsim/pulse_dynamics.py）")
+            self.doc_path.setText("ltemsim/params.py + ltemsim/pulse_dynamics.py")
             self._mode(params=True, file=False)
             return
         self.stack.setCurrentWidget(self.reader)
@@ -684,7 +704,7 @@ class DocsPage(Page):
             finally:
                 QGuiApplication.restoreOverrideCursor()
             self._set_markdown(md, paths.ROOT / "ltemsim")
-            self.doc_title.setText("文献来源")
+            self.doc_title.setText("Literature sources")
             self.doc_title.setToolTip("")
             self.doc_path.setToolTip("")
             self.doc_path.setText("ltemsim/params.py · SOURCES")
@@ -698,7 +718,7 @@ class DocsPage(Page):
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
             except OSError as e:
-                self._set_markdown(f"# 无法打开文档\n\n`{paths.rel(p)}`\n\n{e}", p.parent)
+                self._set_markdown(f"# Cannot open the document\n\n`{paths.rel(p)}`\n\n{e}", p.parent)
             else:
                 if p.suffix.lower() in (".md", ".markdown"):
                     self._set_markdown(join_cjk_lines(text), p.parent)
@@ -752,7 +772,7 @@ class DocsPage(Page):
         if not target.exists():
             target = (paths.ROOT / url.path()).resolve()
         if not target.exists():
-            self.doc_path.setText(f"链接目标不存在：{url.toString()}")
+            self.doc_path.setText(f"Link target does not exist: {url.toString()}")
             return
         if target.is_dir():
             nav.navigate("results", path=str(target))
@@ -815,7 +835,7 @@ class DocsPage(Page):
             else:
                 self._update_count()
         else:
-            self.find_count.setText("无结果" if q else "")
+            self.find_count.setText("No matches" if q else "")
             if q:
                 self.find.setStyleSheet(f"QLineEdit {{ border: 1px solid {t.danger}; }}")
             else:
@@ -884,7 +904,7 @@ class DocsPage(Page):
                 if not p.is_file():
                     return
                 if self._other is None:
-                    self._other = QTreeWidgetItem(["其他"])
+                    self._other = QTreeWidgetItem(["Other"])
                     self._other.setFlags(Qt.ItemFlag.ItemIsEnabled)
                     f = self._other.font(0)
                     f.setBold(True)

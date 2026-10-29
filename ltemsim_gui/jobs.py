@@ -20,7 +20,9 @@ from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signa
 from . import paths
 
 QUEUED, RUNNING, FINISHED, FAILED, CANCELLED = "queued", "running", "finished", "failed", "cancelled"
-STATUS_ZH = {QUEUED: "排队中", RUNNING: "运行中", FINISHED: "已完成", FAILED: "失败", CANCELLED: "已取消"}
+STATUS_TEXT = {QUEUED: "Queued", RUNNING: "Running", FINISHED: "Finished", FAILED: "Failed", CANCELLED: "Cancelled"}
+STATUS_ZH = STATUS_TEXT          # old name, kept for compatibility
+PREREQ_FAILED = "prerequisite did not finish"
 
 
 # ----------------------------------------------------------------------------- progress
@@ -56,13 +58,13 @@ class ProgressParser:
                 self.sub = 0.0
                 if self.inner is not None:
                     self.inner = ProgressParser({"type": "steady"})
-                self.text = f"{min(self.count, self.total)}/{self.total} 完成"
+                self.text = f"{min(self.count, self.total)}/{self.total} done"
             elif self.count >= self.total:
                 return
             elif self.inner is not None:
                 self.inner.feed(line)
                 self.sub = min(0.99, self.inner.fraction() / 0.9)
-                self.text = f"{self.count}/{self.total} 完成 · 当前 {100 * self.sub:.0f}%"
+                self.text = f"{self.count}/{self.total} done · current {100 * self.sub:.0f}%"
             elif self.re_sub is not None:
                 m = self.re_sub.search(line)
                 if m:
@@ -71,7 +73,7 @@ class ProgressParser:
                     else:
                         a, b = float(m.group(1)), float(m.group(2))
                     self.sub = min(0.99, a / b) if b > 0 else 0.0
-                    self.text = f"{self.count}/{self.total} 完成 · 当前 {100 * self.sub:.0f}%"
+                    self.text = f"{self.count}/{self.total} done · current {100 * self.sub:.0f}%"
         elif k == "steady":
             m = self.re_step.search(line)
             if m:
@@ -81,12 +83,12 @@ class ProgressParser:
                 f = math.log10(max(t, self.dt0) / self.dt0) / math.log10(te / self.dt0)
                 self.stage_frac[stage] = max(self.stage_frac.get(stage, 0.0), min(0.98, f))
                 self.stage = stage
-                self.text = ("暗态加偏压" if stage == "dark" else "光照") + f" · t = {t:.1e} s"
+                self.text = ("dark: bias on" if stage == "dark" else "light on") + f" · t = {t:.1e} s"
             m = self.re_done.search(line)
             if m:
                 stage = "dark" if m.group(1) == "dark" else "light"
                 self.stage_frac[stage] = 1.0
-                self.text = "暗态收敛" if stage == "dark" else "光照稳态收敛 · 作图中"
+                self.text = "dark state converged" if stage == "dark" else "steady state converged · plotting"
 
     def fraction(self):
         if self.kind == "count":
@@ -135,6 +137,9 @@ class Job(QObject):
         j = cls(d["title"], d["kind"], d["spec"], d.get("progress_spec"), job_id=d["id"])
         j.status = d["status"] if d["status"] not in (QUEUED, RUNNING) else CANCELLED
         j.created, j.started, j.finished, j.exit_code = d.get("created"), d.get("started"), d.get("finished"), d.get("exit_code")
+        if j.finished is None and d["status"] in (QUEUED, RUNNING):       # the app quit or crashed while it ran
+            j.finished = j.started or j.created
+            j.progress_text = "interrupted (app closed)"
         j.log_path = Path(d.get("log_path", j.log_path))
         j.progress = 1.0 if j.status == FINISHED else None
         return j
@@ -302,7 +307,7 @@ class JobManager(QObject):
             if j.status == QUEUED and j.after is not None and j.after.status in (FAILED, CANCELLED):
                 j.status = CANCELLED
                 j.finished = time.time()
-                j.progress_text = "前置任务未完成"
+                j.progress_text = PREREQ_FAILED
                 j.changed.emit()
                 self.job_changed.emit(j)
         while len(self.running()) < self.max_parallel:
@@ -345,7 +350,7 @@ class JobManager(QObject):
 
     def _error(self, job: Job, err):
         if err == QProcess.ProcessError.FailedToStart:
-            job._ingest(f"无法启动 Python 进程: {paths.python_exe()}\n")
+            job._ingest(f"Could not start the Python process: {paths.python_exe()}\n")
             self._finished(job, -1)
 
     def _finished(self, job: Job, code: int):
@@ -366,7 +371,7 @@ class JobManager(QObject):
                 job.status = FINISHED if code == 0 else FAILED
         if job.status == FINISHED:
             job.progress = 1.0
-            job.progress_text = "完成"
+            job.progress_text = "done"
         if job._log_fh:
             job._log_fh.close()
             job._log_fh = None

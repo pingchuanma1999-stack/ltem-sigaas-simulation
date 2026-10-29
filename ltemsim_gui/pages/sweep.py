@@ -34,18 +34,23 @@ QUICK = {"dx_fine": 0.5, "x_fine": 8.0, "dz_fine": 0.25}      # coarse grid of r
 MIN_PER_RUN = {False: 6.5, True: 0.6}                        # minutes per value: production / coarse grid
 # copy of scripts/sweep.py SWEEPS (importing it would pull pyplot into the GUI process)
 PRESETS = (
-    ("power", "P_avg_mW", (0.5, 1.0, 2.0, 4.0, 8.0), "泵浦功率"),
-    ("el2", "N_T", (5e15, 1.5e16, 3e16), "EL2 浓度"),
-    ("sigma_p", "sigma_p", (1e-18, 2e-18, 1e-17, 1e-16), "空穴俘获截面"),
-    ("sigma_n", "sigma_n", (1e-15, 1e-14, 1e-13), "电子俘获截面"),
-    ("spot", "spot_w_um", (2.0, 3.0, 4.5), "光斑半径"),
-    ("anode", "anode_side", ("-x", "+x"), "阳极位置"),
+    ("power", "P_avg_mW", (0.5, 1.0, 2.0, 4.0, 8.0), "Pump power"),
+    ("el2", "N_T", (5e15, 1.5e16, 3e16), "EL2 density"),
+    ("sigma_p", "sigma_p", (1e-18, 2e-18, 1e-17, 1e-16), "Hole capture cross-section"),
+    ("sigma_n", "sigma_n", (1e-15, 1e-14, 1e-13), "Electron capture cross-section"),
+    ("spot", "spot_w_um", (2.0, 3.0, 4.5), "Spot radius"),
+    ("anode", "anode_side", ("-x", "+x"), "Anode side"),
 )
 PROGRESS_PATTERN = r"^\s+\S.*: I=-?[\d.]+ mA, converged="
 _DONE_RE = re.compile(PROGRESS_PATTERN)
-COLS = ("取值", "|I| (mA)", "增益", "峰值 X (µm)", "S(+5)/S(−5)", "S(0)/max", "收敛", "耗时")
-COL_TIPS = ("扫描变量的取值", "光电流 |I_left|", "I / I_unity（单位增益电流）", "|S|(X) 最大处的 X = 光斑 − 针尖",
-            "|S| 在 X = +5 µm 与 −5 µm 处之比", "|S|(0) / max |S|", "暗态与光照两步是否都收敛", "该取值的求解耗时")
+COLS = ("Value", "|I| (mA)", "Gain", "Peak X (µm)", "S(+5)/S(−5)", "S(0)/max", "Converged", "Time")
+COL_TIPS = ("Value of the swept parameter", "Photocurrent |I_left|", "I / I_unity (unity-gain current)",
+            "X where |S|(X) is largest (X = spot − tip)", "|S| at X = +5 µm divided by |S| at X = −5 µm",
+            "|S|(0) / max |S|", "Whether both the dark and the illuminated solve converged",
+            "Solve time for this value")
+# value separators: ASCII comma / semicolon / whitespace, plus the full-width comma and semicolon and the
+# ideographic comma (U+FF0C, U+FF1B, U+3001) that a Chinese input method types when it is left switched on
+_SEP_RE = re.compile(r"[,;\s，；、]+")
 # ordinal single-hue ramps (blue), low → high value; the dark one runs toward the light end
 RAMP = {False: ("#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281", "#0d366b"),
         True: ("#256abf", "#3987e5", "#6da7ec", "#9ec5f4", "#cde2fb")}
@@ -75,11 +80,15 @@ def _is_num(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def plural(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
 def parse_values(spec: FieldSpec, text: str) -> list:
-    """Comma / space separated values typed for `spec`; raises ValueError with a Chinese message."""
-    toks = [t for t in re.split(r"[,\s;，；、]+", text.strip()) if t]
+    """Comma / space separated values typed for `spec`; raises ValueError with a short message."""
+    toks = [t for t in _SEP_RE.split(text.strip()) if t]
     if not toks:
-        raise ValueError("请至少输入一个取值")
+        raise ValueError("Enter at least one value")
     out = []
     for t in toks:
         try:
@@ -93,9 +102,9 @@ def parse_values(spec: FieldSpec, text: str) -> list:
                     raise ValueError
                 v = int(f)
             elif spec.type == "bool":
-                if t.lower() in ("1", "true", "yes", "on", "是"):
+                if t.lower() in ("1", "true", "yes", "on"):
                     v = True
-                elif t.lower() in ("0", "false", "no", "off", "否"):
+                elif t.lower() in ("0", "false", "no", "off"):
                     v = False
                 else:
                     raise ValueError
@@ -106,23 +115,26 @@ def parse_values(spec: FieldSpec, text: str) -> list:
             else:
                 v = t
         except ValueError:
-            hint = f"（可选：{', '.join(map(str, spec.choices))}）" if spec.type == "choice" else \
-                "（True / False）" if spec.type == "bool" else ""
-            raise ValueError(f"无法解析取值「{t}」{hint}") from None
-        if spec.minimum is not None and _is_num(v) and v < spec.minimum or \
-                spec.maximum is not None and _is_num(v) and v > spec.maximum:
-            raise ValueError(f"取值 {t} 超出允许范围")
+            why = {"float": "is not a number", "int": "is not an integer", "bool": "is not True or False",
+                   "choice": f"is not one of {', '.join(map(str, spec.choices or ()))}"}.get(spec.type,
+                                                                                         "is not a valid value")
+            raise ValueError(f"“{t}” {why}") from None
+        lo, hi = spec.minimum, spec.maximum
+        if _is_num(v) and (lo is not None and v < lo or hi is not None and v > hi):
+            rng = (f"{format_float(lo)} … {format_float(hi)}" if lo is not None and hi is not None
+                   else f"≥ {format_float(lo)}" if lo is not None else f"≤ {format_float(hi)}")
+            raise ValueError(f"{t} is outside the allowed range ({rng})")
         out.append(v)
     labels = [f"{spec.name}={v}" for v in out]
     if len(set(labels)) != len(labels):
-        raise ValueError("取值有重复（重复的取值会写入同一文件夹）")
+        raise ValueError("Duplicate values (they would be written to the same folder)")
     return out
 
 
 def generate(a: float, b: float, n: int, log: bool) -> list[float]:
     if log:
         if a <= 0 or b <= 0:
-            raise ValueError("对数间隔要求起止值都大于 0")
+            raise ValueError("log spacing needs both ends > 0")
         vals = np.geomspace(a, b, n)
     else:
         vals = np.linspace(a, b, n)
@@ -301,9 +313,10 @@ class _Reflow(QWidget):
 
 # ----------------------------------------------------------------------------- page
 class SweepPage(Page):
-    title = "参数扫描"
-    subtitle = ("对稳态模型做单参数扫描：每个取值一次完整的稳态求解（scripts/sweep.py 的流程），并对比 |S|(X)、发射权重、"
-                "EL2⁺ 分布与光电流。生产网格每个取值约 6.5 分钟，粗网格约 0.6 分钟。")
+    title = "Parameter sweep"
+    subtitle = ("One-parameter sweeps of the steady-state model: a full steady solve per value (the scripts/sweep.py "
+                "workflow), comparing |S|(X), next-pulse weight, EL2⁺ profile and photocurrent. "
+                "About 6.5 min per value on the production grid, 0.6 min on the coarse grid.")
     confirm_minutes = 20          # ask before queueing sweeps estimated to take longer than this
 
     def __init__(self):
@@ -319,7 +332,7 @@ class SweepPage(Page):
 
         self.est_head = label("", "muted")
         self.header.add_action(self.est_head)
-        self.run_btn = button("  开始扫描", lambda: self.run(), "primary")     # not clicked(bool) → confirm
+        self.run_btn = button("  Run sweep", lambda: self.run(), "primary")     # not clicked(bool) → confirm
         self.header.add_action(self.run_btn)
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -335,13 +348,17 @@ class SweepPage(Page):
         g.setHorizontalSpacing(8)
         g.setVerticalSpacing(7)
         g.setColumnStretch(1, 1)
-        g.addWidget(label("扫描变量", "cardTitle"), 0, 0, 1, 3)
+        g.addWidget(label("Swept parameter", "cardTitle"), 0, 0, 1, 3)
         self.preset = QComboBox()
-        for name, key, vals, zh in PRESETS:
-            self.preset.addItem(f"{zh}  ·  {name}（{key}）", name)
-        self.preset.addItem("自定义（任意参数）", "custom")
+        for name, key, vals, desc in PRESETS:
+            self.preset.addItem(f"{desc}  ·  {key}", name)
+            unit = pretty_unit(self.specs[key].unit)
+            self.preset.setItemData(self.preset.count() - 1,
+                                    f"scripts/sweep.py preset “{name}”: {', '.join(fmt_value(v) for v in vals)}"
+                                    + (f" {unit}" if unit else ""), Qt.ItemDataRole.ToolTipRole)
+        self.preset.addItem("Custom (any parameter)", "custom")
         self.preset.currentIndexChanged.connect(self._on_preset)
-        g.addWidget(QLabel("预设"), 1, 0)
+        g.addWidget(QLabel("Preset"), 1, 0)
         g.addWidget(self.preset, 1, 1, 1, 2)
         self.key = QComboBox()
         self.key.setMaxVisibleItems(18)
@@ -354,13 +371,13 @@ class SweepPage(Page):
         for cb in (self.preset, self.key):       # long item texts must not set the column's minimum width
             cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             cb.setMinimumContentsLength(14)
-        g.addWidget(QLabel("参数"), 2, 0)
+        g.addWidget(QLabel("Parameter"), 2, 0)
         g.addWidget(self.key, 2, 1, 1, 2)
         self.values_edit = QLineEdit()
-        self.values_edit.setPlaceholderText("逗号分隔，例如 0.5, 1, 2, 4")
+        self.values_edit.setPlaceholderText("Comma-separated, e.g. 0.5, 1, 2, 4")
         self.values_edit.textChanged.connect(self._update_preview)
         self.unit_lab = label("", "muted")
-        g.addWidget(QLabel("取值"), 3, 0)
+        g.addWidget(QLabel("Values"), 3, 0)
         g.addWidget(self.values_edit, 3, 1)
         g.addWidget(self.unit_lab, 3, 2)
         self.gen_box = QWidget()
@@ -368,19 +385,21 @@ class SweepPage(Page):
         gl.setContentsMargins(0, 0, 0, 0)
         gl.setSpacing(5)
         self.gen_mode = QComboBox()
-        self.gen_mode.addItems(["线性", "对数"])
+        self.gen_mode.addItems(["Linear", "Log"])
+        self.gen_mode.setToolTip("Spacing of the generated values")
         self.gen_from = QLineEdit()
         self.gen_to = QLineEdit()
-        for e, ph in ((self.gen_from, "从"), (self.gen_to, "到")):
+        for e, ph in ((self.gen_from, "from"), (self.gen_to, "to")):
             e.setPlaceholderText(ph)
             e.setMinimumWidth(48)
             e.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.gen_n = QSpinBox()
         self.gen_n.setRange(2, 40)
         self.gen_n.setValue(5)
-        self.gen_n.setSuffix(" 点")
-        gb = QPushButton("生成")
-        gb.setToolTip("用等间隔（线性或对数）的取值替换上面的取值列表")
+        self.gen_n.setSuffix(" pts")
+        self.gen_n.setToolTip("Number of values")
+        gb = QPushButton("Fill")
+        gb.setToolTip("Replace the value list above with evenly spaced values (linear or logarithmic)")
         gb.clicked.connect(self._generate)
         gl.addWidget(self.gen_mode)
         gl.addWidget(self.gen_from, 1)
@@ -392,9 +411,9 @@ class SweepPage(Page):
         self.preview = label("", "muted", wrap=True)
         self.preview.setTextFormat(Qt.TextFormat.RichText)
         g.addWidget(self.preview, 5, 0, 1, 3)
-        self.quick = QCheckBox("粗网格快速模式")
-        self.quick.setToolTip("dx_fine = 0.5 µm, x_fine = 8 µm, dz_fine = 0.25 µm（与 results/coarse_scenarios 相同），"
-                              "每个取值约 0.6 分钟；适合先粗看趋势")
+        self.quick = QCheckBox("Coarse grid (fast)")
+        self.quick.setToolTip("dx_fine = 0.5 µm, x_fine = 8 µm, dz_fine = 0.25 µm (as in results/coarse_scenarios): "
+                              "about 0.6 min per value, good for a first look at trends")
         self.quick.toggled.connect(self._toggle_quick)
         self.est = label("", "muted")
         self.est.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -404,16 +423,21 @@ class SweepPage(Page):
         qrow.addWidget(self.est)
         g.addLayout(qrow, 6, 0, 1, 3)
         ll.addWidget(box)
-        ll.addWidget(label("基准参数（扫描变量以外的参数，作用于每一次求解）", "sectionHeader"))
+        base_head = label("Base parameters · used for every solve", "sectionHeader")
+        base_head.setToolTip("Every solve uses these values; the swept parameter is replaced by each value in turn")
+        ll.addWidget(base_head)
         self.form = ParamForm(all_specs)
         self.form.changed.connect(self._on_form_changed)
+        # the form scrolls by itself: its tall size hint must not make the whole page scroll in a small window
+        self.form.setSizePolicy(self.form.sizePolicy().horizontalPolicy(), QSizePolicy.Policy.Ignored)
+        self.form.setMinimumHeight(140)
         ll.addWidget(self.form, 1)
         orow = QHBoxLayout()
-        orow.addWidget(QLabel("输出文件夹"))
+        orow.addWidget(QLabel("Output folder"))
         self.out_edit = QLineEdit()
-        self.out_edit.setPlaceholderText("自动：results/gui_runs/sweep_<时间>")
+        self.out_edit.setPlaceholderText("Auto: results/gui_runs/sweep_<timestamp>")
         orow.addWidget(self.out_edit, 1)
-        b = QPushButton("选择…")
+        b = QPushButton("Choose…")
         b.clicked.connect(self._pick_out)
         orow.addWidget(b)
         ll.addLayout(orow)
@@ -428,9 +452,9 @@ class SweepPage(Page):
         self.panel = RunPanel()
         self.panel.job_finished.connect(self._on_finished)
         rl.addWidget(self.panel)
-        self.tabs.addTab(run_tab, "运行")
-        self.tabs.addTab(self._build_results(), "结果")
-        self.tabs.addTab(self._build_history(), "历史结果")
+        self.tabs.addTab(run_tab, "Run")
+        self.tabs.addTab(self._build_results(), "Results")
+        self.tabs.addTab(self._build_history(), "History")
         split.addWidget(self.tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([380, 900])
@@ -452,11 +476,12 @@ class SweepPage(Page):
         xl.setContentsMargins(12, 12, 12, 12)
         xl.setSpacing(8)
         top = QHBoxLayout()
-        self.res_title = label("尚未载入扫描结果", "cardTitle", wrap=True)
+        self.res_title = label("No sweep loaded", "cardTitle", wrap=True)
         self.res_sub = label("", "muted", wrap=True, selectable=True)
         top.addWidget(self.res_title, 1)
-        self.btn_settings = button("载入设置", self.load_settings, tooltip="把这次扫描的变量、取值和基准参数填回左侧")
-        self.btn_folder = button("在访达中显示", lambda: self.sweep and reveal(self.sweep["dir"]))
+        self.btn_settings = button("Load settings", self.load_settings,
+                                   tooltip="Copy this sweep's parameter, values and base parameters into the form")
+        self.btn_folder = button("Show in Finder", lambda: self.sweep and reveal(self.sweep["dir"]))
         for b in (self.btn_settings, self.btn_folder):
             b.setObjectName("flat")
             top.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
@@ -466,10 +491,11 @@ class SweepPage(Page):
         tl = QHBoxLayout(self.tiles)
         tl.setContentsMargins(0, 0, 0, 0)
         tl.setSpacing(8)
-        self.m_runs = MetricTile("完成的求解", "—")
-        self.m_I = MetricTile("光电流 |I| 范围", "—")
-        self.m_peak = MetricTile("|S| 峰值位置 X", "—", "实测 +25 V：+5 µm")
-        self.m_wall = MetricTile("计算时间合计", "—")
+        self.m_runs = MetricTile("Completed solves", "—")
+        self.m_I = MetricTile("Photocurrent |I|", "—")
+        self.m_peak = MetricTile("Peak of |S| at X", "—", "measured: +5 µm")
+        self.m_peak.setToolTip("The measured +25 V tip scan peaks at X = +5 µm")
+        self.m_wall = MetricTile("Total compute time", "—")
         for m in (self.m_runs, self.m_I, self.m_peak, self.m_wall):
             tl.addWidget(m, 1)
         xl.addWidget(self.tiles)
@@ -485,13 +511,13 @@ class SweepPage(Page):
         corner = QWidget()
         cl = QHBoxLayout(corner)
         cl.setContentsMargins(0, 0, 6, 2)
-        self.opt_measured = QCheckBox("叠加实测 +25 V")
+        self.opt_measured = QCheckBox("Overlay measured +25 V")
         self.opt_measured.setChecked(True)
         self.opt_measured.toggled.connect(self.replot)
         cl.addWidget(self.opt_measured)
         self.fig_tabs.setCornerWidget(corner, Qt.Corner.TopRightCorner)
         self.plot = PlotWidget(figsize=(8, 5.5))
-        self.fig_tabs.addTab(self.plot, "交互对比图")
+        self.fig_tabs.addTab(self.plot, "Interactive plot")
         self.compare = ImageView()
         self.fig_tabs.addTab(self.compare, "compare.png")
         vsplit.addWidget(self.fig_tabs)
@@ -510,7 +536,8 @@ class SweepPage(Page):
         hh.setStretchLastSection(True)
         self.table.itemSelectionChanged.connect(self._on_row_selected)
         self.table.cellDoubleClicked.connect(self._open_run)
-        self.table.setToolTip("单击：在图中高亮这次求解；双击：在「稳态求解」页查看它的完整结果")
+        self.table.setToolTip("Click a row to highlight that solve in the plots; double-click to open its full result "
+                              "on the Steady state page")
         self.table.setMinimumHeight(84)
         vsplit.addWidget(self.table)
         vsplit.setStretchFactor(0, 4)
@@ -529,9 +556,9 @@ class SweepPage(Page):
         hl = QVBoxLayout(w)
         hl.setContentsMargins(12, 12, 12, 12)
         hrow = QHBoxLayout()
-        hrow.addWidget(label("已有的扫描结果（双击载入）", "cardTitle"), 1)
-        for text, slot in (("打开文件夹…", self._open_folder), ("在访达中显示", self._reveal_history),
-                           ("刷新", self.refresh_history)):
+        hrow.addWidget(label("Saved sweeps", "cardTitle", wrap=True), 1)   # wraps: must not widen the page
+        for text, slot in (("Open folder…", self._open_folder), ("Show in Finder", self._reveal_history),
+                           ("Refresh", self.refresh_history)):
             b = button(text, slot)
             b.setObjectName("flat")
             hrow.addWidget(b)
@@ -540,8 +567,10 @@ class SweepPage(Page):
         self.hist.setSpacing(3)
         self.hist.itemDoubleClicked.connect(self._on_history)
         hl.addWidget(self.hist, 1)
-        hl.addWidget(label("results/sweeps/ 为仓库中已提交的扫描；results/gui_runs/sweep_* 为在本界面中运行的扫描"
-                           "；输出到其他文件夹的扫描请用「打开文件夹…」载入。", "muted", wrap=True))
+        hl.addWidget(label("Double-click a sweep to load it. results/sweeps/ holds the sweeps committed to the "
+                           "repository, results/gui_runs/sweep_* the sweeps run from this app; use “Open folder…” "
+                           "for sweeps written elsewhere.", "muted", wrap=True))
+        self.hist.setToolTip("Double-click to load")
         return w
 
     def _retheme(self, *_):
@@ -593,7 +622,7 @@ class SweepPage(Page):
             self.form.set_enabled_fields([self._swept], True)
             self.form.rows[self._swept].label.setToolTip("")
         self.form.set_enabled_fields([key], False)
-        self.form.rows[key].label.setToolTip("这个参数正在被扫描，此处的值不起作用")
+        self.form.rows[key].label.setToolTip("This parameter is being swept; the value here is not used")
         self._swept = key
         s = self.specs[key]
         numeric = s.type in ("float", "int")
@@ -615,8 +644,9 @@ class SweepPage(Page):
             a, b = float(self.gen_from.text()), float(self.gen_to.text())
             vals = generate(a, b, self.gen_n.value(), self.gen_mode.currentIndex() == 1)
         except ValueError as e:
+            why = str(e) if str(e).startswith("log spacing") else "enter numeric start and end values"
             self.preview.setText(f"<span style='color:{ThemeManager.instance().tokens.danger}'>"
-                                 f"无法生成：{e if str(e).startswith('对数') else '请填写有效的起止数值'}</span>")
+                                 f"Cannot fill values: {why}</span>")
             return
         if self.specs[self.current_key()].type == "int":
             vals = sorted({int(round(v)) for v in vals})
@@ -633,11 +663,11 @@ class SweepPage(Page):
         try:
             vals = self.values()
             unit = pretty_unit(s.unit)
-            txt = f"{len(vals)} 次求解：" + ", ".join(fmt_value(v) for v in vals) + (f" {unit}" if unit else "")
+            txt = f"{plural(len(vals), 'solve')}: " + ", ".join(map(fmt_value, vals)) + (f" {unit}" if unit else "")
             if s.type == "choice":
-                txt += f"<br>可选值：{', '.join(s.choices)}"
+                txt += f"<br>Choices: {', '.join(s.choices)}"
             if self.preset.currentData() == "anode":
-                txt += "<br>注意：compare 图中的实测点固定为 +25 V 数据"
+                txt += "<br>Note: the measured points in compare.png are always the +25 V data"
             self.preview.setText(txt)
             n = len(vals)
         except ValueError as e:
@@ -647,7 +677,8 @@ class SweepPage(Page):
         if n:
             total = fmt_elapsed(n * per * 60)
             self.est.setText(f"{n} × {per:g} min ≈ {total}")
-            self.est_head.setText(f"{n} 次求解 · 预计约 {total}" + ("（粗网格）" if self.quick.isChecked() else ""))
+            self.est_head.setText(f"{plural(n, 'solve')} · ≈ {total}"
+                                  + (" · coarse grid" if self.quick.isChecked() else ""))
         else:
             self.est.setText("")
             self.est_head.setText("")
@@ -669,7 +700,8 @@ class SweepPage(Page):
             self._update_preview()
 
     def _pick_out(self):
-        d = QFileDialog.getExistingDirectory(self, "选择输出文件夹", str(paths.GUI_RUNS if paths.GUI_RUNS.exists() else paths.RESULTS))
+        d = QFileDialog.getExistingDirectory(self, "Choose output folder",
+                                             str(paths.GUI_RUNS if paths.GUI_RUNS.exists() else paths.RESULTS))
         if d:
             self.out_edit.setText(paths.rel(d))
 
@@ -679,10 +711,11 @@ class SweepPage(Page):
         try:
             vals = self.values()
         except ValueError as e:
-            error_box(self, "取值无效", str(e))
+            error_box(self, "Invalid values", str(e))
             return None
         if not self.form.is_valid():
-            error_box(self, "参数无效", "以下基准参数的值无法解析：\n" + ", ".join(self.form.invalid_fields()))
+            error_box(self, "Invalid parameters", "These base parameters have values that cannot be read:\n"
+                      + ", ".join(self.form.invalid_fields()))
             return None
         base = {k: v for k, v in self.form.overrides().items() if k != key}
         n = len(vals)
@@ -692,17 +725,20 @@ class SweepPage(Page):
         root = paths.absolute(Path(out).expanduser()) if out else paths.new_run_dir("sweep")
         if confirm:
             if (root / key).exists() and any((root / key).iterdir()):
-                r = QMessageBox.question(self, "覆盖已有结果？",
-                                         f"{paths.rel(root / key)} 已有文件，扫描会覆盖同名取值的结果。继续吗？")
+                r = QMessageBox.question(self, "Overwrite existing results?",
+                                         f"{paths.rel(root / key)} already contains files. Results for values that "
+                                         "are swept again will be overwritten. Continue?")
                 if r != QMessageBox.StandardButton.Yes:
                     return None
             if minutes > self.confirm_minutes:
-                r = QMessageBox.question(self, "开始扫描？",
-                                         f"将依次运行 {n} 次{'粗网格' if quick else '生产网格'}稳态求解，"
-                                         f"预计约 {fmt_elapsed(minutes * 60)}。\n期间可以继续使用其他页面，任务在后台运行。")
+                r = QMessageBox.question(self, "Start sweep?",
+                                         f"Run {plural(n, 'steady solve')} on the "
+                                         f"{'coarse' if quick else 'production'} grid, one after another? "
+                                         f"This takes ≈ {fmt_elapsed(minutes * 60)}.\n\n"
+                                         "The job runs in the background; you can keep using the other pages.")
                 if r != QMessageBox.StandardButton.Yes:
                     return None
-        title = f"扫描 {key} · {n} 个值" + (" · 粗网格" if quick else "")
+        title = f"Sweep {key} · {plural(n, 'value')}" + (" · coarse grid" if quick else "")
         if self.job is not None:              # only the newest sweep drives the live refresh
             try:
                 self.job.output.disconnect(self._on_job_output)
@@ -750,8 +786,9 @@ class SweepPage(Page):
         d, lab = find_sweep_dir(path)
         if d is None:            # clear the view: a stale table under a "not found" title would be misleading
             self.sweep, self.highlight = None, None
-            self.res_title.setText("没有找到扫描结果")
-            self.res_sub.setText(f"{paths.rel(path)} 不是扫描结果文件夹（应包含 compare.png 或 <参数>=<取值>/summary.json）")
+            self.res_title.setText("No sweep found")
+            self.res_sub.setText(f"{paths.rel(path)} is not a sweep folder "
+                                 "(expected compare.png or <parameter>=<value>/summary.json)")
             for m in (self.m_runs, self.m_I, self.m_wall):
                 m.set("—", "")
             self.m_peak.set("—")                # keeps its fixed hint (measured peak position)
@@ -773,32 +810,35 @@ class SweepPage(Page):
         done = [r for r in sw["runs"] if r["done"]]
         ms = [r["metrics"] for r in done]
         conv = [m.get("converged") for m in ms if m.get("converged") is not None]
-        state = "" if not conv else ("  ·  全部收敛" if all(conv) else f"  ·  ⚠ {conv.count(False)} 次未完全收敛")
-        self.res_title.setText(f"{spec.label if spec else key} 扫描 · {sw['n_done']} 个取值{state}")
+        state = "" if not conv else ("  ·  all converged" if all(conv)
+                                     else f"  ·  ⚠ {conv.count(False)} not fully converged")
+        self.res_title.setText(f"{spec.label if spec else key} sweep  ·  {plural(sw['n_done'], 'value')}{state}")
         self.res_title.setToolTip(key)
         base = sw["base"]
         coarse = all(base.get(k) == v for k, v in QUICK.items())
         btxt = ", ".join(f"{k}={fmt_value(v)}" for k, v in base.items() if not (coarse and k in QUICK))
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(d.stat().st_mtime))
         foreign = sw["foreign"]
-        self.res_sub.setText(f"{key}  ·  {paths.rel(d)}  ·  {when}  ·  {'粗网格' if coarse else '生产网格'}"
-                             + (f"  ·  基准修改：{btxt}" if btxt else ("" if sw["spec"] else "  ·  其余参数为默认值"))
-                             + (f"\n另有 {len(foreign)} 个取值文件夹来自此前用不同基准参数写入同一文件夹的扫描，未列出："
+        self.res_sub.setText(f"{key}  ·  {paths.rel(d)}  ·  {when}  ·  {'coarse grid' if coarse else 'production grid'}"
+                             + (f"  ·  base changes: {btxt}" if btxt
+                                else ("" if sw["spec"] else "  ·  other parameters at their defaults"))
+                             + (f"\n{plural(len(foreign), 'more value folder')} from an earlier sweep into this folder "
+                                "with different base parameters, not listed: "
                                 + ", ".join(foreign[:4]) + (" …" if len(foreign) > 4 else "") if foreign else ""))
         fmt = lambda v, f: f.format(v) if v is not None and np.isfinite(v) else "—"
         missing = sw["n_total"] - sw["n_done"]
-        self.m_runs.set(f"{sw['n_done']} / {sw['n_total']}", f"{missing} 个未完成" if missing else "已全部完成")
+        self.m_runs.set(f"{sw['n_done']} / {sw['n_total']}", f"{missing} not finished" if missing else "all finished")
         Is = [m["I"] for m in ms if m.get("I") is not None and np.isfinite(m["I"])]
         self.m_I.set(f"{min(Is):.3f} – {max(Is):.3f} mA" if len(Is) > 1 else fmt(Is[0] if Is else None, "{:.3f} mA"),
-                     "实测约 0.6 mA @ 25 V")
+                     "measured ≈ 0.6 mA at +25 V")
         Xs = sorted({round(m["peak_X"], 1) + 0.0 for m in ms if m.get("peak_X") is not None})
         self.m_peak.set(f"{fmt_x(Xs[0])} … {fmt_x(Xs[-1])} µm" if len(Xs) > 1 else f"{fmt_x(Xs[0])} µm" if Xs else "—")
         walls = [m["wall"] for m in ms if m.get("wall")]
         self.m_wall.set(fmt_elapsed(sum(walls)) if walls else "—",
-                        f"每个约 {fmt_elapsed(sum(walls) / len(walls))}" if walls else "")
-        self.metrics_line.setText("  ·  ".join(f"{m.lab.text()}：{m.val.text()}" for m in
+                        f"≈ {fmt_elapsed(sum(walls) / len(walls))} per value" if walls else "")
+        self.metrics_line.setText("  ·  ".join(f"{m.lab.text()}: {m.val.text()}" for m in
                                                (self.m_runs, self.m_I, self.m_peak, self.m_wall)))
-        self.metrics_line.setToolTip("\n".join(f"{m.lab.text()}：{m.val.text()}（{m.hint.text()}）" for m in
+        self.metrics_line.setToolTip("\n".join(f"{m.lab.text()}: {m.val.text()} ({m.hint.text()})" for m in
                                                 (self.m_runs, self.m_I, self.m_peak, self.m_wall) if m.hint.text()))
         cmp_ok = sw["compare"].exists()
         if cmp_ok and self._running_here(d):       # a compare.png older than the running re-sweep is not its figure
@@ -807,7 +847,8 @@ class SweepPage(Page):
             self.compare.load(sw["compare"])
         else:
             # short lines: the empty-state label does not wrap and would widen the whole results column
-            self.compare.clear("尚未生成 compare.png\nscripts/sweep.py 在全部取值完成后才作此图\n（扫描未完成或中途失败时没有）")
+            self.compare.clear("No compare.png yet\nscripts/sweep.py draws it once every value is done\n"
+                               "(missing when the sweep is unfinished or failed)")
         self._fill_table()
         h = 34 + 26 * max(2, min(6, len(sw["runs"])))
         tot = sum(self.vsplit.sizes()) or 690
@@ -850,10 +891,11 @@ class SweepPage(Page):
                 cells = [f"{fmt_value(r['value'])} {unit}".strip(), f("I", "{:.4f}"), f("gain", "{:.3f}"),
                          fmt_x(m["peak_X"]) if m.get("peak_X") is not None else "—", f("ratio5", "{:.2f}"),
                          f("S0", "{:.2f}"),
-                         "—" if conv is None else ("✓" if conv else "⚠ 否"),
+                         "—" if conv is None else ("✓" if conv else "⚠ no"),
                          fmt_elapsed(m["wall"]) if m.get("wall") else "—"]
             else:
-                st = ("运行中" if r.get("started") else "排队") if running else ("中断" if r.get("started") else "未运行")
+                st = ("running" if r.get("started") else "queued") if running else \
+                    ("interrupted" if r.get("started") else "not run")
                 cells = [f"{fmt_value(r['value'])} {unit}".strip(), "—", "—", "—", "—", "—", st, "—"]
             for c, txt in enumerate(cells):
                 it = QTableWidgetItem(txt)
@@ -988,15 +1030,16 @@ class SweepPage(Page):
             spec = self.specs.get(info["key"])
             unit = pretty_unit(spec.unit) if spec else ""
             vals = ", ".join(fmt_value(v) for v in info["values"][:8]) + (" …" if len(info["values"]) > 8 else "")
-            state = "完整" if info["complete"] else f"未完成 {info['n_done']}/{info['n_total']}"
+            state = "complete" if info["complete"] else f"incomplete {info['n_done']}/{info['n_total']}"
             when = time.strftime("%Y-%m-%d %H:%M", time.localtime(d.stat().st_mtime))
-            txt = (f"{paths.rel(d)}\n    {info['key']}：{vals} {unit} · {info['n_done']} 次求解 · {state}"
-                   f"{' · 粗网格' if info['coarse'] else ''} · {when}")
+            txt = (f"{paths.rel(d)}\n    {info['key']}: {vals}{f' {unit}' if unit else ''} · "
+                   f"{plural(info['n_done'], 'solve')} · {state}"
+                   f"{' · coarse grid' if info['coarse'] else ''} · {when}")
             it = QListWidgetItem(txt)
             it.setData(Qt.ItemDataRole.UserRole, str(d))
             self.hist.addItem(it)
         if not found:
-            it = QListWidgetItem("还没有扫描结果")
+            it = QListWidgetItem("No sweeps yet")
             it.setFlags(Qt.ItemFlag.NoItemFlags)
             self.hist.addItem(it)
         return found
@@ -1008,13 +1051,14 @@ class SweepPage(Page):
             self.show_result(p)
 
     def _open_folder(self):
-        d = QFileDialog.getExistingDirectory(self, "选择扫描结果文件夹", str(paths.GUI_RUNS if paths.GUI_RUNS.exists()
-                                                                          else paths.RESULTS))
+        d = QFileDialog.getExistingDirectory(self, "Choose a sweep folder",
+                                             str(paths.GUI_RUNS if paths.GUI_RUNS.exists() else paths.RESULTS))
         if d:
             self._follow = None
             if not self.show_result(d):
-                error_box(self, "不是扫描结果", f"{paths.rel(d)} 中没有找到扫描结果\n"
-                          "（需要 sweep_spec.json、compare.png 或「参数=取值」子文件夹中的 summary.json）")
+                error_box(self, "Not a sweep folder", f"No sweep results found in {paths.rel(d)}.\n"
+                          "Expected sweep_spec.json, compare.png or summary.json files in <parameter>=<value> "
+                          "subfolders.")
 
     def _reveal_history(self):
         it = self.hist.currentItem()

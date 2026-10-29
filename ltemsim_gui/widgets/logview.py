@@ -45,7 +45,7 @@ class LogView(QPlainTextEdit):
         self.setReadOnly(True)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setMaximumBlockCount(max_lines)
-        self.setPlaceholderText("运行日志会显示在这里…")
+        self.setPlaceholderText("The run log appears here…")
         self._hl = _Highlighter(self.document())
         ThemeManager.instance().changed.connect(lambda *_: self._hl.retheme())
 

@@ -21,7 +21,7 @@ from .. import icons, nav, paths
 from ..jobs import JobManager
 from ..theme import ThemeManager
 from ..widgets.common import Page, button, error_box, label, open_external, reveal
-from ..widgets.fileviews import (IMAGE_EXT, CompareView, ElideLabel, describe, fmt_time, human_size, kind_of,
+from ..widgets.fileviews import (IMAGE_EXT, CompareView, ElideLabel, describe, fmt_time, human_size, kind_of, plural,
                                  preview_for, segmented)
 from ..workers import run_async
 
@@ -29,10 +29,15 @@ RECENT_N = 30
 ROW_QSS = "QTreeView::item { height: 24px; }"
 MATCH_CAP = 300
 SCAN_CAP = 100_000
-# page id -> (button text, icon, short text for narrow windows)
-TARGETS = {"explorer": ("在解查看器中打开", "layers", "解查看器"), "steady": ("在稳态求解页面打开", "grid", "稳态求解"),
-           "sweep": ("在参数扫描页面打开", "sliders", "参数扫描"), "pulse": ("在单脉冲发射链页面打开", "zap", "单脉冲发射链"),
-           "fdtd": ("在泵浦 FDTD 页面打开", "waves", "泵浦 FDTD"), "tip": ("在针尖位置链页面打开", "target", "针尖位置链")}
+# page id -> (button text, icon, short text for narrow windows); names as in the sidebar (app.PAGES)
+TARGETS = {"explorer": ("Open in Solution explorer", "layers", "Explorer"),
+           "steady": ("Open in Steady state", "grid", "Steady state"),
+           "sweep": ("Open in Parameter sweep", "sliders", "Sweep"),
+           "pulse": ("Open in Single-pulse chain", "zap", "Pulse chain"),
+           "fdtd": ("Open in Pump FDTD", "waves", "Pump FDTD"),
+           "tip": ("Open in Tip-position chain", "target", "Tip chain")}
+DELETE_RULE = "Only results the app created in results/gui_runs/ can be deleted; committed results are protected"
+COPY_TIP = "Copy the absolute path (the context menu can also copy the relative path)"
 SWEEP_MARKERS = ("compare.png", "sweep_summary.json", "sweep_spec.json")
 
 
@@ -173,7 +178,7 @@ def _short(p: Path, maxlen: int = 44) -> str:
 
 
 class _FsModel(QFileSystemModel):
-    HEAD = ("名称", "大小", "类型", "修改时间")
+    HEAD = ("Name", "Size", "Type", "Modified")
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole and 0 <= section < 4:
@@ -189,6 +194,25 @@ class _FsModel(QFileSystemModel):
         return super().data(index, role)
 
 
+class _Fill(QWidget):
+    """Holds the preview under the header card and fills the remaining height. The page sits in a QScrollArea
+    that sizes height-for-width pages (the wrapped subtitle) to their *preferred* height, so a preview with a tall
+    size hint (the 489 px field plot) made the page taller than a 700 px window and cut the plot off. This box
+    reports its minimum height as its preferred height and no height-for-width; the minimum still applies, so
+    windows shorter than that scroll instead of clipping the preview."""
+
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+    def hasHeightForWidth(self):
+        return False
+
+    def sizeHint(self):
+        return QSize(super().sizeHint().width(), self.minimumSizeHint().height())
+
+
 def _Elide(text="", obj=None, mode=Qt.TextElideMode.ElideMiddle) -> ElideLabel:
     """Single-line label eliding (by default in the middle) to the available width; full text in the tooltip."""
     return ElideLabel(text, obj, mode)
@@ -196,8 +220,9 @@ def _Elide(text="", obj=None, mode=Qt.TextElideMode.ElideMiddle) -> ElideLabel:
 
 # ---------------------------------------------------------------------------------------------- page
 class ResultsPage(Page):
-    title = "结果浏览"
-    subtitle = "预览图像、JSON、CSV、Markdown、文本与 npz；文件夹显示概况与运行记录，可一键跳到对应的模拟页面。"
+    title = "Results browser"
+    subtitle = ("Preview images, JSON, CSV, Markdown, text and NumPy files. Folders show a summary and their run "
+                "records, with one-click jumps to the matching simulation page.")
 
     def __init__(self):
         super().__init__()
@@ -214,7 +239,7 @@ class ResultsPage(Page):
         self._icons = QFileIconProvider()
 
         # ---------------- header: root folder + refresh
-        self.header.add_action(label("根目录", "muted"))
+        self.header.add_action(label("Root", "muted"))
         self.root_combo = QComboBox()
         self.root_combo.setMinimumWidth(220)
         self.root_combo.setMaximumWidth(340)
@@ -222,7 +247,8 @@ class ResultsPage(Page):
         self.root_combo.setMinimumContentsLength(24)
         self.root_combo.activated.connect(self._on_root_combo)
         self.header.add_action(self.root_combo)
-        self.refresh_btn = self.header.add_action(button("刷新", self.refresh, tooltip="重新扫描文件并重新载入预览"))
+        self.refresh_btn = self.header.add_action(button("Refresh", self.refresh,
+                                                         tooltip="Rescan the files and reload the preview"))
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setChildrenCollapsible(False)
@@ -232,13 +258,13 @@ class ResultsPage(Page):
         ll.setContentsMargins(0, 0, 0, 0)
         ll.setSpacing(6)
         top = QHBoxLayout()
-        self.mode = segmented(["目录树", "最近修改"])
+        self.mode = segmented(["Tree", "Recent"])
         self.mode.currentChanged.connect(self._on_mode)
         top.addWidget(self.mode)
         top.addStretch(1)
         ll.addLayout(top)
         self.filter = QLineEdit()
-        self.filter.setPlaceholderText("筛选文件名，如 maps、*.png、summary json")
+        self.filter.setPlaceholderText("Filter by name, e.g. maps, *.png, summary json")
         self.filter.setClearButtonEnabled(True)
         self._filter_timer = QTimer(self, singleShot=True, interval=220)
         self._filter_timer.timeout.connect(self._apply_filter)
@@ -279,7 +305,7 @@ class ResultsPage(Page):
         self.recent_title = label("", "muted")
         rl.addWidget(self.recent_title)
         self.recent = QTreeWidget()
-        self.recent.setHeaderLabels(["名称", "所在文件夹", "修改时间"])
+        self.recent.setHeaderLabels(["Name", "Folder", "Modified"])
         self.recent.setRootIsDecorated(False)
         self.recent.setStyleSheet(ROW_QSS)
         self.recent.setUniformRowHeights(True)
@@ -337,20 +363,19 @@ class ResultsPage(Page):
         self.nav_row.setSpacing(8)
         r3.addWidget(self.nav_box)
         r3.addStretch(1)
-        self.b_reveal = button("在访达中显示", lambda: self.current and reveal(self.current))
-        self.b_open = button("用默认程序打开", lambda: self.current and open_external(self.current))
-        self.b_copy = button("复制路径", lambda: self.current and self._copy(self.current),
-                             tooltip="复制绝对路径（右键菜单可复制相对路径）")
-        self.b_delete = button("删除", lambda: self.current and self.delete(self.current), obj="danger")
+        self.b_reveal = button("Show in Finder", lambda: self.current and reveal(self.current))
+        self.b_open = button("Open with default app", lambda: self.current and open_external(self.current))
+        self.b_copy = button("Copy path", lambda: self.current and self._copy(self.current), tooltip=COPY_TIP)
+        self.b_delete = button("Delete", lambda: self.current and self.delete(self.current), obj="danger")
         for b in (self.b_reveal, self.b_open, self.b_copy, self.b_delete):
             r3.addWidget(b)
         hl.addLayout(r3)
         rr.addWidget(head)
         self.head = head
         head.installEventFilter(self)
-        self.holder = QVBoxLayout()
-        self.holder.setContentsMargins(0, 0, 0, 0)
-        rr.addLayout(self.holder, 1)
+        self.fill = _Fill()
+        self.holder = self.fill.layout()
+        rr.addWidget(self.fill, 1)
         split.addWidget(right)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
@@ -380,9 +405,9 @@ class ResultsPage(Page):
         return [v] if isinstance(v, str) else list(v)
 
     def _rebuild_roots(self):
-        items = [(paths.RESULTS, "results/  （默认）")]
+        items = [(paths.RESULTS, "results/  (default)")]
         if paths.GUI_RUNS.is_dir():
-            items.append((paths.GUI_RUNS, "results/gui_runs/  （界面运行）"))
+            items.append((paths.GUI_RUNS, "results/gui_runs/  (app runs)"))
         for c in self._custom_roots():
             p = Path(c)
             if p.is_dir() and all(p.resolve() != q.resolve() for q, _ in items):
@@ -397,7 +422,7 @@ class ResultsPage(Page):
             if p.resolve() == self.root.resolve():
                 self.root_combo.setCurrentIndex(self.root_combo.count() - 1)
         self.root_combo.insertSeparator(self.root_combo.count())
-        self.root_combo.addItem("选择其他文件夹…", None)
+        self.root_combo.addItem("Choose another folder…", None)
         self.root_combo.blockSignals(False)
 
     def _on_root_combo(self, i):
@@ -408,7 +433,7 @@ class ResultsPage(Page):
             self.set_root(Path(d))
 
     def choose_root(self):
-        d = QFileDialog.getExistingDirectory(self, "选择要浏览的文件夹", str(self.root))
+        d = QFileDialog.getExistingDirectory(self, "Choose a folder to browse", str(self.root))
         if d:
             roots = [r for r in self._custom_roots() if r != d][:5]
             self.settings.setValue("results_page/custom_roots", [d] + roots)
@@ -435,7 +460,7 @@ class ResultsPage(Page):
     def rescan(self):
         self._scan_gen += 1
         gen = self._scan_gen
-        self.footer.setText(f"{_short(self.root)}  ·  正在扫描…")
+        self.footer.setText(f"{_short(self.root)}  ·  scanning…")
         run_async(scan_files, self.root, on_done=lambda d, g=gen: self._scan_done(g, d),
                   on_error=lambda e, g=gen: self._scan_failed(g, e))
 
@@ -447,17 +472,18 @@ class ResultsPage(Page):
 
     def _scan_failed(self, gen, err):
         if gen == self._scan_gen:
-            self.footer.setText(f"扫描失败：{err.splitlines()[0]}")
+            self.footer.setText(f"Scan failed: {err.splitlines()[0]}")
 
     def _update_footer(self):
         d = self._scan
         if d is None:
             return
         n = len(d["files"])
-        txt = f"{_short(self.root)}  ·  {n}{'+' if d['truncated'] else ''} 个文件  ·  {human_size(d['total'])}"
+        files = f"{n:,}+ files" if d["truncated"] else plural(n, "file")
+        txt = f"{_short(self.root)}  ·  {files}  ·  {human_size(d['total'])}"
         if self._n_match is not None and self.mode.currentIndex() == 0:
             # QFileSystemModel filters files only: folders stay visible, so say how many files match
-            txt = f"{self._n_match} 个文件匹配（文件夹不筛选）；列表见「最近修改」"
+            txt = f"{plural(self._n_match, 'file')} match (folders are not filtered); list under Recent"
         self.footer.setText(txt)
 
     def _on_mode(self, i):
@@ -477,7 +503,7 @@ class ResultsPage(Page):
         self.recent.clear()
         self.recent.blockSignals(False)
         if self._scan is None:
-            self.recent_title.setText("正在扫描…")
+            self.recent_title.setText("Scanning…")
             return
         pats = _patterns(self.filter.text())
         files = self._scan["files"]
@@ -487,12 +513,12 @@ class ResultsPage(Page):
             rows = [r for r, n in zip(files, self._scan["names"]) if rx.match(n)]
             self._n_match = len(rows)
             shown = rows[:MATCH_CAP]
-            self.recent_title.setText(f"匹配「{self.filter.text().strip()}」的文件：{len(rows)} 个"
-                                      + (f"（显示最近的 {MATCH_CAP} 个）" if len(rows) > MATCH_CAP else "")
-                                      + "，按修改时间排序")
+            self.recent_title.setText(f"{plural(len(rows), 'file')} matching “{self.filter.text().strip()}”"
+                                      + (f" (showing the {MATCH_CAP} most recent)" if len(rows) > MATCH_CAP else "")
+                                      + ", newest first")
         else:
             shown = files[:RECENT_N]
-            self.recent_title.setText(f"最近修改的 {len(shown)} 个文件")
+            self.recent_title.setText(f"Most recently modified  ·  {plural(len(shown), 'file')}")
         root = Path(self._scan["root"])
         self.recent.blockSignals(True)
         for fp, mtime, size in shown:
@@ -506,7 +532,7 @@ class ResultsPage(Page):
             if self.current is not None and Path(fp) == self.current:
                 self.recent.setCurrentItem(it)
         if not shown:
-            it = QTreeWidgetItem(["没有匹配的文件" if pats else "（空）", "", ""])
+            it = QTreeWidgetItem(["No matching files" if pats else "(no files)", "", ""])
             it.setFlags(Qt.ItemFlag.NoItemFlags)
             self.recent.addTopLevelItem(it)
         self.recent.blockSignals(False)
@@ -586,19 +612,18 @@ class ResultsPage(Page):
         exists = p.exists()
         self.p_icon.setPixmap(self._icons.icon(QFileInfo(str(p))).pixmap(20, 20))
         self.p_name.setText(p.name or str(p))
-        self.p_badge.setText(describe(p) if exists else "不存在")
+        self.p_badge.setText(describe(p) if exists else "Not found")
         if exists:
             st = p.stat()
-            size = "文件夹" if p.is_dir() else human_size(st.st_size)
-            self.p_info.setText(f"{paths.rel(p)}   ·   {size}   ·   修改于 {fmt_time(st.st_mtime)}")
+            size = "folder" if p.is_dir() else human_size(st.st_size)
+            self.p_info.setText(f"{paths.rel(p)}   ·   {size}   ·   modified {fmt_time(st.st_mtime)}")
         else:
             self.p_info.setText(paths.rel(p))
         for b in (self.b_reveal, self.b_open, self.b_copy):
             b.setEnabled(exists)
         ok = can_delete(p)
         self.b_delete.setEnabled(ok)
-        self.b_delete.setToolTip("把它移到废纸篓（可在废纸篓中恢复）" if ok else
-                                 "只能删除 results/gui_runs/ 中由界面生成的结果；提交到仓库的结果受保护")
+        self.b_delete.setToolTip("Move it to the Trash (you can restore it from there)" if ok else DELETE_RULE)
         # page jumps (+ image comparison)
         while self.nav_row.count():
             it = self.nav_row.takeAt(0)
@@ -608,22 +633,23 @@ class ResultsPage(Page):
         self._nav_btns = []
         for i, (text, pid, kw) in enumerate(targets):
             b = button(text, lambda _=False, pid=pid, kw=kw: nav.navigate(pid, **kw), obj="primary" if i == 0 else None,
-                       tooltip=f"{text}：{paths.rel(next(iter(kw.values())))}")
+                       tooltip=f"{text}: {paths.rel(next(iter(kw.values())))}")
             b.setIcon(icons.icon(TARGETS[pid][1], t.on_accent if i == 0 else t.accent))
             self.nav_row.addWidget(b)
             self._nav_btns.append((b, text, TARGETS[pid][2]))
         has_img = exists and kind_of(p) == "image"
         if has_img:
-            b = button("并排对比…", self.compare_dialog, tooltip="选择另一张图像与当前图像并排对比（同步缩放）")
+            b = button("Compare side by side…", self.compare_dialog,
+                       tooltip="Pick another image to compare with this one side by side (synchronised zoom)")
             b.setIcon(icons.icon("image", t.accent))
             self.nav_row.addWidget(b)
-            self._nav_btns.append((b, "并排对比…", "对比…"))
+            self._nav_btns.append((b, "Compare side by side…", "Compare…"))
         self.nav_box.setVisible(bool(targets) or has_img)
         self._compact = None
         self._fit_actions()
 
     # ------------------------------------------------------------------ narrow windows
-    FILE_ACTIONS = (("b_reveal", "在访达中显示"), ("b_open", "用默认程序打开"), ("b_copy", "复制路径"))
+    FILE_ACTIONS = (("b_reveal", "Show in Finder"), ("b_open", "Open with default app"), ("b_copy", "Copy path"))
 
     def _fit_actions(self):
         """When the header card is too narrow for the full button texts (at 1100 px they were squeezed below
@@ -643,7 +669,7 @@ class ResultsPage(Page):
             b = getattr(self, attr)
             b.setText("" if level else text)
             if level:
-                b.setToolTip(text if attr != "b_copy" else "复制绝对路径（右键菜单可复制相对路径）")
+                b.setToolTip(text if attr != "b_copy" else COPY_TIP)
         for b, text, short in nav:
             b.setText(short if level == 2 else text)
 
@@ -673,8 +699,8 @@ class ResultsPage(Page):
     def compare_dialog(self):
         if self.current is None:
             return
-        fn, _ = QFileDialog.getOpenFileName(self, "选择要对比的图像", str(self.current.parent),
-                                            "图像 (" + " ".join(f"*{e}" for e in sorted(IMAGE_EXT)) + ")")
+        fn, _ = QFileDialog.getOpenFileName(self, "Choose an image to compare", str(self.current.parent),
+                                            "Images (" + " ".join(f"*{e}" for e in sorted(IMAGE_EXT)) + ")")
         if fn:
             self.compare(self.current, Path(fn))
 
@@ -699,15 +725,16 @@ class ResultsPage(Page):
         """Move a GUI run (or a file in it) to the trash after confirmation. Only inside results/gui_runs/."""
         p = Path(path)
         if not can_delete(p):
-            error_box(self, "不能删除", "只能删除 results/gui_runs/ 中由界面生成的结果。\n"
-                                        "提交到仓库的结果文件夹受保护，请在访达中自行处理。")
+            error_box(self, "Cannot delete", "Only results the app created in results/gui_runs/ can be deleted.\n"
+                                             "Committed result folders are protected; manage them in Finder.")
             return False
         rp = p.resolve()
         for j in JobManager.instance().active():
             if j.out:
                 o = paths.absolute(j.out).resolve()
                 if o == rp or rp in o.parents or o in rp.parents:
-                    error_box(self, "正在使用", f"任务「{j.title}」正在写入此文件夹，请先等待它结束或取消它。")
+                    error_box(self, "Folder in use", f"The job “{j.title}” is writing to this folder. "
+                                                     "Wait for it to finish or cancel it first.")
                     return False
         if p.is_dir():
             n = size = 0
@@ -718,10 +745,11 @@ class ResultsPage(Page):
                         size += os.lstat(os.path.join(d, f)).st_size       # broken links must not abort
                     except OSError:
                         pass
-            what = f"文件夹（{n} 个文件，{human_size(size)}）"
+            what = f"folder ({plural(n, 'file')}, {human_size(size)})"
         else:
-            what = f"文件（{human_size(p.lstat().st_size)}）"
-        r = QMessageBox.question(self, "移到废纸篓？", f"将{what}\n\n{paths.rel(p)}\n\n移到废纸篓？之后可在废纸篓中恢复。",
+            what = f"file ({human_size(p.lstat().st_size)})"
+        r = QMessageBox.question(self, "Move to Trash?", f"Move this {what} to the Trash?\n\n{paths.rel(p)}\n\n"
+                                 "You can restore it from the Trash later.",
                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                  QMessageBox.StandardButton.No)
         if r != QMessageBox.StandardButton.Yes:
@@ -729,7 +757,7 @@ class ResultsPage(Page):
         res = QFile.moveToTrash(str(p))
         ok = res[0] if isinstance(res, tuple) else bool(res)
         if not ok:
-            error_box(self, "删除失败", f"无法把 {paths.rel(p)} 移到废纸篓。")
+            error_box(self, "Delete failed", f"Could not move {paths.rel(p)} to the Trash.")
             return False
         if _inside(self.root, p):            # the browsed root itself went to the trash
             self.set_root(p.parent if p.parent.is_dir() else paths.RESULTS, preview=False)
@@ -750,23 +778,23 @@ class ResultsPage(Page):
                 m.addAction(text, lambda pid=pid, kw=kw: nav.navigate(pid, **kw))
             if m.actions():
                 m.addSeparator()
-            m.addAction("在访达中显示", lambda: reveal(path))
-            m.addAction("用默认程序打开", lambda: open_external(path))
-            m.addAction("复制路径", lambda: self._copy(path))
-            m.addAction("复制相对路径", lambda: self._copy(path, True))
+            m.addAction("Show in Finder", lambda: reveal(path))
+            m.addAction("Open with default app", lambda: open_external(path))
+            m.addAction("Copy path", lambda: self._copy(path))
+            m.addAction("Copy relative path", lambda: self._copy(path, True))
             if (kind_of(path) == "image" and self.current is not None and self.current != path
                     and self.current.exists() and kind_of(self.current) == "image"):
-                m.addAction(f"与 {self.current.name} 并排对比", lambda: self.compare(self.current, path))
+                m.addAction(f"Compare side by side with {self.current.name}", lambda: self.compare(self.current, path))
             m.addSeparator()
-            a = m.addAction("删除（移到废纸篓）…", lambda: self.delete(path))
+            a = m.addAction("Delete (move to Trash)…", lambda: self.delete(path))
             a.setEnabled(can_delete(path))
             if not a.isEnabled():
-                a.setToolTip("只能删除 results/gui_runs/ 中由界面生成的结果")
+                a.setToolTip(DELETE_RULE)
             m.addSeparator()
         else:
-            m.addAction("在访达中显示根目录", lambda: reveal(self.root))
-            m.addAction("显示根目录概况", lambda: self._preview(self.root, force=True))
-        m.addAction("刷新", self.refresh)
+            m.addAction("Show root folder in Finder", lambda: reveal(self.root))
+            m.addAction("Show root folder summary", lambda: self._preview(self.root, force=True))
+        m.addAction("Refresh", self.refresh)
         return m
 
     def _show_menu(self, path, global_pos):

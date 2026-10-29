@@ -15,7 +15,7 @@ def _tooltip(s: FieldSpec) -> str:
     parts = [f"<b>{s.name}</b>" + (f" &nbsp;[{s.unit}]" if s.unit else "")]
     if s.help:
         parts.append(s.help)
-    parts.append(f"<span style='color:gray'>默认值: {format_value(s, s.default)}</span>")
+    parts.append(f"<span style='color:gray'>default: {format_value(s, s.default)}</span>")
     return "<br>".join(parts)
 
 
@@ -48,12 +48,12 @@ class ParamForm(QWidget):
             bar = QHBoxLayout()
             bar.setSpacing(6)
             self.search = QLineEdit()
-            self.search.setPlaceholderText("搜索参数 (名称 / 说明)…")
+            self.search.setPlaceholderText("Search parameters (name / description)…")
             self.search.setClearButtonEnabled(True)
             self.search.textChanged.connect(self._apply_filter)
             bar.addWidget(self.search, 1)
-            self.adv = QCheckBox("高级")
-            self.adv.setToolTip("显示网格、数值和次要材料参数")
+            self.adv = QCheckBox("Advanced")
+            self.adv.setToolTip("Show grid, numerics and secondary material parameters")
             self.adv.setChecked(show_advanced)
             self.adv.toggled.connect(self._apply_filter)
             has_adv = any(s.advanced for s in self.specs)
@@ -64,9 +64,9 @@ class ParamForm(QWidget):
             self.status = QLabel("")
             self.status.setObjectName("muted")
             bar2.addWidget(self.status, 1)
-            for text, slot, tip in (("载入…", self.load_dialog, "从 JSON 预设或 params.json 载入参数"),
-                                    ("保存…", self.save_dialog, "把当前参数保存为 JSON 预设"),
-                                    ("恢复默认", self.reset_all, "全部参数恢复默认值")):
+            for text, slot, tip in (("Load…", self.load_dialog, "Load parameters from a JSON preset or a params.json"),
+                                    ("Save…", self.save_dialog, "Save the current parameters as a JSON preset"),
+                                    ("Reset", self.reset_all, "Reset all parameters to their defaults")):
                 b = QPushButton(text)
                 b.setObjectName("flat")
                 b.setToolTip(tip)
@@ -86,9 +86,9 @@ class ParamForm(QWidget):
         groups: dict[str, QGroupBox] = {}
         grids: dict[str, QGridLayout] = {}
         for s in self.specs:
-            sec = s.section or "参数"
+            sec = s.section or "Parameters"
             if sec not in groups:
-                g = QGroupBox(sec)
+                g = QGroupBox(sec.replace("&", "&&"))      # '&' would become a mnemonic
                 grid = QGridLayout(g)
                 grid.setContentsMargins(8, 10, 8, 6)
                 grid.setHorizontalSpacing(8)
@@ -109,7 +109,7 @@ class ParamForm(QWidget):
             rb.setObjectName("flat")
             rb.setText("↺")
             rb.setFixedWidth(26)
-            rb.setToolTip("恢复默认值")
+            rb.setToolTip("Reset to default")
             rb.setVisible(False)
             rb.clicked.connect(lambda _=False, n=s.name: self.reset_field(n))
             grid.addWidget(lab, r, 0)
@@ -208,9 +208,9 @@ class ParamForm(QWidget):
             return
         n_mod = len(self.overrides(strict=False))
         n_bad = sum(not r.valid for r in self.rows.values())
-        txt = f"已修改 {n_mod} 项" if n_mod else "全部为默认值"
+        txt = f"{n_mod} changed" if n_mod else "all defaults"
         if n_bad:
-            txt += f" · <span style='color:#d23a3a'>{n_bad} 项无效</span>"
+            txt += f" · <span style='color:#d23a3a'>{n_bad} invalid</span>"
         self.status.setText(txt)
 
     # ------------------------------------------------------------------ filtering
@@ -254,7 +254,7 @@ class ParamForm(QWidget):
                 v = self._raw(r)
             except (ValueError, TypeError):
                 if strict:
-                    raise ValueError(f"参数 {n} 的值无效")
+                    raise ValueError(f"invalid value for parameter {n}")
                 out[n] = None
                 continue
             if not self._same(v, r.spec.default):
@@ -296,7 +296,7 @@ class ParamForm(QWidget):
 
     # ------------------------------------------------------------------ presets
     def save_dialog(self):
-        path, _ = QFileDialog.getSaveFileName(self, "保存参数预设", "preset.json", "JSON (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save parameter preset", "preset.json", "JSON (*.json)")
         if not path:
             return
         try:
@@ -308,7 +308,7 @@ class ParamForm(QWidget):
 
     def load_dialog(self):
         from .. import paths
-        path, _ = QFileDialog.getOpenFileName(self, "载入参数", str(paths.RESULTS), "JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load parameters", str(paths.RESULTS), "JSON (*.json)")
         if not path:
             return
         with open(path) as fh:
