@@ -36,8 +36,8 @@ class _Task(QRunnable):
 _keep = set()
 
 
-def run_async(fn, *args, on_done=None, on_error=None, **kwargs):
-    """Run fn(*args, **kwargs) in the global thread pool; callbacks run on the GUI thread.
+def run_async(fn, *args, on_done=None, on_error=None, pool=None, **kwargs):
+    """Run fn(*args, **kwargs) in the global thread pool (or in `pool`); callbacks run on the GUI thread.
 
     After the callback the connections are dropped, so the task, its arguments and the callbacks'
     closures can be freed (a signal connection that refers back to its own task is never collected).
@@ -60,5 +60,5 @@ def run_async(fn, *args, on_done=None, on_error=None, **kwargs):
 
     sig.done.connect(lambda r: finish(on_done, r))
     sig.failed.connect(lambda m: finish(on_error, m))
-    QThreadPool.globalInstance().start(task)
+    (pool or QThreadPool.globalInstance()).start(task)
     return task

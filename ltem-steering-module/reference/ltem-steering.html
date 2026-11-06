@@ -1,0 +1,1376 @@
+<title>LTEM 泵浦光斑转向</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<style>
+/* Layout: an optical-bench console. Live 3D bench as the hero, then the motor control beside two true-scale scopes
+   (beam at the AFM port, spot on the sample in plan view), then the lab protocol and assumptions. */
+:root{
+  --bg:#edf0f0;
+  --panel:#ffffff;
+  --panel-2:#f4f6f6;
+  --ink:#121719;
+  --muted:#59656a;
+  --line:#d2d9db;
+  --beam:#cf1a3f;
+  --beam-soft:rgba(207,26,63,.14);
+  --yaw:#a86400;
+  --pitch:#088e86;
+  --thz:#5b4fd0;
+  --scene:#d6dcde;
+  --label-bg:rgba(255,255,255,.88);
+  --focus:#0a7c84;
+  --font-display:"IBM Plex Sans Condensed","Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  --font-body:"Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0c1012; --panel:#141a1c; --panel-2:#101618; --ink:#e3e9eb; --muted:#94a3a9; --line:#263034;
+    --beam:#ff5272; --beam-soft:rgba(255,82,114,.17); --yaw:#c98500; --pitch:#199e9e; --thz:#a59bff;
+    --scene:#0a0d0f; --label-bg:rgba(16,22,24,.86); --focus:#3cc3c8; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0c1012; --panel:#141a1c; --panel-2:#101618; --ink:#e3e9eb; --muted:#94a3a9; --line:#263034;
+  --beam:#ff5272; --beam-soft:rgba(255,82,114,.17); --yaw:#c98500; --pitch:#199e9e; --thz:#a59bff;
+  --scene:#0a0d0f; --label-bg:rgba(16,22,24,.86); --focus:#3cc3c8; color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-body);font-size:15px;line-height:1.65;-webkit-text-size-adjust:100%}
+.wrap{max-width:1140px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:22px 56px;display:flex;flex-direction:column;gap:22px}
+.eyebrow{font-family:var(--font-mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0}
+h1{font-family:var(--font-display);font-weight:700;font-size:clamp(30px,6.2vw,46px);line-height:1.08;margin:6px 0 10px;text-wrap:balance;letter-spacing:-.01em}
+h2{font-family:var(--font-display);font-weight:600;font-size:clamp(19px,3.4vw,23px);line-height:1.25;margin:0 0 10px;text-wrap:balance}
+h3{font-family:var(--font-display);font-weight:600;font-size:16px;margin:0}
+p{margin:0}
+.lede{max-width:66ch}
+/* language: only the active language's copies are shown */
+:root[data-lang="en"] [data-l="zh"], :root:not([data-lang="en"]) [data-l="en"]{display:none !important}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap}
+.langseg{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px;background:var(--panel);gap:2px}
+.langseg button{font:500 12.5px/1.2 var(--font-body);color:var(--muted);background:transparent;border:0;border-radius:999px;padding:5px 12px;cursor:pointer;min-height:30px}
+.langseg button[aria-pressed="true"]{background:var(--ink);color:var(--panel)}
+.lede b{font-weight:600}
+a{color:var(--focus)}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}
+
+.rules{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}
+.rule{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.chip{display:inline-flex;align-items:center;font-family:var(--font-mono);font-size:11.5px;letter-spacing:.06em;padding:2px 8px;border-radius:999px;border:1px solid currentColor;width:max-content}
+.chip.yaw{color:var(--yaw)} .chip.pitch{color:var(--pitch)} .chip.plain{color:var(--muted)}
+.rule .say{font-size:16.5px;line-height:1.55;font-weight:500}
+.rule .say em{font-style:normal;font-weight:700;color:var(--yaw)}
+.rule .say em.p{color:var(--pitch)}
+.rule .sens{font-family:var(--font-mono);font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.rule .sens b{color:var(--ink);font-weight:600}
+.layoutline{margin-top:10px;font-size:14px;color:var(--muted);max-width:92ch}
+.layoutline b{color:var(--ink);font-weight:600}
+
+.stage{position:relative;height:clamp(330px,60vh,580px);border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--scene)}
+.stage canvas{display:block;width:100%;height:100%;touch-action:none}
+.labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.lbl{position:absolute;left:0;top:0;transform:translate(-50%,-120%);white-space:nowrap;font-family:var(--font-mono);font-size:11px;line-height:1.3;padding:2px 6px;border-radius:5px;background:var(--label-bg);color:var(--ink);border:1px solid var(--line)}
+.lbl.yaw{color:var(--yaw);border-color:var(--yaw)} .lbl.pitch{color:var(--pitch);border-color:var(--pitch)} .lbl.beam{color:var(--beam);border-color:var(--beam)} .lbl.thz{color:var(--thz);border-color:var(--thz)}
+.views{position:absolute;top:10px;left:10px;right:10px;display:flex;flex-wrap:wrap;gap:6px;justify-content:space-between;pointer-events:none}
+.seg{display:inline-flex;flex-wrap:wrap;gap:4px;pointer-events:auto;background:var(--label-bg);border:1px solid var(--line);border-radius:8px;padding:3px}
+.seg button{font:500 13px/1 var(--font-body);color:var(--ink);background:transparent;border:0;border-radius:6px;padding:7px 10px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--panel)}
+.seg .tag{font-family:var(--font-mono);font-size:11px;color:var(--muted);align-self:center;padding:0 4px 0 6px}
+.stage-note{position:absolute;left:10px;bottom:10px;max-width:calc(100% - 20px);font-family:var(--font-mono);font-size:11px;line-height:1.4;color:var(--muted);pointer-events:none;background:var(--label-bg);border:1px solid var(--line);border-radius:6px;padding:3px 8px}
+.fallback{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;color:var(--muted)}
+.fallback[hidden]{display:none}
+.ttip[hidden]{display:none}
+
+.console{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
+.motors{display:flex;flex-direction:column;gap:16px}
+.hint{font-size:13px;color:var(--muted)}
+.hint b{color:var(--ink);font-weight:600}
+.motor{display:flex;flex-direction:column;gap:8px;padding-top:14px;border-top:1px solid var(--line)}
+.motor .head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.motor .name{font-family:var(--font-display);font-weight:600;font-size:16px;color:var(--yaw)}
+.motor .where{font-size:12.5px;color:var(--muted)}
+.motor .val{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.motor input[type=number]{width:100px;font:600 20px/1.2 var(--font-mono);font-variant-numeric:tabular-nums;color:var(--ink);background:var(--panel-2);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
+.motor .unit{font-family:var(--font-mono);color:var(--muted);font-size:13px}
+.motor input[type=range]{width:100%;accent-color:var(--yaw)}
+.motor.pitch .name{color:var(--pitch)}
+.motor.pitch input[type=range]{accent-color:var(--pitch)}
+.steps{display:flex;flex-wrap:wrap;gap:6px}
+.steps button{font:500 13px/1 var(--font-mono);background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px 10px;cursor:pointer;min-width:52px}
+.steps button.zero{margin-left:auto;font-family:var(--font-body)}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.actions button{font:500 13px/1 var(--font-body);background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px 12px;cursor:pointer}
+
+.scopes{display:flex;flex-direction:column;gap:14px}
+.scope-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.scope{display:flex;flex-direction:column;gap:6px;min-width:0}
+.scope canvas{width:100%;aspect-ratio:1/1;max-width:100%;border:1px solid var(--line);border-radius:8px;background:var(--panel-2)}
+.scope .cap{font-size:12.5px;color:var(--muted);line-height:1.4}
+.scope .cap b{color:var(--ink);font-weight:600}
+.readout{width:100%;border-collapse:collapse;font-size:13.5px}
+.readout td{padding:6px 0;border-top:1px solid var(--line);vertical-align:baseline}
+.readout td:first-child{color:var(--muted);padding-right:12px}
+.readout td:last-child{font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.readout tr:first-child td{border-top:0}
+
+.shapecard{display:flex;flex-direction:column;gap:14px}
+.shapecard .lead{max-width:84ch}
+.shape-grid{display:grid;grid-template-columns:minmax(0,0.85fr) minmax(0,1.15fr);gap:20px;align-items:start}
+.zoomwrap,.trendwrap{display:flex;flex-direction:column;gap:8px;min-width:0}
+.zoomwrap canvas{width:100%;aspect-ratio:1/1;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);display:block}
+.cap{font-size:12.5px;color:var(--muted);line-height:1.45}
+.cap b{color:var(--ink);font-weight:600}
+.trendbox{position:relative}
+.trendbox canvas{width:100%;height:230px;display:block;touch-action:pan-y;border-radius:6px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12.5px;color:var(--muted)}
+.legend .k{display:inline-block;width:22px;height:0;border-top:2px solid;margin-right:7px;vertical-align:middle}
+.legend .k.dash{border-top-style:dashed}
+.ttip{position:absolute;top:0;left:0;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12px;line-height:1.5;box-shadow:0 6px 18px rgba(0,0,0,.14);min-width:150px;z-index:2}
+.ttip .hd{color:var(--muted);font-family:var(--font-mono);font-size:11.5px;margin-bottom:2px}
+.ttip .row{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.ttip .row b{font-family:var(--font-mono);font-weight:600;color:var(--ink);min-width:3.2em}
+.ttip .row span{color:var(--muted)}
+.ttip .k{display:inline-block;width:16px;height:0;border-top:2px solid}
+.ttip .k.dash{border-top-style:dashed}
+.strip{display:grid;grid-template-columns:auto repeat(7,minmax(0,1fr));gap:5px 6px;align-items:center}
+.strip canvas{width:100%;aspect-ratio:1/1;border:1px solid var(--line);border-radius:6px;background:var(--panel-2);display:block}
+.strip .rl{font-size:12px;color:var(--muted);white-space:nowrap;padding-right:2px}
+.strip .cl{font-family:var(--font-mono);font-size:11px;color:var(--muted);text-align:center;font-variant-numeric:tabular-nums}
+details.tbl summary{cursor:pointer;font-size:13px;color:var(--muted)}
+details.tbl table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
+details.tbl th,details.tbl td{padding:4px 6px;border-top:1px solid var(--line);text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+details.tbl th{font-family:var(--font-body);font-weight:500;color:var(--muted)}
+details.tbl .scroll{overflow-x:auto}
+
+details.params{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:0 16px}
+details.params summary{cursor:pointer;padding:14px 0;font-family:var(--font-display);font-weight:600;font-size:16px;list-style:none;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+details.params summary::-webkit-details-marker{display:none}
+details.params summary .mono{font-family:var(--font-mono);font-size:12px;color:var(--muted);font-weight:400}
+.caret{display:inline-block;transition:transform .2s;color:var(--muted)}
+details[open] .caret{transform:rotate(90deg)}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:14px 22px;padding:4px 0 18px}
+.pfield{display:flex;flex-direction:column;gap:4px;min-width:0}
+.pfield label{font-size:13.5px;font-weight:500}
+.pfield .sub{font-size:12px;color:var(--muted);line-height:1.45}
+.pfield .ctl{display:flex;align-items:center;gap:10px}
+.pfield input[type=range]{flex:1;min-width:0;accent-color:var(--ink)}
+.pfield output{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-size:13px;min-width:70px;text-align:right}
+.pfield .chk{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:400;color:var(--ink);cursor:pointer}
+.pfield .chk input{accent-color:var(--ink);margin:0}
+
+.notes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.notes .card{display:flex;flex-direction:column;gap:10px}
+.notes ol,.notes ul{margin:0;padding-left:1.25em;display:flex;flex-direction:column;gap:8px}
+.notes li{max-width:68ch}
+.formula{font-family:var(--font-mono);font-size:13px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;white-space:nowrap;line-height:1.8}
+.sources{font-size:13px;color:var(--muted)}
+.sources li{max-width:none}
+.wide{grid-column:1/-1}
+
+@media (max-width:820px){ .console,.notes,.rules,.shape-grid{grid-template-columns:minmax(0,1fr)} }
+@media (max-width:560px){
+  .seg button{padding:6px 7px;font-size:12px}
+  .seg .tag{display:none}
+  .views{gap:4px}
+  .lbl{font-size:10px}
+}
+@media (prefers-reduced-motion: reduce){ .caret{transition:none} }
+</style>
+
+<script>
+// pick the language before the page paints: saved choice, else the browser language
+(function(){var l=null;try{l=localStorage.getItem('ltem-lang');}catch(e){} if(l!=='en'&&l!=='zh') l=/^zh/i.test(navigator.language||'')?'zh':'en';
+document.documentElement.setAttribute('data-lang',l); document.documentElement.lang=l==='en'?'en':'zh-CN';})();
+</script>
+<div class="wrap">
+  <header>
+    <div class="topbar">
+      <p class="eyebrow">Non-local LTEM · neaspec THz s-SNOM · Z812 + KDC101</p>
+      <div class="langseg" role="group" aria-label="语言 / Language">
+        <button type="button" data-lang="zh" aria-pressed="true" lang="zh-CN">中文</button>
+        <button type="button" data-lang="en" aria-pressed="false" lang="en">English</button>
+      </div>
+    </div>
+    <h1><span data-l="zh">泵浦光斑往哪走</span><span data-l="en">Where the pump spot goes</span></h1>
+    <p class="lede" data-l="zh">泵浦光被盒外的电动转向镜反射（镜面竖直，平时只用水平转动），从右侧壁入射口水平进入 AFM。盒内一块竖直平面镜（在针尖后方）把它水平折向前方，打到针尖前方抛物面镜的<b>右半边</b>，再聚焦到下方的样品。针尖散射的信号由抛物面镜<b>左半边</b>收集，经另一块竖直平面镜从左侧出去。下文的「前」指盒子开口、人站的那一侧（照片 1 拍摄的位置），「右」指入射口那一侧。</p>
+    <p class="lede" data-l="en">The pump beam reflects off the motorized steering mirror outside the box (mirror face vertical; normally only the horizontal rotation is used) and enters the AFM horizontally through the port in the right wall. Inside, a vertical flat mirror behind the tip folds it horizontally toward the front, onto the <b>right half</b> of the parabolic mirror in front of the tip, which focuses it down onto the sample. The tip-scattered signal is collected by the <b>left half</b> of the parabolic mirror and leaves through the left wall via another vertical flat mirror. Below, “front” is the open side of the box where you stand (where photo 1 was taken) and “right” is the entrance-port side.</p>
+    <div class="rules">
+      <div class="rule">
+        <span class="chip yaw"><span data-l="zh">下面那根 · 水平</span><span data-l="en">Lower actuator · horizontal</span></span>
+        <p class="say" id="sayMain">—</p>
+        <p class="sens" id="sensYaw">—</p>
+      </div>
+      <div class="rule">
+        <span class="chip pitch"><span data-l="zh">上面那根 · 竖直</span><span data-l="en">Upper actuator · vertical</span></span>
+        <p class="say" id="sayPitch">—</p>
+        <p class="sens" id="sensPitch">—</p>
+      </div>
+    </div>
+    <p class="layoutline" id="layoutLine">—</p>
+  </header>
+
+  <section aria-label="3D 光路模型" data-aria-en="3D beam-path model">
+    <div class="stage" id="stage">
+      <canvas id="gl" aria-label="可旋转的三维光路：转向镜、入射口、盒内平面镜、抛物面镜、针尖与样品" data-aria-en="Rotatable 3D beam path: steering mirror, entrance port, fold mirrors, parabolic mirror, tip and sample"></canvas>
+      <div class="labels" id="labels"></div>
+      <div class="views">
+        <div class="seg" role="group" aria-label="视角" data-aria-en="View">
+          <button type="button" id="v-overview" data-view="overview" aria-pressed="true"><span data-l="zh">全景</span><span data-l="en">Overview</span></button>
+          <button type="button" id="v-mirror" data-view="mirror" aria-pressed="false"><span data-l="zh">转向镜</span><span data-l="en">Mirror</span></button>
+          <button type="button" id="v-tip" data-view="tip" aria-pressed="false"><span data-l="zh">盒内</span><span data-l="en">Inside</span></button>
+          <button type="button" id="v-top" data-view="top" aria-pressed="false"><span data-l="zh">俯视</span><span data-l="en">Top</span></button>
+        </div>
+        <div class="seg" role="group" aria-label="3D 放大倍数" data-aria-en="3D exaggeration">
+          <span class="tag"><span data-l="zh">放大</span><span data-l="en">Gain</span></span>
+          <button type="button" id="x10" data-n="10" aria-pressed="false">×10</button>
+          <button type="button" id="x100" data-n="100" aria-pressed="true">×100</button>
+          <button type="button" id="x400" data-n="400" aria-pressed="false">×400</button>
+        </div>
+      </div>
+      <p class="stage-note" id="stageNote">—</p>
+      <div class="fallback" id="fallback" hidden><span data-l="zh">3D 视图没能加载（需要 WebGL）。下面的规则、示波器视图和数值不受影响。</span><span data-l="en">The 3D view could not load (WebGL is needed). The rules, scopes and numbers below are unaffected.</span></div>
+    </div>
+  </section>
+
+  <section class="console">
+    <div class="card motors">
+      <div>
+        <h3><span data-l="zh">两根电机</span><span data-l="en">Two actuators</span></h3>
+        <p class="hint" data-l="zh">按 Thorlabs KS1-Z8 图纸，从电机一侧看，手动旋钮（枢轴）在左下。和它同高的<b>下面那根</b>只产生水平转动，它正上方的<b>上面那根</b>只产生竖直转动。两根绕不同的轴转，所以光斑走的方向不同。数值是推杆沿轴线的伸出量，也就是 KDC101 读数的变化（0.001 mm = 1 µm）。</p>
+        <p class="hint" data-l="en">Per the Thorlabs KS1-Z8 drawing, seen from the actuator side the manual knob (the pivot) is at the lower left. The <b>lower</b> actuator, level with it, only tilts the mirror horizontally; the <b>upper</b> one, directly above it, only tilts it vertically. They rotate the mirror about different axes, so they move the spot in different directions. Values are the push-rod extension along its axis, i.e. the change in the KDC101 reading (0.001 mm = 1 µm).</p>
+      </div>
+
+      <div class="motor" data-axis="yaw">
+        <div class="head"><span class="name"><span data-l="zh">下面那根 · 水平</span><span data-l="en">Lower · horizontal</span></span><span class="where" id="whereYaw">—</span></div>
+        <div class="val"><input type="number" id="numYaw" step="0.1" min="-500" max="500" value="4" aria-label="下面那根（水平）推杆伸出量（µm）" data-aria-en="Lower (horizontal) push-rod extension (µm)"><span class="unit">µm</span></div>
+        <input type="range" id="rngYaw" min="-20" max="20" step="0.1" value="4" aria-label="下面那根（水平）滑块" data-aria-en="Lower (horizontal) slider">
+        <div class="steps" data-axis="yaw">
+          <button type="button" data-d="-1">−1</button><button type="button" data-d="-0.2">−0.2</button><button type="button" data-d="0.2">+0.2</button><button type="button" data-d="1">+1</button><button type="button" class="zero" data-zero="1"><span data-l="zh">归零</span><span data-l="en">Zero</span></button>
+        </div>
+      </div>
+      <div class="motor pitch" data-axis="pitch">
+        <div class="head"><span class="name"><span data-l="zh">上面那根 · 竖直</span><span data-l="en">Upper · vertical</span></span><span class="where" id="wherePitch">—</span></div>
+        <div class="val"><input type="number" id="numPitch" step="0.1" min="-500" max="500" value="0" aria-label="上面那根（竖直）推杆伸出量（µm）" data-aria-en="Upper (vertical) push-rod extension (µm)"><span class="unit">µm</span></div>
+        <input type="range" id="rngPitch" min="-20" max="20" step="0.1" value="0" aria-label="上面那根（竖直）滑块" data-aria-en="Upper (vertical) slider">
+        <div class="steps" data-axis="pitch">
+          <button type="button" data-d="-1">−1</button><button type="button" data-d="-0.2">−0.2</button><button type="button" data-d="0.2">+0.2</button><button type="button" data-d="1">+1</button><button type="button" class="zero" data-zero="1"><span data-l="zh">归零</span><span data-l="en">Zero</span></button>
+        </div>
+      </div>
+      <div class="actions"><button type="button" id="zeroAll"><span data-l="zh">两根都归零</span><span data-l="en">Zero both</span></button><button type="button" id="clearTrail"><span data-l="zh">清除轨迹</span><span data-l="en">Clear trail</span></button></div>
+    </div>
+
+    <div class="card scopes">
+      <div class="scope-row">
+        <div class="scope">
+          <canvas id="scopePort" aria-label="入射口处光束中心的位移" data-aria-en="Displacement of the beam centre at the entrance port"></canvas>
+          <p class="cap" data-l="zh"><b>入射口处光束</b> · 站在盒外面对入射口<br>← 前（开口） · 后（背板）→</p>
+          <p class="cap" data-l="en"><b>Beam at the port</b> · outside the box, facing the port<br>← front (open) · back (panel) →</p>
+        </div>
+        <div class="scope">
+          <canvas id="scopeSample" aria-label="样品面上光斑相对针尖的位置" data-aria-en="Spot position on the sample relative to the tip"></canvas>
+          <p class="cap" data-l="zh"><b>样品面光斑</b> · 俯视<br>→ 入射口一侧 · ↑ 后（背板）</p>
+          <p class="cap" data-l="en"><b>Spot on the sample</b> · top view<br>→ port side · ↑ back (panel)</p>
+        </div>
+      </div>
+      <table class="readout" aria-label="光斑位移读数" data-aria-en="Spot displacement readout">
+        <tr><td><span data-l="zh">左右（X）</span><span data-l="en">Left–right (X)</span></td><td id="roX">—</td></tr>
+        <tr><td><span data-l="zh">前后（Y）</span><span data-l="en">Front–back (Y)</span></td><td id="roY">—</td></tr>
+        <tr><td><span data-l="zh">总位移</span><span data-l="en">Total</span></td><td id="roTot">—</td></tr>
+        <tr><td><span data-l="zh">沿入射面 · 垂直入射面</span><span data-l="en">Along · across plane of incidence</span></td><td id="roPlane">—</td></tr>
+        <tr><td><span data-l="zh">入射口处光束位移</span><span data-l="en">Beam shift at the port</span></td><td id="roPort">—</td></tr>
+        <tr><td><span data-l="zh">焦点离开样品面</span><span data-l="en">Focus off the sample</span></td><td id="roDefocus">—</td></tr>
+        <tr><td><span data-l="zh">泵浦到达时间变化</span><span data-l="en">Pump arrival-time change</span></td><td id="roTime">—</td></tr>
+      </table>
+      <p class="hint" data-l="zh">样品面视图里的光斑是按衍射算出的强度分布，真实尺度。红色实线是半高轮廓，针尖处的虚线椭圆是原位光斑的半高轮廓。斜虚线是入射面方向。</p>
+      <p class="hint" data-l="en">In the sample view the spot is the computed diffraction intensity at true scale. The red line is its half-maximum contour; the dashed ellipse at the tip is the original spot's half-maximum contour. The diagonal dashed line is the plane of incidence.</p>
+    </div>
+  </section>
+
+  <section class="card shapecard" aria-labelledby="shapeTitle">
+    <div class="lead">
+      <h2 id="shapeTitle"><span data-l="zh">光斑形状</span><span data-l="en">Spot shape</span></h2>
+      <p class="hint" data-l="zh">入射按圆形高斯光束计算。光束直径默认取抛物面镜口径下光斑最小的值，可在下方参数里改。光线逐条经过转向镜、盒内平面镜和抛物面镜，再把抛物面镜上各点出射的平面波在样品面上叠加，即标量衍射。强度以原位光斑的中心强度为 100%。</p>
+      <p class="hint" data-l="en">The input is a circular Gaussian beam. By default its diameter is the one that gives the smallest spot for the parabolic-mirror aperture; you can change it in the parameters below. Rays are traced one by one through the steering mirror, the fold mirror and the parabolic mirror, and the plane waves leaving each point of the parabolic mirror are summed on the sample plane (scalar diffraction). Intensities are relative to the original spot's peak = 100%.</p>
+    </div>
+    <div class="shape-grid">
+      <div class="zoomwrap">
+        <canvas id="spotZoom" role="img" aria-label="当前光斑在样品面上的强度分布，俯视放大" data-aria-en="Intensity of the current spot on the sample, top view, magnified"></canvas>
+        <p class="cap" data-l="zh"><b>当前光斑</b> · 俯视放大，以主光线落点为中心 · 实线是半高轮廓，虚线是原位光斑</p>
+        <p class="cap" data-l="en"><b>Current spot</b> · top view, magnified, centred on the chief-ray hit point · solid = half-maximum contour, dashed = original spot</p>
+        <table class="readout" aria-label="光斑形状读数" data-aria-en="Spot shape readout">
+          <tr><td><span data-l="zh">半高全宽（长 × 短）</span><span data-l="en">FWHM (long × short)</span></td><td id="shFwhm">—</td></tr>
+          <tr><td><span data-l="zh">长轴相对入射面</span><span data-l="en">Long axis vs plane of incidence</span></td><td id="shAng">—</td></tr>
+          <tr><td><span data-l="zh">半高面积（原位 = 1）</span><span data-l="en">Half-max area (original = 1)</span></td><td id="shArea">—</td></tr>
+          <tr><td><span data-l="zh">中心强度（原位 = 100%）</span><span data-l="en">Peak intensity (original = 100%)</span></td><td id="shPeak">—</td></tr>
+          <tr><td><span data-l="zh">最亮点相对主光线落点</span><span data-l="en">Brightest point vs chief-ray hit</span></td><td id="shOff">—</td></tr>
+        </table>
+      </div>
+      <div class="trendwrap">
+        <h3><span data-l="zh">中心强度随推杆行程</span><span data-l="en">Peak intensity vs push-rod travel</span></h3>
+        <div class="legend" aria-hidden="true"><span><i class="k" style="border-color:var(--yaw)"></i><span data-l="zh">下面那根 · 水平</span><span data-l="en">Lower · horizontal</span></span><span><i class="k dash" style="border-color:var(--pitch)"></i><span data-l="zh">上面那根 · 竖直</span><span data-l="en">Upper · vertical</span></span></div>
+        <div class="trendbox">
+          <canvas id="trend" tabindex="0" role="img" aria-label="两根电机单独移动时，光斑中心强度随推杆行程的变化。聚焦后可用左右方向键逐点查看。" data-aria-en="Peak intensity of the spot vs push-rod travel when each actuator moves alone. When focused, use the left and right arrow keys to step through the points."></canvas>
+          <div class="ttip" id="trendTip" hidden></div>
+        </div>
+        <p class="cap"><span data-l="zh">只动一根电机时的曲线。圆点是两根电机的当前位置。</span><span data-l="en">Curves for moving one actuator at a time. Dots mark both actuators' current positions.</span></p>
+        <h3><span data-l="zh">形状随行程（统一比例，每格 ±10 µm）</span><span data-l="en">Shape vs travel (same scale, each box ±10 µm)</span></h3>
+        <div class="strip" id="strip"></div>
+        <details class="tbl"><summary><span data-l="zh">数值表</span><span data-l="en">Data table</span></summary><div class="scroll" id="trendTable"></div></details>
+      </div>
+    </div>
+  </section>
+
+  <details class="params" id="params">
+    <summary><span><span data-l="zh">仪器与光束参数</span><span data-l="en">Instrument and beam parameters</span> <span class="caret" aria-hidden="true">▸</span></span><span class="mono" id="paramSummary">R 16 mm · θ 60° · β 45° · L 37.7 mm · D 13 mm</span></summary>
+    <div class="pgrid">
+      <div class="pfield">
+        <label for="pR"><span data-l="zh">抛物面镜有效焦距 R（镜上照明点到焦点）</span><span data-l="en">Parabolic-mirror effective focal length R (illuminated point to focus)</span></label>
+        <div class="ctl"><input type="range" id="pR" min="6" max="30" step="0.5" value="16"><output id="oR" for="pR">16.0 mm</output></div>
+        <p class="sub"><span data-l="zh">灵敏度与 R 成正比。默认 16 mm 取自另一台 neaspec THz-TDS s-SNOM 的报道。</span><span data-l="en">Sensitivity scales with R. The default 16 mm comes from a report on another neaspec THz-TDS s-SNOM.</span></p>
+      </div>
+      <div class="pfield">
+        <label for="pTheta"><span data-l="zh">样品上的入射角 θ（相对法线）</span><span data-l="en">Angle of incidence on the sample θ (from the normal)</span></label>
+        <div class="ctl"><input type="range" id="pTheta" min="40" max="72" step="1" value="60"><output id="oTheta" for="pTheta">60°</output></div>
+        <p class="sub"><span data-l="zh">neaspec 常用 60°。</span><span data-l="en">neaspec typically uses 60°.</span></p>
+      </div>
+      <div class="pfield">
+        <label for="pBeta"><span data-l="zh">入射面与抛物面镜轴的夹角 β</span><span data-l="en">Angle β between the plane of incidence and the mirror axis</span></label>
+        <div class="ctl"><input type="range" id="pBeta" min="0" max="65" step="1" value="45"><output id="oBeta" for="pBeta">45°</output></div>
+        <p class="sub"><span data-l="zh">俯视时，照明光从镜子射向针尖的方向偏离前后轴的角度。草图上约 40–50°。只影响前后分量，左右分量与 β 无关。</span><span data-l="en">In top view, how far the illumination direction (mirror to tip) is rotated from the front–back axis; about 40–50° in the sketch. It only affects the front–back component; the left–right component is independent of β.</span></p>
+      </div>
+      <div class="pfield">
+        <label for="pL"><span data-l="zh">电机触点到枢轴（手动旋钮）的距离 L</span><span data-l="en">Distance L from actuator contact to pivot (manual knob)</span></label>
+        <div class="ctl"><input type="range" id="pL" min="15" max="60" step="0.1" value="37.7"><output id="oL" for="pL">37.7 mm</output></div>
+        <p class="sub"><span data-l="zh">Thorlabs 标称 KS1-Z8 的最小可重复角步长是 1.1″（5.3 µrad），对应 Z812 的 0.2 µm 最小步长，由此反推 L ≈ 37.7 mm。</span><span data-l="en">Thorlabs rates the KS1-Z8's minimum repeatable angular step at 1.1″ (5.3 µrad), which corresponds to the Z812's 0.2 µm minimum step; hence L ≈ 37.7 mm.</span></p>
+      </div>
+      <div class="pfield">
+        <label for="pAlpha"><span data-l="zh">转向镜上的入射角 α</span><span data-l="en">Angle of incidence on the steering mirror α</span></label>
+        <div class="ctl"><input type="range" id="pAlpha" min="15" max="70" step="1" value="45"><output id="oAlpha" for="pAlpha">45°</output></div>
+        <p class="sub"><span data-l="zh">90° 折转对应 45°。水平转动的偏转总是 2δ，与 α 无关。</span><span data-l="en">A 90° fold is 45°. A horizontal tilt always deflects the beam by 2δ, independent of α.</span></p>
+      </div>
+      <div class="pfield">
+        <label for="pDist"><span data-l="zh">转向镜到入射口的距离</span><span data-l="en">Steering mirror to entrance port</span></label>
+        <div class="ctl"><input type="range" id="pDist" min="80" max="600" step="10" value="250"><output id="oDist" for="pDist">250 mm</output></div>
+        <p class="sub"><span data-l="zh">只影响入射口处光束的位移，不影响样品上的光斑。</span><span data-l="en">Only affects the beam shift at the port, not the spot on the sample.</span></p>
+      </div>
+      <div class="pfield">
+        <label for="pD"><span data-l="zh">入射光束直径（1/e²，进 AFM 之前）</span><span data-l="en">Input beam diameter (1/e², before the AFM)</span></label>
+        <div class="ctl"><input type="range" id="pD" min="3" max="24" step="0.5" value="13"><output id="oD" for="pD">13.0 mm</output></div>
+        <label class="chk"><input type="checkbox" id="pDauto" checked> <span data-l="zh">自动：取光斑最小的直径（光路已按最小光斑优化）</span><span data-l="en">Auto: use the diameter that gives the smallest spot (optics optimized for the smallest spot)</span></label>
+        <p class="sub" id="dSub">—</p>
+      </div>
+      <div class="pfield">
+        <label for="pNA"><span data-l="zh">抛物面镜照明口径 NA</span><span data-l="en">Parabolic-mirror illumination aperture NA</span></label>
+        <div class="ctl"><input type="range" id="pNA" min="0.25" max="0.6" step="0.01" value="0.42"><output id="oNA" for="pNA">0.42</output></div>
+        <p class="sub"><span data-l="zh">它决定最小光斑能有多小。默认 0.42 取自 neaspec 专利里的示例：镜面上下沿对焦点的张角 50°，下沿离样品约 1 mm。公开文献里 neaspec 红外抛物面镜标的是 0.46。</span><span data-l="en">Sets how small the smallest spot can be. The default 0.42 comes from the example in neaspec's patent: the mirror's lower and upper edges subtend 50° at the focus, with the lower edge about 1 mm above the sample. A published neaspec infrared parabolic mirror is rated at NA 0.46.</span></p>
+      </div>
+      <div class="pfield">
+        <label for="pLam"><span data-l="zh">泵浦波长</span><span data-l="en">Pump wavelength</span></label>
+        <div class="ctl"><input type="range" id="pLam" min="700" max="1600" step="10" value="820"><output id="oLam" for="pLam">820 nm</output></div>
+        <p class="sub"><span data-l="zh">两篇论文用的都是 820 nm 钛宝石振荡器。</span><span data-l="en">Both papers used an 820 nm Ti:sapphire oscillator.</span></p>
+      </div>
+    </div>
+  </details>
+
+  <section class="notes">
+    <div class="card">
+      <h2><span data-l="zh">在实验台上确认，大约 5 分钟</span><span data-l="en">Check on the bench, about 5 minutes</span></h2>
+      <ol data-l="zh">
+        <li>在入射口外放一张红外显示卡，水平电机点动 +200 µm，看卡上光点往前还是往后移（按图纸应往前，250 mm 外约 2.7 mm；看完按相反方向走回原位）。往前 → 读数增大时光斑往左；往后 → 往右。这一步也能确认被圈的控制器接的是不是下面那根。</li>
+        <li>把步长改成 50 µm，在 AFM 顶视相机里走一步再走回来。按默认参数光斑约移动 45 µm（左右 43、前后 16），一定看得见。量出真实位移，就有了你们自己的 µm/µm 标定，可以替换下面的 R、L。</li>
+        <li>参数里默认按"光斑最小"自动取光束直径，这个值由抛物面镜口径决定。如果量到的实际直径不同，取消"自动"后手动填。光斑变形快慢对它最敏感。</li>
+        <li>相机里原位光斑是沿入射面拉长的椭圆（俯视是对角线）。水平电机走到 ±10 µm 时，按默认参数椭圆会明显变圆变大，可以顺便核对直径设得对不对。</li>
+        <li>做非局域扫描时，每个点都从同一个方向走到位。Z812 标称回差 &lt; 8 µm，和整段非局域扫描的电机行程（几微米）同一量级，换向后的前几微米镜子可能根本没动。</li>
+      </ol>
+      <ol data-l="en">
+        <li>Hold an IR viewer card just outside the port and jog the horizontal actuator by +200 µm. Watch whether the dot moves toward the front or the back (per the drawing it should move toward the front, about 2.7 mm at 250 mm; then jog back the same way). Front → the spot moves left as the reading increases; back → right. This also tells you whether the circled controller drives the lower actuator.</li>
+        <li>Set the step to 50 µm and step once and back while watching the AFM top-view camera. With the default parameters the spot moves about 45 µm (43 left–right, 16 front–back), which you will certainly see. Measuring the real displacement gives your own µm/µm calibration, which can replace R and L below.</li>
+        <li>By default the beam diameter is set automatically for the smallest spot, which depends on the parabolic-mirror aperture. If your measured diameter differs, untick “Auto” and enter it. How fast the spot deforms is most sensitive to this value.</li>
+        <li>In the camera the original spot is an ellipse stretched along the plane of incidence (a diagonal in top view). At ±10 µm on the horizontal actuator, with the default parameters, it becomes clearly rounder and larger, which is a quick check of the diameter setting.</li>
+        <li>During a non-local scan, approach every point from the same direction. The Z812's rated backlash (&lt; 8 µm) is on the order of the actuator travel of a whole non-local scan (a few µm), so after a reversal the mirror may not move at all for the first few µm.</li>
+      </ol>
+    </div>
+    <div class="card">
+      <h2><span data-l="zh">两根电机为什么方向不同</span><span data-l="en">Why the two actuators move the spot differently</span></h2>
+      <ul data-l="zh">
+        <li>镜架：KS1-Z8 从背面看，手动旋钮（枢轴）在左下。下面那根在它右边、同一高度，伸出时镜框绕过旋钮的竖直轴转，从上往下看是逆时针。上面那根在它正上方，伸出时绕过旋钮的水平轴转，镜面往下倾。Z8 手册里 forward 限位在完全伸出处，读数增大就是伸出。</li>
+        <li>镜面竖直，水平转 δ，出射光在水平面内转 2δ，和入射角 α 无关。推杆沿自身轴线伸出 Δ（就是 KDC101 读数的变化），顶在离枢轴 L 处的镜框上，所以 δ = Δ/L。读数是由电机编码器计数换算的（1 mm = 34,555 个计数，约 29 nm/计数），不是在推杆顶端直接测的，所以换向时会有回差。</li>
+        <li>盒内的竖直平面镜把光水平折向前方，同时把左右翻过来：入射口处往前偏，射向抛物面镜的光就往左偏。</li>
+        <li>抛物面镜在针尖前方，轴沿前后方向、平行于样品面，开口朝向针尖。射入光往左偏 Δφ，样品上光斑也往左移 R·Δφ，正好与 β 无关；斜入射再带出一个往前的分量。</li>
+      </ul>
+      <ul data-l="en">
+        <li>Mount: seen from the back of the KS1-Z8, the manual knob (pivot) is at the lower left. The lower actuator sits to its right at the same height; extending it rotates the mirror about a vertical axis through the knob, counter-clockwise seen from above. The upper actuator sits directly above the knob; extending it rotates the mirror about a horizontal axis through the knob, tilting the face down. The Z8 manual puts the forward limit at full extension, so a rising reading means extension.</li>
+        <li>The mirror face is vertical, so a horizontal tilt δ turns the reflected beam by 2δ in the horizontal plane, independent of α. The push rod extends by Δ along its own axis (the change in the KDC101 reading) and pushes the mirror at distance L from the pivot, so δ = Δ/L. The reading is computed from the motor encoder (1 mm = 34,555 counts, about 29 nm per count), not measured at the rod tip, hence the backlash on reversal.</li>
+        <li>The vertical fold mirror in the box folds the beam horizontally toward the front and swaps left and right: a deviation toward the front at the port becomes a deviation to the left toward the parabolic mirror.</li>
+        <li>The parabolic mirror sits in front of the tip, its axis along front–back and parallel to the sample, opening toward the tip. A beam deviated left by Δφ moves the spot left by R·Δφ, independent of β; oblique incidence adds a component toward the front.</li>
+      </ul>
+      <div class="formula" id="formula">Δx = 2R · Δ/L<br>Δy = 2R · Δ/L · sinθ·sinβ / (1 + sinθ·cosβ)</div>
+      <ul data-l="zh">
+        <li>竖直转 δ，出射光往下偏 2δ·cosα。到了抛物面镜，这个偏转落在入射面内，光斑沿入射面朝抛物面镜一侧走。沿入射面的位移还被斜入射拉长 1/cosθ，所以每 µm 走得更远（约 <span class="v-perPitch">1.18 µm</span>，水平是 <span class="v-perYaw">0.91 µm</span>）。两个方向在样品面上相差约 <span class="v-angYP">108°</span>，不是 90°。</li>
+        <li>水平转动的位移大部分垂直于入射面，离焦小。竖直转动几乎全沿入射面，离焦大。这也是两者光斑变形快慢不同的原因。</li>
+      </ul>
+      <ul data-l="en">
+        <li>A vertical tilt δ deflects the beam downward by 2δ·cosα. At the parabolic mirror this deviation lies in the plane of incidence, so the spot moves along that plane toward the mirror. Oblique incidence also stretches the along-plane displacement by 1/cosθ, so each µm moves the spot farther (about <span class="v-perPitch">1.18 µm</span>, versus <span class="v-perYaw">0.91 µm</span> for the horizontal actuator). The two directions differ by about <span class="v-angYP">108°</span> on the sample, not 90°.</li>
+        <li>Horizontal tilts move the spot mostly across the plane of incidence, so there is little defocus. Vertical tilts move it almost entirely along the plane, so the defocus is large. That is also why the spot deforms at very different rates.</li>
+      </ul>
+    </div>
+    <div class="card wide">
+      <h2><span data-l="zh">光斑为什么会变形</span><span data-l="en">Why the spot deforms</span></h2>
+      <ul data-l="zh">
+        <li>原位就是椭圆：60° 斜入射时，样品面上的光斑沿入射面被拉长 1/cosθ = 2 倍。</li>
+        <li>离焦：抛物面镜把光聚在一个垂直于光束的面上，样品面和这个面斜着相交在针尖处。光斑沿入射面移开 s∥，样品面就离焦约 s∥·sinθ。竖直电机走 5 µm，光斑沿入射面移约 6 µm、离焦约 5 µm，已超过瑞利长度（当前参数约 <span class="v-zR">2 µm</span>），所以变大变暗得快。</li>
+        <li>离轴像差：光束一偏离抛物面镜的轴，离轴抛物面镜就产生像散和彗差，随偏角线性增大。水平电机的离焦小，这一项和离焦差不多大。光斑先变圆，走得更远后长轴转到接近垂直入射面的方向。</li>
+        <li>光束直径的影响最大：直径越大，原位光斑越小，但瑞利长度按 1/D² 变短、像差随 D 增长，变形更快。光路按最小光斑优化后，光束基本填满抛物面镜的口径，原位光斑最小，但对离焦也最敏感。所以这里的变形比细光束时明显。</li>
+        <li>对实验的意义：非局域扫描尽量用水平电机。光斑移开几微米以后，泵浦中心强度（激发密度）会下降，定量分析时要考虑，可以用上面的曲线做修正。</li>
+      </ul>
+      <ul data-l="en">
+        <li>It starts as an ellipse: at 60° incidence the spot on the sample is stretched along the plane of incidence by 1/cosθ = 2.</li>
+        <li>Defocus: the parabolic mirror focuses onto a plane perpendicular to the beam, which meets the tilted sample plane only at the tip. Moving the spot by s∥ along the plane of incidence puts the sample about s∥·sinθ out of focus. With the vertical actuator at 5 µm the spot moves about 6 µm along the plane and the defocus is about 5 µm, beyond the Rayleigh length (about <span class="v-zR">2 µm</span> with the current parameters), so the spot grows and dims quickly.</li>
+        <li>Off-axis aberrations: as soon as the beam leaves the mirror axis, the off-axis parabola adds astigmatism and coma, growing linearly with the angle. For the horizontal actuator the defocus is small and this term is comparable to it. The spot first becomes rounder; farther out its long axis turns toward the direction across the plane of incidence.</li>
+        <li>Beam diameter matters most: a larger diameter gives a smaller original spot, but the Rayleigh length shrinks as 1/D² and the aberrations grow with D, so it deforms faster. With the optics optimized for the smallest spot, the beam nearly fills the parabolic-mirror aperture: the original spot is as small as it gets, and also as sensitive to defocus as it gets. That is why the deformation here is stronger than for a thin beam.</li>
+        <li>For the experiment: use the horizontal actuator for non-local scans. Once the spot has moved a few µm, the pump peak intensity (excitation density) drops; account for this in quantitative analysis, for example by correcting with the curve above.</li>
+      </ul>
+    </div>
+    <div class="card wide">
+      <h2><span data-l="zh">模型假设</span><span data-l="en">Model assumptions</span></h2>
+      <ul data-l="zh">
+        <li>盒内光路：两块竖直平面镜在针尖后方（背板一侧），把水平光束水平折向前方；抛物面镜和样品台在它们前方，抛物面镜在针尖前方（开口一侧），右半边照明、左半边收集，收集到的信号经另一块平面镜从左侧壁出去。抛物面镜按 neaspec 专利的半抛物面处理：轴平行于样品面，焦点在镜面外侧。</li>
+        <li>转向镜镜面竖直，入射光和出射光都平行于桌面，入射光从桌子后方来。入射口那片元件按平板窗口处理；如果它是透镜，以相机实测为准。</li>
+        <li>两篇论文都给出 1.1″ 对应约 55 nm（2021 年那篇用简单光线光学，2023 年那篇用 AFM 内部光学的光线矩阵，并写明调的是 pitch）。同样 1.1″ 在本模型里约 0.18 µm（左右 0.17、前后 0.06，R = 16 mm）。55 nm ÷ 5.3 µrad ≈ 10 mm，相当于直接拿镜面转角乘约 10 mm 的焦距；光束偏转其实是镜面转角的 2 倍，即使 R 取 10 mm，本模型也给出约 0.11 µm。定量标定请以相机实测为准，方向结论不受这些参数影响。</li>
+        <li>光斑形状：标量衍射，不含偏振；入射是理想的圆形 TEM00 高斯光束；各镜面没有面形误差。假设两根电机都在 0 时光束正好平行于抛物面镜的轴、焦点落在针尖下的样品面上。如果原位本身就带偏角，变形从一开始就存在。</li>
+        <li>抛物面镜口径：按以对准时主光线为中心、半角 arcsin(NA) 的圆锥处理，镜面下沿离样品 1 mm；圆锥以外的光被挡掉。光束随转向镜移动时，口径固定不动。"光斑最小"定义为单位激光功率下样品上的峰值光强最大，这是高斯光束填充圆形口径的经典最优：1/e² 半径约为口径半径的 0.89 倍。如果按半高宽最小来调，会把光束放得更大（过填充），半高宽只再小几个百分点，却损失功率。</li>
+        <li>3D 视图只为看方向：镜面转角和样品上的位移按所选倍数放大，入射段光路按真实角度画，光斑椭圆按算出的半高宽相对缩放。读数、两个示波器视图和光斑形状都是真实尺度的计算。</li>
+      </ul>
+      <ul data-l="en">
+        <li>Inside the box: two vertical flat mirrors behind the tip (back-panel side) fold the horizontal beam horizontally toward the front; the parabolic mirror and the sample stage are in front of them, with the parabolic mirror in front of the tip (open side). Its right half illuminates and its left half collects; the collected signal leaves through the left wall via the other flat mirror. The parabolic mirror is modelled as the semi-paraboloid of neaspec's patent: axis parallel to the sample, focus outside the mirror.</li>
+        <li>The steering mirror's face is vertical; the incoming and outgoing beams are parallel to the table, and the incoming beam arrives from the back of the table. The element in the entrance port is treated as a flat window; if it is a lens, trust the camera measurement.</li>
+        <li>Both papers quote about 55 nm for 1.1″ (the 2021 paper from simple ray optics, the 2023 paper from a ray-matrix analysis of the AFM optics, explicitly for pitch). The same 1.1″ gives about 0.18 µm in this model (0.17 left–right, 0.06 front–back, R = 16 mm). 55 nm ÷ 5.3 µrad ≈ 10 mm, i.e. the mirror angle times a ~10 mm focal length; but the beam turns by twice the mirror angle, so even with R = 10 mm this model gives about 0.11 µm. Calibrate with the camera; the directions do not depend on these parameters.</li>
+        <li>Spot shape: scalar diffraction without polarization; the input is an ideal circular TEM00 Gaussian beam; the mirrors have no figure errors. With both actuators at 0 the beam is assumed to be exactly parallel to the parabolic-mirror axis and focused on the sample under the tip. If the original position already carries a tilt, the deformation is there from the start.</li>
+        <li>Parabolic-mirror aperture: a cone of half-angle arcsin(NA) around the aligned chief ray, with the mirror's lower edge 1 mm above the sample; light outside the cone is lost. The aperture stays fixed while the steering mirror moves the beam. “Smallest spot” means the highest peak intensity on the sample per unit laser power, the classic optimum for a Gaussian beam filling a circular aperture: 1/e² radius ≈ 0.89 × aperture radius. Tuning for the smallest FWHM instead would enlarge the beam further (overfill): the FWHM shrinks only a few percent more while power is lost.</li>
+        <li>The 3D view is for directions only: mirror angles and spot displacements are exaggerated by the selected gain, the input path is drawn at true angles, and the spot ellipse is scaled by the computed FWHM ratio. The readouts, both scopes and the spot-shape panel are true-scale calculations.</li>
+      </ul>
+      <ul class="sources" data-l="zh">
+        <li><a href="https://www.thorlabs.com/item/KS1-Z8" target="_blank" rel="noopener">Thorlabs KS1-Z8</a> 及其<a href="https://media.thorlabs.com/globalassets/items/k/ks/ks1/ks1-z8/19520-e0w.html?v=0116120059" target="_blank" rel="noopener">三维模型</a>：背面看两根 Z812 在左上和右下，手动旋钮在左下；最小可重复角步长 1.1″（5.3 µrad）</li>
+        <li><a href="https://media.thorlabs.com/globalassets/items/z/z8/z80/z806/17630-d01.pdf" target="_blank" rel="noopener">Thorlabs Z8 系列电机手册</a>：forward 限位在完全伸出处；29 nm/count；回差 &lt; 8 µm</li>
+        <li><a href="https://par.nsf.gov/servlets/purl/10411087" target="_blank" rel="noopener">Pizzuto, Castro-Camus, Mittleman, J. Infrared Millim. Terahertz Waves 44, 769 (2023)</a>：外部电动镜 pitch 分辨率 1.1″，光线矩阵估算约 55 nm；步长 200–250 nm，最大约 2 µm；泵浦光斑约 1.3 µm</li>
+        <li><a href="https://par.nsf.gov/servlets/purl/10320065" target="_blank" rel="noopener">Pizzuto et al., ACS Photonics 8, 2904 (2021)</a>：1.1″ 对应约 55 nm（简单光线光学），两个非局域位置约 2.5 和 5 µm；泵浦与探测由 AFM 内的离轴抛物面镜聚焦</li>
+        <li><a href="https://patentimages.storage.googleapis.com/4b/58/77/f872ed9e5255b4/US8832861.pdf" target="_blank" rel="noopener">neaspec 专利 US 8,832,861（Ocelic）</a>：半抛物面主镜上下沿对焦点张角 50°，下沿离样品约 1 mm</li>
+        <li><a href="https://pubs.rsc.org/en/content/articlehtml/2025/na/d5na00307e" target="_blank" rel="noopener">Nanoscale Advances（2025）</a>：neaspec 抛物面镜 NA 0.46、焦距 11 mm</li>
+        <li><a href="https://patents.justia.com/patent/20070183060" target="_blank" rel="noopener">Keilmann &amp; Hillenbrand, US 2007/0183060（US 7,591,858）</a>：轴平行于样品面的半抛物面镜</li>
+        <li><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC11435917/" target="_blank" rel="noopener">neaspec THz-TDS s-SNOM：离轴抛物面镜焦距 16 mm</a></li>
+        <li><a href="https://www.attocube.com/en/products/microscopes/nanoscale-imaging-spectroscopy-1/neascope/technology/nanoTHz-TDS" target="_blank" rel="noopener">attocube nano-THz-TDS：双侧抛物面镜，一侧聚焦、另一侧收集</a></li>
+      </ul>
+      <ul class="sources" data-l="en">
+        <li><a href="https://www.thorlabs.com/item/KS1-Z8" target="_blank" rel="noopener">Thorlabs KS1-Z8</a> and its <a href="https://media.thorlabs.com/globalassets/items/k/ks/ks1/ks1-z8/19520-e0w.html?v=0116120059" target="_blank" rel="noopener">3D model</a>: seen from the back, the two Z812s are at the upper left and lower right and the manual knob at the lower left; minimum repeatable angular step 1.1″ (5.3 µrad)</li>
+        <li><a href="https://media.thorlabs.com/globalassets/items/z/z8/z80/z806/17630-d01.pdf" target="_blank" rel="noopener">Thorlabs Z8-series actuator manual</a>: forward limit at full extension; 29 nm/count; backlash &lt; 8 µm</li>
+        <li><a href="https://par.nsf.gov/servlets/purl/10411087" target="_blank" rel="noopener">Pizzuto, Castro-Camus, Mittleman, J. Infrared Millim. Terahertz Waves 44, 769 (2023)</a>: external motorized mirror, pitch resolution 1.1″, ray-matrix estimate ≈ 55 nm; steps of 200–250 nm up to ≈ 2 µm; pump spot ≈ 1.3 µm</li>
+        <li><a href="https://par.nsf.gov/servlets/purl/10320065" target="_blank" rel="noopener">Pizzuto et al., ACS Photonics 8, 2904 (2021)</a>: 1.1″ ≈ 55 nm (simple ray optics), non-local offsets ≈ 2.5 and 5 µm; pump and probe focused by the off-axis parabolic mirror in the AFM</li>
+        <li><a href="https://patentimages.storage.googleapis.com/4b/58/77/f872ed9e5255b4/US8832861.pdf" target="_blank" rel="noopener">neaspec patent US 8,832,861 (Ocelic)</a>: the semi-paraboloid's lower and upper edges subtend 50° at the focus; lower edge ≈ 1 mm above the sample</li>
+        <li><a href="https://pubs.rsc.org/en/content/articlehtml/2025/na/d5na00307e" target="_blank" rel="noopener">Nanoscale Advances (2025)</a>: neaspec parabolic mirror, NA 0.46, 11 mm focal length</li>
+        <li><a href="https://patents.justia.com/patent/20070183060" target="_blank" rel="noopener">Keilmann &amp; Hillenbrand, US 2007/0183060 (US 7,591,858)</a>: semi-paraboloid with its axis parallel to the sample</li>
+        <li><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC11435917/" target="_blank" rel="noopener">neaspec THz-TDS s-SNOM: off-axis parabolic mirror, 16 mm focal length</a></li>
+        <li><a href="https://www.attocube.com/en/products/microscopes/nanoscale-imaging-spectroscopy-1/neascope/technology/nanoTHz-TDS" target="_blank" rel="noopener">attocube nano-THz-TDS: parabolic mirrors on both sides, one focusing and one collecting</a></li>
+      </ul>
+    </div>
+  </section>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function(){
+'use strict';
+// ================= language =================
+let LANG=document.documentElement.getAttribute('data-lang')==='en'?'en':'zh';
+const lx=(zh,en)=>LANG==='en'?en:zh;
+// ================= optics core (mm, rad) =================
+// Lab: origin = focus (tip apex), +X toward the entrance-port wall, +Y toward the back panel, +Z up.
+const V={
+  add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],
+  sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],
+  mul:(a,s)=>[a[0]*s,a[1]*s,a[2]*s],
+  dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],
+  len:(a)=>Math.hypot(a[0],a[1],a[2]),
+  norm:(a)=>{const l=Math.hypot(a[0],a[1],a[2]);return [a[0]/l,a[1]/l,a[2]/l];}
+};
+const reflect=(d,n)=>V.sub(d,V.mul(n,2*V.dot(d,n)));
+function rotAxis(v,k,ang){const c=Math.cos(ang),s=Math.sin(ang);return V.add(V.add(V.mul(v,c),V.mul(V.cross(k,v),s)),V.mul(k,V.dot(k,v)*(1-c)));}
+const WALL_X=260, TABLE_Z=-140;
+// KS1-Z8 as drawn by Thorlabs, seen from behind (actuator side): manual knob = pivot at lower-left,
+// lower Z812 at lower-right (horizontal rotation), upper Z812 at upper-left (vertical rotation)
+const LAYOUTS={
+  lower:{yawSide:+1,pitchSide:+1,pivot:[-1,-1],yaw:[1,-1],pitch:[-1,1]}
+};
+function geometry(p){
+  const th=p.theta*Math.PI/180, be=p.beta*Math.PI/180, R=p.R;
+  const P=[R*Math.sin(th)*Math.sin(be),-R*Math.sin(th)*Math.cos(be),R*Math.cos(th)];
+  const fp=R*(1+Math.sin(th)*Math.cos(be))/2;
+  const x0=P[0], h=P[2], yf=6;
+  const F1=[x0,yf,h], nF1=V.norm([1,-1,0]);   // vertical fold behind the tip: -X -> -Y (toward the open front)
+  const F2=[-x0,yf,h], nF2=V.norm([-1,-1,0]); // vertical fold: +Y -> -X
+  const uIn=[-1,0,0];
+  const S=[WALL_X+p.dist,yf,h];
+  const defl=Math.PI-2*p.alpha*Math.PI/180;
+  const d0=V.norm(rotAxis(uIn,[0,0,1],defl));
+  const n0=V.norm(V.sub(uIn,d0));
+  const vAx=[0,0,1];
+  const uBack=V.norm(V.cross(n0,vAx)); // viewer's right standing behind the mount
+  return {th,be,R,P,fp,x0,h,yf,F1,nF1,F2,nF2,uIn,S,d0,n0,vAx,uBack};
+}
+function mirrorNormal(g,p,dp,dy,N){
+  const L=LAYOUTS[p.layout];
+  const ap=-L.pitchSide*(dp/p.L)*N, ay=L.yawSide*(dy/p.L)*N;
+  return V.norm(rotAxis(rotAxis(g.n0,g.uBack,ap),g.vAx,ay));
+}
+function hitPlane(o,d,c,n){const den=V.dot(d,n); if(Math.abs(den)<1e-12) return null; const t=V.dot(V.sub(c,o),n)/den; return t>1e-9?t:null;}
+function hitParabY(o,d,fp){
+  const a=d[0]*d[0]+d[2]*d[2];
+  const b=2*(o[0]*d[0]+o[2]*d[2])-4*fp*d[1];
+  const c=o[0]*o[0]+o[2]*o[2]-4*fp*(o[1]+fp); // x^2+z^2 = 4fp(y+fp): vertex at -fp (front), opens toward the tip
+  const disc=b*b-4*a*c; if(disc<0) return null;
+  const sq=Math.sqrt(disc), q=-0.5*(b+(b>=0?sq:-sq));
+  const ts=[]; if(Math.abs(a)>1e-300) ts.push(q/a); if(Math.abs(q)>1e-300) ts.push(c/q);
+  const pos=ts.filter(t=>t>1e-9).sort((x,y)=>x-y); return pos.length?pos[0]:null;
+}
+const parabNormalY=(pt,fp)=>V.norm([2*pt[0],-4*fp,2*pt[2]]);
+function traceIntoPM(o,d,g){
+  const t1=hitParabY(o,d,g.fp); if(t1===null) return null;
+  const P=V.add(o,V.mul(d,t1));
+  const r=V.norm(reflect(d,parabNormalY(P,g.fp))); if(r[2]>=0) return null;
+  return {P,r,Q:V.add(P,V.mul(r,-P[2]/r[2]))};
+}
+function traceAfterSteer(o,d,g){
+  const t0=hitPlane(o,d,g.F1,g.nF1); if(t0===null) return null;
+  const A=V.add(o,V.mul(d,t0)); const d2=V.norm(reflect(d,g.nF1));
+  const rest=traceIntoPM(A,d2,g); if(!rest) return null;
+  return Object.assign({A,d2},rest);
+}
+function traceChief(p,dp,dy,N){
+  const g=geometry(p); const n=mirrorNormal(g,p,dp,dy,N||1);
+  const d1=V.norm(reflect(g.d0,n)); const res=traceAfterSteer(g.S,d1,g);
+  return Object.assign({g,n,d1},res||{});
+}
+function perpFrame(d){let e1=V.cross(d,[0,0,1]); if(V.len(e1)<1e-9) e1=V.cross(d,[0,1,0]); e1=V.norm(e1); return [e1,V.norm(V.cross(e1,d))];}
+
+// ================= state =================
+const P={R:16,theta:60,beta:45,alpha:45,dist:250,L:37.7,layout:'lower',N:100,lam:820,D:13,Dauto:true,NA:0.42,zLow:1};
+const M={yaw:4,pitch:0}; // µm of actuator travel
+const trail=[];
+let lastSolve=null;
+const MAX_DISPLAY_ANGLE=0.06;
+const $=(id)=>document.getElementById(id);
+const css=(name)=>getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+function fmtAbs(v,unit){const a=Math.abs(v); const d=a<10?2:(a<100?1:0); return a.toFixed(d)+(unit?' '+unit:'');}
+
+let c0cache=null;
+function baseline(){ if(!c0cache) c0cache=traceChief(P,0,0,1); return c0cache; }
+function portAt(cc){const t=(WALL_X-cc.g.S[0])/cc.d1[0]; return V.add(cc.g.S,V.mul(cc.d1,t));}
+function spotOffset(t){const c=traceChief(P,t.dp/1000,t.dy/1000,1); return V.mul(V.sub(c.Q,baseline().Q),1000);}
+function portOffset(t){const c=traceChief(P,t.dp/1000,t.dy/1000,1); return V.mul(V.sub(portAt(c),portAt(baseline())),1000);}
+function solve(){
+  const c0=baseline();
+  const c=traceChief(P,M.pitch/1000,M.yaw/1000,1);
+  const cy1=traceChief(P,0,1e-3,1), cp1=traceChief(P,1e-3,0,1);
+  const jy=V.mul(V.sub(cy1.Q,c0.Q),1000), jp=V.mul(V.sub(cp1.Q,c0.Q),1000);
+  const jyPort=V.mul(V.sub(portAt(cy1),portAt(c0)),1000), jpPort=V.mul(V.sub(portAt(cp1),portAt(c0)),1000);
+  const dQ=V.mul(V.sub(c.Q,c0.Q),1000);
+  const dPort=V.mul(V.sub(portAt(c),portAt(c0)),1000);
+  const ph=V.norm([c0.r[0],c0.r[1],0]);
+  const ccw=V.dot(V.sub(cy1.d1,c0.d1),[0,-1,0])>0; // +yaw turns the outgoing beam toward the front?
+  return {c0,c,jy,jp,jyPort,jpPort,dQ,dPort,ph,ccw};
+}
+function displayGain(){
+  const big=Math.max(Math.abs(M.yaw),Math.abs(M.pitch))/1000/P.L;
+  if(big<=0) return P.N; return Math.min(P.N,MAX_DISPLAY_ANGLE/big);
+}
+
+// ================= text =================
+const lr=(x)=>x<0?lx('左','left'):lx('右','right'), fb=(y)=>y<0?lx('前','front'):lx('后','back');
+const setCls=(cls,txt)=>document.querySelectorAll('.'+cls).forEach(e=>{e.textContent=txt;});
+const pct=(v)=>Math.round(v*100)+'%';
+function trendAt(ax,t){const T=SPOT.trend; if(!T) return null; const i=T.xs.indexOf(t); const v=i>=0?T[ax][i]:null; return v?v.peak:null;}
+function avg2(a,b){return (a===null||b===null)?null:(a+b)/2;}
+function updateTexts(s){
+  const g=s.c0.g;
+  const sx=Math.abs(s.jy[0]), sy=Math.abs(s.jy[1]);
+  const towardPM=s.jp[0]*g.P[0]+s.jp[1]*g.P[1]>0;
+  const away=s.jy[0]<0;
+  $('sayMain').innerHTML=lx(
+    '读数增大 → 光斑<em>往'+lr(s.jy[0])+'走</em>（'+(away?'远离':'靠近')+'入射口），略往'+fb(s.jy[1])+'。读数减小 → 往'+lr(-s.jy[0])+'、略往'+fb(-s.jy[1])+'。',
+    'Reading up → the spot moves <em>'+lr(s.jy[0])+'</em> ('+(away?'away from':'toward')+' the port), slightly to the '+fb(s.jy[1])+'. Reading down → '+lr(-s.jy[0])+', slightly to the '+fb(-s.jy[1])+'.');
+  $('sayPitch').innerHTML=lx(
+    '读数增大 → 光斑<em class="p">往'+lr(s.jp[0])+fb(s.jp[1])+'走</em>（'+(towardPM?'朝':'背离')+'抛物面镜），基本沿入射面，同时离焦，光斑变大变暗得快。',
+    'Reading up → the spot moves <em class="p">'+fb(s.jp[1])+'‑'+lr(s.jp[0])+'</em> ('+(towardPM?'toward':'away from')+' the parabolic mirror), almost along the plane of incidence, and defocuses, so it grows and dims quickly.');
+  const y5=avg2(trendAt('yaw',5),trendAt('yaw',-5)), p5=avg2(trendAt('pitch',5),trendAt('pitch',-5));
+  $('sensYaw').innerHTML=lx('每 µm → 光斑 ','Per µm → spot ')+'<b>'+V.len(s.jy).toFixed(2)+' µm</b>'+lx('（',' (')+lr(s.jy[0])+' '+sx.toFixed(2)+' · '+fb(s.jy[1])+' '+sy.toFixed(2)+lx('）',')')+lx(' · 最小步 0.2 µm → ',' · min. step 0.2 µm → ')+(V.len(s.jy)*200).toFixed(0)+' nm'+(y5!==null?lx(' · 走 ±5 µm 中心强度约 ',' · at ±5 µm, peak ≈ ')+'<b>'+pct(y5)+'</b>':'');
+  $('sensPitch').innerHTML=lx('每 µm → 光斑 ','Per µm → spot ')+'<b>'+V.len(s.jp).toFixed(2)+' µm</b>'+lx('（沿入射面 ',' (along plane ')+Math.abs(V.dot(s.jp,s.ph)).toFixed(2)+lx('）',')')+(p5!==null?lx(' · 走 ±5 µm 中心强度约 ',' · at ±5 µm, peak ≈ ')+'<b>'+pct(p5)+'</b>':'');
+  $('layoutLine').innerHTML=lx(
+    '依据 Thorlabs KS1-Z8 三维图：从电机一侧看，手动旋钮（枢轴）在左下，照片 2 里的镜架也是这样正装的。<b>下面那根</b>和旋钮同高，只转水平：伸出时从上往下看镜子'+(s.ccw?'逆':'顺')+'时针转，入射口处光束往'+(s.ccw?'前':'后')+'偏。<b>上面那根</b>在旋钮正上方，只转竖直：伸出时镜面往下倾，入射口处光束往下偏。Z8 手册里 forward 限位在完全伸出处，读数增大就是推杆伸出。',
+    'From Thorlabs’ KS1-Z8 3D model: seen from the actuator side, the manual knob (pivot) is at the lower left, and the mount in photo 2 is installed the same way up. The <b>lower</b> actuator is level with the knob and only tilts horizontally: extending it turns the mirror '+(s.ccw?'counter-clockwise':'clockwise')+' seen from above, deflecting the beam toward the '+(s.ccw?'front':'back')+' at the port. The <b>upper</b> one is directly above the knob and only tilts vertically: extending it tilts the mirror face down, deflecting the beam downward at the port. The Z8 manual puts the forward limit at full extension, so a rising KDC101 reading means the rod extends.');
+  $('whereYaw').textContent=lx('伸出：镜子俯视'+(s.ccw?'逆':'顺')+'时针','Extend: mirror turns '+(s.ccw?'CCW':'CW')+' (top view)');
+  $('wherePitch').textContent=lx('伸出：镜面往下倾','Extend: mirror tilts down');
+  setCls('v-perPitch',V.len(s.jp).toFixed(2)+' µm'); setCls('v-perYaw',V.len(s.jy).toFixed(2)+' µm');
+  const cosA=V.dot(s.jy,s.jp)/(V.len(s.jy)*V.len(s.jp)||1); setCls('v-angYP',Math.round(Math.acos(Math.max(-1,Math.min(1,cosA)))*180/Math.PI)+'°');
+  const wB=P.D/2; setCls('v-zR',((P.lam*1e-6)*P.R*P.R/(Math.PI*wB*wB)*1000).toFixed(1)+' µm');
+  const dx=s.dQ[0], dy=s.dQ[1];
+  $('roX').textContent=Math.abs(dx)<0.005?'0.00 µm':lr(dx)+' '+fmtAbs(dx,'µm');
+  $('roY').textContent=Math.abs(dy)<0.005?'0.00 µm':fb(dy)+' '+fmtAbs(dy,'µm');
+  $('roTot').textContent=fmtAbs(Math.hypot(dx,dy),'µm');
+  const spar=V.dot(s.dQ,s.ph), sper=V.dot(s.dQ,[-s.ph[1],s.ph[0],0]);
+  $('roPlane').textContent=fmtAbs(spar)+' · '+fmtAbs(sper)+' µm';
+  const parts=[]; const py=s.dPort[1], pz=s.dPort[2];
+  if(Math.abs(py)>=0.05) parts.push(fb(py)+' '+fmtAbs(py));
+  if(Math.abs(pz)>=0.05) parts.push((pz<0?lx('下','down'):lx('上','up'))+' '+fmtAbs(pz));
+  $('roPort').textContent=parts.length?parts.join(' · ')+' µm':'0 µm';
+  const th=P.theta*Math.PI/180;
+  $('roDefocus').textContent='≈ '+fmtAbs(Math.abs(spar)*Math.sin(th),'µm');
+  $('roTime').textContent='≈ '+(Math.abs(spar)*Math.sin(th)*3.336).toFixed(1)+' fs';
+  $('paramSummary').textContent='R '+String(P.R).replace(/\.0$/,'')+' mm · θ '+P.theta+'° · β '+P.beta+'° · L '+String(P.L).replace(/\.0$/,'')+' mm · D '+String(P.D).replace(/\.0$/,'')+' mm'+(P.Dauto?lx('（自动）',' (auto)'):'')+' · NA '+P.NA.toFixed(2)+' · '+P.lam+' nm';
+  const N=displayGain();
+  const Ns=(N>=10?Math.round(N):N.toFixed(1)), reduced=N<P.N-0.01;
+  $('stageNote').textContent=lx('拖动旋转 · 双指缩放 · 镜面转角和样品上的位移 ×'+Ns+' 显示'+(reduced?'（位移较大，已自动降低）':''),
+    'Drag to rotate · pinch to zoom · mirror angles and spot shifts shown ×'+Ns+(reduced?' (reduced automatically for large moves)':''));
+  const k=2*P.R/P.L, ratio=Math.sin(th)*Math.sin(P.beta*Math.PI/180)/(1+Math.sin(th)*Math.cos(P.beta*Math.PI/180));
+  $('formula').innerHTML='Δx = 2R · Δ/L = '+k.toFixed(2)+' µm/µm<br>Δy = 2R · Δ/L · sinθ·sinβ / (1 + sinθ·cosβ) = '+(k*ratio).toFixed(2)+' µm/µm';
+}
+
+// ================= scopes =================
+function niceRange(v,minR){const x=Math.max(v*1.25,minR); const p=Math.pow(10,Math.floor(Math.log10(x))); const m=x/p; const n=m<=1?1:m<=2?2:m<=2.5?2.5:m<=5?5:10; return n*p;}
+function prepCanvas(cv){
+  const r=cv.getBoundingClientRect(); const dpr=Math.min(window.devicePixelRatio||1,2);
+  const w=Math.max(10,Math.round(r.width*dpr)), h=Math.max(10,Math.round(r.height*dpr));
+  if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}
+  const ctx=cv.getContext('2d'); ctx.setTransform(1,0,0,1,0,0); return {ctx,w,h,dpr};
+}
+function drawGrid(ctx,w,h,dpr,range){
+  ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle=css('--line'); ctx.lineWidth=dpr;
+  for(let i=1;i<4;i++){const x=w*i/4,y=h*i/4; ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke();}
+  ctx.strokeStyle=css('--muted'); ctx.globalAlpha=.5; ctx.beginPath(); ctx.moveTo(w/2,0); ctx.lineTo(w/2,h); ctx.moveTo(0,h/2); ctx.lineTo(w,h/2); ctx.stroke(); ctx.globalAlpha=1;
+  ctx.fillStyle=css('--muted'); ctx.font=(10.5*dpr)+'px '+css('--font-mono');
+  const lab=(range>=10?range.toFixed(0):range.toFixed(range>=1?1:2))+' µm';
+  // narrow scopes (phones): short label in the free top-left corner, so it never collides with the edge labels
+  if(w/dpr>=220){ctx.textAlign='right'; ctx.textBaseline='bottom'; ctx.fillText(lx('满格 ±','full scale ±')+lab,w-6*dpr,h-5*dpr);}
+  else {ctx.textAlign='left'; ctx.textBaseline='top'; ctx.fillText('±'+lab,5*dpr,4*dpr);}
+}
+function arrow(ctx,x0,y0,x1,y1,color,dpr,label,alpha){
+  ctx.globalAlpha=alpha||1; ctx.strokeStyle=color; ctx.fillStyle=color; ctx.lineWidth=2*dpr;
+  ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+  const a=Math.atan2(y1-y0,x1-x0), L=8*dpr;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x1-L*Math.cos(a-0.45),y1-L*Math.sin(a-0.45)); ctx.lineTo(x1-L*Math.cos(a+0.45),y1-L*Math.sin(a+0.45)); ctx.closePath(); ctx.fill();
+  if(label){ctx.font='600 '+(11*dpr)+'px '+css('--font-mono'); const al=Math.cos(a)>0.3?'left':(Math.cos(a)<-0.3?'right':'center'); ctx.textAlign=al; ctx.textBaseline=Math.sin(a)>0.3?'top':(Math.sin(a)<-0.3?'bottom':'middle');
+    // keep the label inside the canvas
+    const tw=ctx.measureText(label).width, W=ctx.canvas.width, m=4*dpr; let tx=x1+Math.cos(a)*6*dpr;
+    if(al==='left') tx=Math.min(Math.max(tx,m),W-m-tw); else if(al==='right') tx=Math.max(Math.min(tx,W-m),m+tw); else tx=Math.min(Math.max(tx,m+tw/2),W-m-tw/2);
+    ctx.fillText(label,tx,y1+Math.sin(a)*6*dpr);}
+  ctx.globalAlpha=1;
+}
+function edgeLabels(ctx,w,h,dpr,t,b,l,r){
+  ctx.fillStyle=css('--muted'); ctx.font=(10.5*dpr)+'px '+css('--font-mono');
+  ctx.textAlign='left'; ctx.textBaseline='top'; if(t) ctx.fillText(t,w/2+4*dpr,4*dpr);
+  ctx.textBaseline='bottom'; if(b) ctx.fillText(b,w/2+4*dpr,h-5*dpr);
+  ctx.textBaseline='middle'; if(l) ctx.fillText(l,4*dpr,h/2-15*dpr);
+  ctx.textAlign='right'; if(r) ctx.fillText(r,w-4*dpr,h/2-15*dpr);
+}
+function drawScopes(s){
+  const beam=css('--beam'), yaw=css('--yaw'), pitch=css('--pitch');
+  // port: standing outside the right wall facing it (looking along −X): screen right = +Y (back), up = +Z
+  {const {ctx,w,h,dpr}=prepCanvas($('scopePort'));
+   const pts=trail.map(portOffset);
+   const range=niceRange(Math.max(1,...pts.map(q=>Math.hypot(q[1],q[2])),Math.hypot(s.dPort[1],s.dPort[2])),20);
+   drawGrid(ctx,w,h,dpr,range);
+   const X=(y)=>w/2+y/range*(w/2), Y=(z)=>h/2-z/range*(h/2);
+   ctx.strokeStyle=beam; ctx.globalAlpha=.35; ctx.lineWidth=1.5*dpr; ctx.beginPath(); pts.forEach((q,i)=>{const x=X(q[1]),y=Y(q[2]); i?ctx.lineTo(x,y):ctx.moveTo(x,y);}); ctx.stroke(); ctx.globalAlpha=1;
+   const l=Math.hypot(s.jyPort[1],s.jyPort[2])||1, lp=Math.hypot(s.jpPort[1],s.jpPort[2])||1, R0=Math.min(w,h)*0.3;
+   arrow(ctx,w/2,h/2,w/2+s.jpPort[1]/lp*R0*0.8,h/2-s.jpPort[2]/lp*R0*0.8,pitch,dpr,lx('+竖直','+vert'));
+   arrow(ctx,w/2,h/2,w/2+s.jyPort[1]/l*R0,h/2-s.jyPort[2]/l*R0,yaw,dpr,lx('+水平','+horiz'));
+   const cx=X(s.dPort[1]), cy=Y(s.dPort[2]);
+   ctx.fillStyle=beam; ctx.beginPath(); ctx.arc(cx,cy,5*dpr,0,Math.PI*2); ctx.fill();
+   ctx.strokeStyle=beam; ctx.lineWidth=1.2*dpr; ctx.beginPath(); ctx.arc(cx,cy,10*dpr,0,Math.PI*2); ctx.stroke();
+   edgeLabels(ctx,w,h,dpr,lx('上','up'),null,lx('前','front'),lx('后','back'));
+  }
+  // sample, plan view: screen right = +X (port side), up = +Y (back)
+  {const {ctx,w,h,dpr}=prepCanvas($('scopeSample'));
+   const pts=trail.map(spotOffset);
+   const ext=SPOT.cur?0.6*SPOT.cur.fwhmL:1.5;
+   const range=niceRange(Math.max(0.5,...pts.map(q=>Math.hypot(q[0],q[1])),Math.hypot(s.dQ[0],s.dQ[1])+ext),3);
+   drawGrid(ctx,w,h,dpr,range);
+   const X=(v)=>w/2+v[0]/range*(w/2), Y=(v)=>h/2-v[1]/range*(h/2);
+   // incidence plane (dashed)
+   ctx.save(); ctx.strokeStyle=css('--muted'); ctx.setLineDash([5*dpr,4*dpr]); ctx.lineWidth=1.2*dpr; ctx.globalAlpha=.8;
+   const Lp=Math.max(w,h); ctx.beginPath(); ctx.moveTo(w/2-s.ph[0]*Lp,h/2+s.ph[1]*Lp); ctx.lineTo(w/2+s.ph[0]*Lp,h/2-s.ph[1]*Lp); ctx.stroke(); ctx.restore();
+   ctx.strokeStyle=beam; ctx.globalAlpha=.35; ctx.lineWidth=1.5*dpr; ctx.beginPath(); pts.forEach((q,i)=>{const x=X(q),y=Y(q); i?ctx.lineTo(x,y):ctx.moveTo(x,y);}); ctx.stroke(); ctx.globalAlpha=1;
+   const R0=Math.min(w,h)*0.3;
+   const ly=Math.hypot(s.jy[0],s.jy[1])||1, lp=Math.hypot(s.jp[0],s.jp[1])||1;
+   const pxPerUm=(w/2)/range;
+   // original spot (half-maximum contour, dashed) under the tip
+   if(SPOT.refSegs){ctx.save(); ctx.setLineDash([4*dpr,3*dpr]); ctx.strokeStyle=css('--ink'); ctx.globalAlpha=.5; ctx.lineWidth=1.2*dpr; strokeSegs(ctx,SPOT.refSegs,w/2,h/2,pxPerUm); ctx.restore();}
+   // current spot: computed intensity (true scale) and its half-maximum contour
+   if(SPOT.cur){const cx0=X(s.dQ), cy0=Y(s.dQ); drawHeat(ctx,SPOT.cur,cx0,cy0,pxPerUm);
+     ctx.strokeStyle=beam; ctx.lineWidth=1.6*dpr; strokeSegs(ctx,SPOT.curSegs,cx0,cy0,pxPerUm);
+     if(SPOT.curSegs&&SPOT.curSegs.length<8){ctx.fillStyle=beam; ctx.beginPath(); ctx.arc(cx0,cy0,2.5*dpr,0,Math.PI*2); ctx.fill();}}
+   arrow(ctx,w/2,h/2,w/2+s.jp[0]/lp*R0*0.8,h/2-s.jp[1]/lp*R0*0.8,pitch,dpr,lx('+竖直','+vert'));
+   arrow(ctx,w/2,h/2,w/2+s.jy[0]/ly*R0,h/2-s.jy[1]/ly*R0,yaw,dpr,lx('+水平','+horiz'));
+   ctx.fillStyle=css('--ink'); ctx.beginPath(); ctx.moveTo(w/2,h/2+5*dpr); ctx.lineTo(w/2-5*dpr,h/2-4*dpr); ctx.lineTo(w/2+5*dpr,h/2-4*dpr); ctx.closePath(); ctx.fill();
+   ctx.font=(10.5*dpr)+'px '+css('--font-mono'); ctx.textAlign='left'; ctx.textBaseline='top'; ctx.fillText(lx('针尖','tip'),w/2+7*dpr,h/2+3*dpr);
+   edgeLabels(ctx,w,h,dpr,lx('后','back'),lx('前','front'),lx('左','left'),lx('右','right'));
+  }
+}
+
+// ================= spot shape =================
+// ================= spot engine (scalar Debye sum on the tilted sample plane) =================
+// A circular Gaussian beam (1/e² diameter P.D mm, wavelength P.lam nm) leaves the steering mirror,
+// is traced ray by ray through the fold mirror and the parabolic mirror, and the field on the sample
+// plane z = 0 is the superposition of the plane waves leaving each point of the paraboloid.
+function makeSpotEngine(api){
+  const {V,geometry,mirrorNormal,reflect,traceAfterSteer,perpFrame}=api;
+  function compute(P,dp,dy,opt){
+    const g=geometry(P); const nrm=mirrorNormal(g,P,dp,dy,1); const d1=V.norm(reflect(g.d0,nrm));
+    const ch=traceAfterSteer(g.S,d1,g); if(!ch) return null;
+    const x0=ch.Q; const fr=perpFrame(d1), e1=fr[0], e2=fr[1];
+    const k=2*Math.PI/(P.lam*1e-6); // 1/mm
+    // clear aperture of the parabolic mirror (fixed in space): a cone of half-angle asin(NA) around the
+    // aligned chief ray as seen from the focus, and the mirror's lower edge zLow above the sample
+    const apA=Math.asin(Math.min(0.95,P.NA)), p0=V.norm(g.P), zLow=P.zLow;
+    const w=P.D/2, rmax=Math.min(1.8*w,1.3*P.R*Math.tan(apA));
+    const per=(P.lam*1e-3)*P.R/(2*rmax); // aliasing period on the sample per pupil sample count (µm)
+    const W=opt.W; const N=Math.max(opt.Nmin,Math.min(120,Math.ceil(2*W/(0.8*per))));
+    const cap=N*N, RX=new Float64Array(cap), RY=new Float64Array(cap), AR=new Float64Array(cap), AI=new Float64Array(cap);
+    let nr=0, ph0=null, asum=0, a2all=0;
+    for(let i=0;i<N;i++){const a=-rmax+2*rmax*(i+0.5)/N;
+      for(let j=0;j<N;j++){const b=-rmax+2*rmax*(j+0.5)/N; const rr=a*a+b*b; if(rr>rmax*rmax) continue;
+        const A0=Math.exp(-rr/(w*w)); a2all+=A0*A0;
+        const o=[g.S[0]+a*e1[0]+b*e2[0],g.S[1]+a*e1[1]+b*e2[1],g.S[2]+a*e1[2]+b*e2[2]];
+        const tr=traceAfterSteer(o,d1,g); if(!tr||!tr.P) continue;
+        // soft (area-weighted) aperture edges so the clipped power does not depend on the sampling grid
+        const cell=2*rmax/N, Lp=V.len(tr.P);
+        const mEdge=(apA-Math.acos(Math.min(1,V.dot(tr.P,p0)/Lp)))*Lp, mLow=tr.P[2]-zLow;
+        const wAp=Math.min(1,Math.max(0,0.5+mEdge/cell))*Math.min(1,Math.max(0,0.5+mLow/cell)); if(wAp<=0) continue;
+        const opl=V.len(V.sub(tr.A,o))+V.len(V.sub(tr.P,tr.A));
+        const dx=V.sub(x0,tr.P), Lr=V.len(dx), ph=opl+V.dot(tr.r,dx);
+        if(ph0===null) ph0=ph;
+        const amp=A0*wAp/Lr, phi=k*(ph-ph0);
+        RX[nr]=tr.r[0]; RY[nr]=tr.r[1]; AR[nr]=amp*Math.cos(phi); AI[nr]=amp*Math.sin(phi); asum+=amp; nr++;
+      }}
+    if(nr<20) return null;
+    // a2all also counts the light the aperture cuts away, so IperP is the peak intensity per unit laser power (1/µm²)
+    const dA=(2*rmax/N)*(2*rmax/N), lamMM=P.lam*1e-6, perPow=asum*asum*dA/(lamMM*lamMM*a2all)*1e-6;
+    if(opt.peakOnly){let sr=0,si=0; for(let i=0;i<nr;i++){sr+=AR[i]; si+=AI[i];} return {IperP:(sr*sr+si*si)/(asum*asum)*perPow,nr};}
+    const M=opt.M, Wmm=W*1e-3, du=2*Wmm/(M-1);
+    const ER=new Float64Array(M*M), EI=new Float64Array(M*M);
+    const gR=new Float64Array(M), gI=new Float64Array(M), hR=new Float64Array(M), hI=new Float64Array(M);
+    for(let i=0;i<nr;i++){
+      const kx=k*RX[i], ky=k*RY[i], ar=AR[i], ai=AI[i];
+      let cr=Math.cos(-kx*Wmm), ci=Math.sin(-kx*Wmm); const sr=Math.cos(kx*du), si=Math.sin(kx*du);
+      for(let a=0;a<M;a++){gR[a]=ar*cr-ai*ci; gI[a]=ar*ci+ai*cr; const t=cr*sr-ci*si; ci=cr*si+ci*sr; cr=t;}
+      let qr=Math.cos(-ky*Wmm), qi=Math.sin(-ky*Wmm); const tr2=Math.cos(ky*du), ti2=Math.sin(ky*du);
+      for(let b=0;b<M;b++){hR[b]=qr; hI[b]=qi; const t=qr*tr2-qi*ti2; qi=qr*ti2+qi*tr2; qr=t;}
+      for(let b=0;b<M;b++){const hr=hR[b], hi=hI[b], row=b*M;
+        for(let a=0;a<M;a++){ER[row+a]+=gR[a]*hr-gI[a]*hi; EI[row+a]+=gR[a]*hi+gI[a]*hr;}}
+    }
+    const nrm2=1/(asum*asum); const I=new Float32Array(M*M); let imax=0, ia=0;
+    for(let q=0;q<M*M;q++){const v=(ER[q]*ER[q]+EI[q]*EI[q])*nrm2; I[q]=v; if(v>imax){imax=v; ia=q;}}
+    // refine the peak off-grid by direct evaluation
+    const evalAt=(u,v)=>{let sr=0,si=0; for(let i=0;i<nr;i++){const p=k*(RX[i]*u+RY[i]*v), c=Math.cos(p), s=Math.sin(p); sr+=AR[i]*c-AI[i]*s; si+=AR[i]*s+AI[i]*c;} return (sr*sr+si*si)*nrm2;};
+    let pu=-Wmm+(ia%M)*du, pv=-Wmm+Math.floor(ia/M)*du, pk=imax, h=du/2;
+    for(let it=0;it<16&&h>du/40;it++){let best=null; for(const st of [[h,0],[-h,0],[0,h],[0,-h]]){const v=evalAt(pu+st[0],pv+st[1]); if(v>pk){pk=v; best=[pu+st[0],pv+st[1]];}} if(best){pu=best[0]; pv=best[1];} else h/=2;}
+    // half-maximum region, soft edge, fitted with an ellipse of equal second moments
+    const px=2*W/(M-1); let S=0,sx=0,sy=0;
+    const f=new Float32Array(M*M);
+    for(let q=0;q<M*M;q++){const r=I[q]/pk; const t=r<=0.45?0:(r>=0.55?1:(r-0.45)/0.1); f[q]=t; if(t){const a=q%M, b=(q-a)/M; S+=t; sx+=t*(-W+a*px); sy+=t*(-W+b*px);}}
+    const cx=sx/S, cy=sy/S; let xx=0,yy=0,xy=0;
+    for(let q=0;q<M*M;q++){const t=f[q]; if(!t) continue; const a=q%M, b=(q-a)/M; const X=-W+a*px-cx, Y=-W+b*px-cy; xx+=t*X*X; yy+=t*Y*Y; xy+=t*X*Y;}
+    xx/=S; yy/=S; xy/=S; const tr=xx+yy, det=xx*yy-xy*xy, disc=Math.sqrt(Math.max(0,tr*tr/4-det));
+    const l1=tr/2+disc, l2=Math.max(0,tr/2-disc);
+    let border=0; for(let a=0;a<M;a++) border=Math.max(border,I[a],I[(M-1)*M+a],I[a*M],I[a*M+M-1]);
+    return {I,M,W,x0,N,nr,peak:pk,IperP:pk*perPow,peakAt:[pu*1e3,pv*1e3],cx,cy,fwhmL:4*Math.sqrt(l1),fwhmS:4*Math.sqrt(l2),ang:0.5*Math.atan2(2*xy,xx-yy),area:S*px*px,border:border/pk};
+  }
+  // adapt the window so the spot fits (border < 3 %) and is resolved
+  function adaptive(P,dp,dy,q,Wstart){
+    let W=Math.max(2.4,Math.min(18,Wstart||3.5)), s=null, shrunk=false;
+    for(let it=0;it<5;it++){
+      s=compute(P,dp,dy,{M:q.M,Nmin:q.Nmin,W}); if(!s) return null;
+      if(s.border>0.03&&W<18){W=Math.min(18,W*1.6); continue;}
+      const want=Math.max(2.4,1.3*s.fwhmL);
+      if(!shrunk&&s.border<0.004&&W>2*want){W=Math.max(2.4,1.25*want); shrunk=true; continue;}
+      break;
+    }
+    s.Wnext=s.W;
+    return s;
+  }
+  // marching squares: segments of the iso-line I = level, in µm relative to the window centre
+  const MS={1:[[3,0]],2:[[0,1]],3:[[3,1]],4:[[1,2]],5:[[3,0],[1,2]],6:[[0,2]],7:[[3,2]],8:[[2,3]],9:[[0,2]],10:[[0,1],[2,3]],11:[[1,2]],12:[[1,3]],13:[[0,1]],14:[[3,0]]};
+  function contour(s,level){
+    const {I,M,W}=s, px=2*W/(M-1), out=[];
+    const P=(a,b)=>[-W+a*px,-W+b*px];
+    const lerp=(p1,v1,p2,v2)=>{const t=(level-v1)/(v2-v1); return [p1[0]+(p2[0]-p1[0])*t,p1[1]+(p2[1]-p1[1])*t];};
+    for(let b=0;b<M-1;b++) for(let a=0;a<M-1;a++){
+      const v0=I[b*M+a], v1=I[b*M+a+1], v2=I[(b+1)*M+a+1], v3=I[(b+1)*M+a];
+      const c=(v0>level?1:0)|(v1>level?2:0)|(v2>level?4:0)|(v3>level?8:0); if(c===0||c===15) continue;
+      const p0=P(a,b), p1=P(a+1,b), p2=P(a+1,b+1), p3=P(a,b+1);
+      const e=[()=>lerp(p0,v0,p1,v1),()=>lerp(p1,v1,p2,v2),()=>lerp(p2,v2,p3,v3),()=>lerp(p3,v3,p0,v0)];
+      for(const sg of MS[c]){const A=e[sg[0]](), B=e[sg[1]](); out.push(A[0],A[1],B[0],B[1]);}
+    }
+    return out;
+  }
+  return {compute,adaptive,contour};
+}
+const engine=makeSpotEngine({V,geometry,mirrorNormal,reflect,traceAfterSteer,perpFrame});
+const QUAL={fast:{M:48,Nmin:30},fine:{M:72,Nmin:40},trend:{M:40,Nmin:28}};
+const THUMB_T=[-20,-10,-5,0,5,10,20];
+const SPOT={key:'',ref:null,refSegs:null,cur:null,curSegs:null,curState:'',curQ:'',Wcur:3.5,fineTimer:0,trend:null,trendTimer:0,hover:null};
+const spotKey=()=>[P.R,P.theta,P.beta,P.alpha,P.dist,P.L,P.lam,P.D,P.NA,P.zLow].join('|');
+// beam diameter that gives the smallest spot: the highest peak intensity per unit laser power for the aligned beam
+const DOPT={key:'',val:13};
+function optimalD(){
+  const kk=[P.R,P.theta,P.beta,P.alpha,P.dist,P.lam,P.NA,P.zLow].join('|'); if(DOPT.key===kk) return DOPT.val;
+  const f=(D)=>{const r=engine.compute(Object.assign({},P,{D}),0,0,{M:3,Nmin:44,W:0.5,peakOnly:true}); return r?r.IperP:0;};
+  let bD=3, b=-1; for(let D=3;D<=26.001;D+=0.5){const v=f(D); if(v>b){b=v; bD=D;}}
+  const a=f(bD-0.5), c=f(bD+0.5), den=a-2*b+c; let D=bD; if(den<0) D=bD+0.25*(a-c)/den;
+  DOPT.key=kk; DOPT.val=Math.max(3,Math.min(26,D)); return DOPT.val;
+}
+function relify(s){ if(s&&SPOT.ref){s.rel=s.IperP/SPOT.ref.IperP; s.k=s.rel/s.peak;} return s; }
+function updateDSub(){
+  const dOpt=DOPT.val, aRad=P.R*Math.tan(Math.asin(Math.min(0.95,P.NA))), ratio=(dOpt/2/aRad).toFixed(2);
+  $('dSub').textContent=lx(
+    (P.Dauto?'自动：':'手动设定。')+'按当前口径（NA '+P.NA.toFixed(2)+'，在光束截面上约 Ø'+(2*aRad).toFixed(0)+' mm），单位激光功率下峰值光强最大、也就是光斑最小的直径是 '+dOpt.toFixed(1)+' mm，此时光束 1/e² 半径约为口径半径的 '+ratio+' 倍。'+(P.Dauto?'':'勾选上面的"自动"可回到这个值。'),
+    (P.Dauto?'Auto: for':'Manual. For')+' the current aperture (NA '+P.NA.toFixed(2)+', about Ø'+(2*aRad).toFixed(0)+' mm across the beam), the diameter with the highest peak intensity per unit laser power, i.e. the smallest spot, is '+dOpt.toFixed(1)+' mm; the beam’s 1/e² radius is then about '+ratio+' × the aperture radius.'+(P.Dauto?'':' Tick “Auto” above to return to it.'));
+}
+function ensureRef(){
+  const dOpt=optimalD();
+  if(P.Dauto){P.D=Math.round(dOpt*10)/10; $('pD').value=String(P.D); $('oD').textContent=P.D.toFixed(1)+' mm';}
+  updateDSub();
+  const k=spotKey(); if(SPOT.key===k) return;
+  SPOT.key=k; SPOT.ref=engine.adaptive(P,0,0,QUAL.fine,3.5);
+  if(SPOT.ref){SPOT.ref.rel=1; SPOT.ref.k=1/SPOT.ref.peak;}
+  SPOT.refSegs=SPOT.ref?engine.contour(SPOT.ref,0.5*SPOT.ref.peak):null;
+  SPOT.Wcur=SPOT.ref?SPOT.ref.W:3.5; SPOT.curState=''; startTrend();
+}
+function computeCur(q){
+  ensureRef();
+  const st=SPOT.key+'|'+M.yaw+'|'+M.pitch;
+  if(SPOT.curState===st&&(SPOT.curQ==='fine'||SPOT.curQ===q)) return false;
+  const s=relify(engine.adaptive(P,M.pitch/1000,M.yaw/1000,QUAL[q],SPOT.Wcur));
+  SPOT.cur=s; SPOT.curState=st; SPOT.curQ=q;
+  if(s){SPOT.Wcur=s.W; SPOT.curSegs=engine.contour(s,0.5*s.peak);} else SPOT.curSegs=null;
+  return true;
+}
+function scheduleFine(){
+  clearTimeout(SPOT.fineTimer);
+  SPOT.fineTimer=setTimeout(()=>{ if(computeCur('fine')&&lastSolve){ drawScopes(lastSolve); drawShape(); if(G) G.mark(); } },180);
+}
+function startTrend(){
+  clearTimeout(SPOT.trendTimer);
+  const xs=[]; for(let t=-20;t<=20;t++) xs.push(t);
+  const T={key:SPOT.key,xs,yaw:xs.map(()=>null),pitch:xs.map(()=>null),thumbs:{yaw:{},pitch:{}},done:false};
+  SPOT.trend=T;
+  const idx=xs.map((t,i)=>i).sort((a,b)=>Math.abs(xs[a])-Math.abs(xs[b])||xs[a]-xs[b]); // fill outward from 0
+  const order=[]; ['yaw','pitch'].forEach(ax=>idx.forEach(i=>order.push([ax,i])));
+  let n=0; const Wlast={yaw:3.5,pitch:3.5};
+  const step=()=>{
+    if(SPOT.trend!==T) return;
+    const t0=performance.now();
+    while(n<order.length&&performance.now()-t0<22){
+      const ax=order[n][0], i=order[n][1], t=xs[i]; n++;
+      const s=relify(engine.adaptive(P,ax==='pitch'?t/1000:0,ax==='yaw'?t/1000:0,QUAL.trend,Wlast[ax]));
+      if(!s) continue;
+      Wlast[ax]=s.W; T[ax][i]={peak:s.rel,fwhmL:s.fwhmL,fwhmS:s.fwhmS,area:s.area};
+      if(THUMB_T.indexOf(t)>=0){s.segs=engine.contour(s,0.5*s.peak); T.thumbs[ax][t]=s;}
+    }
+    if(n>=order.length) T.done=true;
+    drawTrend(); drawStrip(); drawTable(); if(lastSolve) updateTexts(lastSolve);
+    if(!T.done) SPOT.trendTimer=setTimeout(step,0);
+  };
+  SPOT.trendTimer=setTimeout(step,40);
+}
+
+// ---- drawing helpers ----
+function hexRgb(c){const m=/^#?([0-9a-f]{6})$/i.exec((c||'').trim()); const v=m?parseInt(m[1],16):0xcf1a3f; return [(v>>16)&255,(v>>8)&255,v&255];}
+function heatCanvas(s){
+  const col=css('--beam'); if(s._heat&&s._heatCol===col) return s._heat;
+  const rgb=hexRgb(col), Mn=s.M, c=document.createElement('canvas'); c.width=Mn; c.height=Mn;
+  const x=c.getContext('2d'), im=x.createImageData(Mn,Mn);
+  const kk=s.k||1;
+  for(let b=0;b<Mn;b++) for(let a=0;a<Mn;a++){const v=s.I[b*Mn+a]*kk; const o=((Mn-1-b)*Mn+a)*4;
+    im.data[o]=rgb[0]; im.data[o+1]=rgb[1]; im.data[o+2]=rgb[2]; im.data[o+3]=Math.round(Math.min(1,Math.pow(Math.max(0,v),0.8))*235);}
+  x.putImageData(im,0,0); s._heat=c; s._heatCol=col; return c;
+}
+// intensity image of spot s, centred at screen (cx,cy), ppu screen px per µm (screen up = +Y = back)
+function drawHeat(ctx,s,cx,cy,ppu){
+  const c=heatCanvas(s), px=2*s.W/(s.M-1), half=s.W+px/2;
+  ctx.save(); ctx.imageSmoothingEnabled=true; ctx.drawImage(c,cx-half*ppu,cy-half*ppu,2*half*ppu,2*half*ppu); ctx.restore();
+}
+function strokeSegs(ctx,segs,cx,cy,ppu){
+  if(!segs||!segs.length) return; ctx.beginPath();
+  for(let i=0;i<segs.length;i+=4){ctx.moveTo(cx+segs[i]*ppu,cy-segs[i+1]*ppu); ctx.lineTo(cx+segs[i+2]*ppu,cy-segs[i+3]*ppu);}
+  ctx.stroke();
+}
+const sgn=(t)=>(t>0?'+':t<0?'−':'')+Math.abs(t);
+
+function drawShape(){ drawZoom(); drawShapeReadout(); drawTrend(); drawStrip(); drawTable(); }
+function drawZoom(){
+  const cv=$('spotZoom'); if(!cv) return; const {ctx,w,h,dpr}=prepCanvas(cv); ctx.clearRect(0,0,w,h);
+  const s=SPOT.cur, r=SPOT.ref; if(!s||!r) return;
+  const ladder=[3,4,5,6,8,10,12,15,20], need=Math.max(3,0.85*s.W,0.8*r.W);
+  let Rz=ladder[ladder.length-1]; for(const v of ladder){if(v>=need){Rz=v; break;}}
+  const ppu=(w/2)/Rz, cx=w/2, cy=h/2, stepG=Rz<=5?1:(Rz<=10?2:5);
+  ctx.strokeStyle=css('--line'); ctx.lineWidth=dpr;
+  for(let u=-Math.floor(Rz/stepG)*stepG;u<=Rz+1e-9;u+=stepG){const x=Math.round(cx+u*ppu)+0.5, y=Math.round(cy-u*ppu)+0.5; ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke();}
+  const ph=lastSolve?lastSolve.ph:[-Math.SQRT1_2,Math.SQRT1_2,0];
+  ctx.save(); ctx.setLineDash([5*dpr,4*dpr]); ctx.strokeStyle=css('--muted'); ctx.globalAlpha=.7; ctx.lineWidth=1.1*dpr;
+  ctx.beginPath(); ctx.moveTo(cx-ph[0]*w,cy+ph[1]*w); ctx.lineTo(cx+ph[0]*w,cy-ph[1]*w); ctx.stroke(); ctx.restore();
+  drawHeat(ctx,s,cx,cy,ppu);
+  ctx.save(); ctx.setLineDash([4*dpr,3*dpr]); ctx.strokeStyle=css('--ink'); ctx.globalAlpha=.55; ctx.lineWidth=1.3*dpr; strokeSegs(ctx,SPOT.refSegs,cx,cy,ppu); ctx.restore();
+  ctx.strokeStyle=css('--beam'); ctx.lineWidth=1.8*dpr; strokeSegs(ctx,SPOT.curSegs,cx,cy,ppu);
+  const bx=cx+s.peakAt[0]*ppu, by=cy-s.peakAt[1]*ppu, k=5*dpr;
+  ctx.strokeStyle=css('--ink'); ctx.lineWidth=1.2*dpr; ctx.beginPath(); ctx.moveTo(bx-k,by); ctx.lineTo(bx+k,by); ctx.moveTo(bx,by-k); ctx.lineTo(bx,by+k); ctx.stroke();
+  edgeLabels(ctx,w,h,dpr,lx('后','back'),lx('前','front'),lx('左','left'),lx('右','right'));
+  ctx.fillStyle=css('--muted'); ctx.font=(10.5*dpr)+'px '+css('--font-mono'); ctx.textBaseline='bottom';
+  ctx.textAlign='right'; ctx.fillText(lx('满格 ±','full scale ±')+Rz+' µm',w-6*dpr,h-5*dpr);
+  const sb=stepG*ppu; ctx.strokeStyle=css('--ink'); ctx.lineWidth=2*dpr; ctx.beginPath(); ctx.moveTo(10*dpr,h-10*dpr); ctx.lineTo(10*dpr+sb,h-10*dpr); ctx.stroke();
+  ctx.textAlign='left'; ctx.fillText(stepG+' µm',10*dpr,h-14*dpr);
+}
+function drawShapeReadout(){
+  const s=SPOT.cur, r=SPOT.ref;
+  if(!s||!r){['shFwhm','shAng','shArea','shPeak','shOff'].forEach(id=>{$(id).textContent='—';}); return;}
+  $('shFwhm').textContent=s.fwhmL.toFixed(2)+' × '+s.fwhmS.toFixed(2)+' µm';
+  const inc=lastSolve?Math.atan2(lastSolve.ph[1],lastSolve.ph[0]):-Math.PI/4;
+  let d=(s.ang-inc)*180/Math.PI; d=((d+90)%180+180)%180-90;
+  $('shAng').textContent=Math.abs(d).toFixed(0)+'°';
+  $('shArea').textContent='× '+(s.area/r.area).toFixed(2);
+  $('shPeak').textContent=pct(s.rel!==undefined?s.rel:s.peak);
+  const ox=s.peakAt[0], oy=s.peakAt[1];
+  $('shOff').textContent=Math.hypot(ox,oy)<0.05?'< 0.05 µm':lr(ox)+' '+Math.abs(ox).toFixed(2)+' · '+fb(oy)+' '+Math.abs(oy).toFixed(2)+' µm';
+}
+function trendInterp(T,ax,t){
+  if(!T||t<-20||t>20) return null; const i0=Math.floor(t+20), i1=Math.min(40,i0+1), f=t+20-i0;
+  const a=T[ax][i0], b=T[ax][i1]; if(!a) return null; if(!b||f<1e-9) return a.peak; return a.peak+(b.peak-a.peak)*f;
+}
+function trendGeom(w,h,dpr){const L=40*dpr, R=44*dpr, Tp=12*dpr, B=24*dpr; return {L,R,Tp,B,pw:w-L-R,phh:h-Tp-B};}
+function drawTrend(){
+  const cv=$('trend'); if(!cv) return; const {ctx,w,h,dpr}=prepCanvas(cv); ctx.clearRect(0,0,w,h);
+  const T=SPOT.trend, G2=trendGeom(w,h,dpr);
+  const X=(t)=>G2.L+(t+20)/40*G2.pw, Y=(v)=>G2.Tp+(1-v)*G2.phh;
+  ctx.strokeStyle=css('--line'); ctx.lineWidth=dpr; ctx.fillStyle=css('--muted'); ctx.font=(10.5*dpr)+'px '+css('--font-mono');
+  ctx.textAlign='right'; ctx.textBaseline='middle';
+  for(const v of [0,0.25,0.5,0.75,1]){const y=Math.round(Y(v))+0.5; ctx.beginPath(); ctx.moveTo(G2.L,y); ctx.lineTo(G2.L+G2.pw,y); ctx.stroke(); ctx.fillText(pct(v),G2.L-6*dpr,y);}
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  for(const t of [-20,-10,0,10,20]) ctx.fillText(sgn(t),X(t),G2.Tp+G2.phh+6*dpr);
+  if(!T) return;
+  const ser=[['yaw',css('--yaw'),[]],['pitch',css('--pitch'),[6*dpr,4*dpr]]];
+  for(const [ax,col,dash] of ser){
+    ctx.save(); ctx.strokeStyle=col; ctx.lineWidth=2*dpr; ctx.lineJoin='round'; ctx.lineCap='round'; ctx.setLineDash(dash); ctx.beginPath(); let on=false;
+    T.xs.forEach((t,i)=>{const v=T[ax][i]; if(!v){on=false; return;} const x=X(t), y=Y(v.peak); if(on) ctx.lineTo(x,y); else {ctx.moveTo(x,y); on=true;}});
+    ctx.stroke(); ctx.restore();
+  }
+  // direct end labels (text in ink tokens), skipped if they would collide
+  const ey=T.yaw[40], ep=T.pitch[40];
+  if(ey&&ep&&Math.abs(Y(ey.peak)-Y(ep.peak))>13*dpr){
+    ctx.fillStyle=css('--muted'); ctx.font=(11*dpr)+'px '+css('--font-body'); ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.fillText(lx('水平','horiz.'),X(20)+7*dpr,Y(ey.peak)); ctx.fillText(lx('竖直','vert.'),X(20)+7*dpr,Y(ep.peak));
+  }
+  // hover crosshair
+  if(SPOT.hover!==null){
+    const x=Math.round(X(SPOT.hover))+0.5; ctx.strokeStyle=css('--muted'); ctx.lineWidth=dpr; ctx.beginPath(); ctx.moveTo(x,G2.Tp); ctx.lineTo(x,G2.Tp+G2.phh); ctx.stroke();
+    const i=SPOT.hover+20;
+    for(const [ax,col] of ser){const v=T[ax][i]; if(!v) continue; const y=Y(v.peak);
+      ctx.beginPath(); ctx.arc(x,y,5.5*dpr,0,Math.PI*2); ctx.fillStyle=css('--panel'); ctx.fill();
+      ctx.beginPath(); ctx.arc(x,y,3.6*dpr,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();}
+  }
+  // current motor positions
+  for(const [ax,col] of ser){const t=M[ax], v=trendInterp(T,ax,t); if(v===null) continue; const x=X(t), y=Y(v);
+    ctx.beginPath(); ctx.arc(x,y,6.5*dpr,0,Math.PI*2); ctx.fillStyle=css('--panel'); ctx.fill();
+    ctx.beginPath(); ctx.arc(x,y,4.5*dpr,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();}
+  if(!T.done){ctx.fillStyle=css('--muted'); ctx.font=(10.5*dpr)+'px '+css('--font-body'); ctx.textAlign='left'; ctx.textBaseline='top'; ctx.fillText(lx('计算中…','computing…'),G2.L+6*dpr,G2.Tp+4*dpr);}
+}
+function showTrendTip(t){
+  const T=SPOT.trend, tip=$('trendTip'); if(!T||t===null){tip.hidden=true; return;}
+  const i=t+20; tip.textContent='';
+  const hd=document.createElement('div'); hd.className='hd'; hd.textContent=lx('推杆 ','Push rod ')+sgn(t)+' µm'; tip.appendChild(hd);
+  [['yaw',lx('下面那根 · 水平','Lower · horizontal'),false],['pitch',lx('上面那根 · 竖直','Upper · vertical'),true]].forEach(([ax,name,dash])=>{
+    const v=T[ax][i]; const row=document.createElement('div'); row.className='row';
+    const k=document.createElement('i'); k.className='k'+(dash?' dash':''); k.style.borderColor='var(--'+ax+')';
+    const b=document.createElement('b'); b.textContent=v?pct(v.peak):'…';
+    const sp=document.createElement('span'); sp.textContent=name+(v?' · '+v.fwhmL.toFixed(1)+' × '+v.fwhmS.toFixed(1)+' µm':'');
+    row.append(k,b,sp); tip.appendChild(row);
+  });
+  tip.hidden=false;
+  const cv=$('trend'), rect=cv.getBoundingClientRect(), G2=trendGeom(rect.width,rect.height,1);
+  const x=G2.L+(t+20)/40*G2.pw, tw=tip.offsetWidth;
+  let left=x+12; if(left+tw>rect.width) left=x-12-tw; tip.style.transform='translate('+Math.max(0,left).toFixed(0)+'px,8px)';
+}
+function wireTrend(){
+  const cv=$('trend');
+  const pick=(clientX)=>{const r=cv.getBoundingClientRect(), G2=trendGeom(r.width,r.height,1); const t=Math.round((clientX-r.left-G2.L)/G2.pw*40-20); return Math.max(-20,Math.min(20,t));};
+  const set=(t)=>{SPOT.hover=t; drawTrend(); showTrendTip(t);};
+  cv.addEventListener('pointermove',e=>set(pick(e.clientX)));
+  cv.addEventListener('pointerdown',e=>set(pick(e.clientX)));
+  cv.addEventListener('pointerleave',()=>{if(document.activeElement!==cv){SPOT.hover=null; drawTrend(); showTrendTip(null);}});
+  cv.addEventListener('focus',()=>set(Math.max(-20,Math.min(20,Math.round(M.yaw)))));
+  cv.addEventListener('blur',()=>{SPOT.hover=null; drawTrend(); showTrendTip(null);});
+  cv.addEventListener('keydown',e=>{
+    if(SPOT.hover===null) return; let t=SPOT.hover;
+    if(e.key==='ArrowLeft') t--; else if(e.key==='ArrowRight') t++; else if(e.key==='Home') t=-20; else if(e.key==='End') t=20; else if(e.key==='Escape'){cv.blur(); return;} else return;
+    e.preventDefault(); set(Math.max(-20,Math.min(20,t)));
+  });
+}
+function buildStrip(){
+  const el=$('strip'); if(el.dataset.built) return; el.dataset.built='1';
+  el.appendChild(document.createElement('span'));
+  THUMB_T.forEach(t=>{const c=document.createElement('span'); c.className='cl'; c.textContent=sgn(t); el.appendChild(c);});
+  [['yaw',lx('水平','Horiz.')],['pitch',lx('竖直','Vert.')]].forEach(([ax,name])=>{
+    const l=document.createElement('span'); l.className='rl'; l.textContent=name; el.appendChild(l);
+    THUMB_T.forEach(t=>{const cv=document.createElement('canvas'); cv.dataset.ax=ax; cv.dataset.t=String(t); cv.setAttribute('role','img'); cv.setAttribute('aria-label',lx(name+'电机推杆 '+sgn(t)+' µm 时的光斑','Spot with the '+(ax==='yaw'?'horizontal':'vertical')+' actuator at '+sgn(t)+' µm')); el.appendChild(cv);});
+  });
+}
+function drawStrip(){
+  buildStrip(); const T=SPOT.trend, Rs=10;
+  document.querySelectorAll('#strip canvas').forEach(cv=>{
+    const {ctx,w,h,dpr}=prepCanvas(cv); ctx.clearRect(0,0,w,h);
+    ctx.strokeStyle=css('--line'); ctx.lineWidth=dpr; ctx.beginPath(); ctx.moveTo(w/2,0); ctx.lineTo(w/2,h); ctx.moveTo(0,h/2); ctx.lineTo(w,h/2); ctx.stroke();
+    const s=T&&T.thumbs[cv.dataset.ax][+cv.dataset.t]; if(!s) return;
+    const ppu=(w/2)/Rs; drawHeat(ctx,s,w/2,h/2,ppu);
+    ctx.strokeStyle=css('--beam'); ctx.lineWidth=1.2*dpr; strokeSegs(ctx,s.segs,w/2,h/2,ppu);
+    if(w/dpr>=58){ctx.fillStyle=css('--muted'); ctx.font=(9.5*dpr)+'px '+css('--font-mono'); ctx.textAlign='right'; ctx.textBaseline='bottom'; ctx.fillText(pct(s.rel!==undefined?s.rel:s.peak),w-3*dpr,h-2*dpr);}
+  });
+}
+function drawTable(){
+  const T=SPOT.trend, el=$('trendTable');
+  if(!T||!T.done){el.textContent=lx('计算中…','Computing…'); el.dataset.key=''; return;}
+  if(el.dataset.key===T.key+LANG) return; el.dataset.key=T.key+LANG;
+  const pts=[-20,-10,-5,-2,0,2,5,10,20];
+  const tbl=document.createElement('table'), mk=(tag,txt)=>{const c=document.createElement(tag); c.textContent=txt; return c;};
+  const hr=document.createElement('tr'); hr.appendChild(mk('th',lx('推杆 µm','Push rod µm'))); pts.forEach(t=>hr.appendChild(mk('th',sgn(t)))); tbl.appendChild(hr);
+  [['yaw',lx('水平 · 中心强度','Horiz. · peak'),'peak'],['yaw',lx('水平 · 半高全宽 µm','Horiz. · FWHM µm'),'fw'],['pitch',lx('竖直 · 中心强度','Vert. · peak'),'peak'],['pitch',lx('竖直 · 半高全宽 µm','Vert. · FWHM µm'),'fw']].forEach(([ax,label,kind])=>{
+    const tr=document.createElement('tr'); tr.appendChild(mk('th',label));
+    pts.forEach(t=>{const v=T[ax][t+20]; tr.appendChild(mk('td',!v?'—':(kind==='peak'?pct(v.peak):v.fwhmL.toFixed(1)+'×'+v.fwhmS.toFixed(1))));});
+    tbl.appendChild(tr);
+  });
+  el.textContent=''; el.appendChild(tbl);
+}
+
+// ================= 3D =================
+let G=null;
+function init3D(){
+  if(!window.THREE||!THREE.OrbitControls) throw new Error('three.js not available');
+  const stage=$('stage'), canvas=$('gl');
+  const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+  const scene=new THREE.Scene();
+  const camera=new THREE.PerspectiveCamera(36,1,0.2,8000); camera.up.set(0,0,1);
+  const controls=new THREE.OrbitControls(camera,renderer.domElement);
+  controls.enableDamping=true; controls.dampingFactor=0.09; controls.screenSpacePanning=true; controls.rotateSpeed=0.8;
+  const hemi=new THREE.HemisphereLight(0xffffff,0x3c4448,0.9); hemi.position.set(0,0,1); scene.add(hemi);
+  const sun=new THREE.DirectionalLight(0xffffff,0.75); sun.position.set(400,-600,900); scene.add(sun);
+  const fill=new THREE.DirectionalLight(0xffffff,0.3); fill.position.set(-500,500,300); scene.add(fill);
+  const std=(o)=>new THREE.MeshStandardMaterial(o);
+  const mats={
+    black:std({color:0x1b1f22,roughness:0.55,metalness:0.2}),
+    steel:std({color:0x9aa3a7,roughness:0.5,metalness:0.35}),
+    alu:std({color:0xc3c9cc,roughness:0.45,metalness:0.3}),
+    wall:std({color:0xb9c1c4,roughness:0.8,metalness:0.05,transparent:true,opacity:0.16,depthWrite:false,side:THREE.DoubleSide}),
+    floor:std({color:0x2a3033,roughness:0.9,metalness:0.05}),
+    gold:std({color:0xd8b25e,roughness:0.28,metalness:0.35,side:THREE.DoubleSide}),
+    mirror:std({color:0xdfe7ea,roughness:0.12,metalness:0.4,side:THREE.DoubleSide}),
+    wafer:std({color:0x4a5862,roughness:0.35,metalness:0.25}),
+    tip:std({color:0xbfc4c6,roughness:0.3,metalness:0.6}),
+    head:std({color:0x1b1f22,roughness:0.6,metalness:0.2,transparent:true,opacity:0.45,depthWrite:false}),
+    pmBody:std({color:0xb8bec1,roughness:0.5,metalness:0.3,transparent:true,opacity:0.55,depthWrite:false}),
+    holder:std({color:0x56606a,roughness:0.6,metalness:0.25}),
+    yawAct:std({color:0xa86400,roughness:0.45,metalness:0.2}),
+    pitchAct:std({color:0x088e86,roughness:0.45,metalness:0.2})
+  };
+  const beamMat=new THREE.MeshBasicMaterial({color:0xd21a3f});
+  const beamSoft=new THREE.MeshBasicMaterial({color:0xd21a3f,transparent:true,opacity:0.09,depthWrite:false,side:THREE.DoubleSide});
+  const coneMat=new THREE.MeshBasicMaterial({color:0xd21a3f,transparent:true,opacity:0.17,depthWrite:false,side:THREE.DoubleSide});
+  const thzMat=new THREE.MeshBasicMaterial({color:0x5b4fd0,transparent:true,opacity:0.8});
+  const thzSoft=new THREE.MeshBasicMaterial({color:0x5b4fd0,transparent:true,opacity:0.08,depthWrite:false,side:THREE.DoubleSide});
+
+  // table, 25 mm hole grid
+  const tcv=document.createElement('canvas'); tcv.width=tcv.height=64; const tc=tcv.getContext('2d');
+  tc.fillStyle='#a3abae'; tc.fillRect(0,0,64,64); tc.fillStyle='#5b6467'; tc.beginPath(); tc.arc(32,32,7,0,Math.PI*2); tc.fill();
+  const ttex=new THREE.CanvasTexture(tcv); ttex.wrapS=ttex.wrapT=THREE.RepeatWrapping;
+  const TW=1500,TD=820; ttex.repeat.set(TW/25,TD/25); ttex.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());
+  const table=new THREE.Mesh(new THREE.BoxGeometry(TW,TD,24),[mats.steel,mats.steel,mats.steel,mats.steel,std({map:ttex,roughness:0.7,metalness:0.25}),mats.steel]);
+  table.position.set(200,0,TABLE_Z-12); scene.add(table);
+
+  // AFM box, front open
+  const BY=[-165,170], BZ=[TABLE_Z,200];
+  const slab=(w,d,hh,x,y,z,m)=>{const me=new THREE.Mesh(new THREE.BoxGeometry(w,d,hh),m); me.position.set(x,y,z); scene.add(me); return me;};
+  slab(8,BY[1]-BY[0],BZ[1]-BZ[0],-WALL_X-4,(BY[0]+BY[1])/2,(BZ[0]+BZ[1])/2,mats.wall);
+  slab(8,BY[1]-BY[0],BZ[1]-BZ[0],WALL_X+4,(BY[0]+BY[1])/2,(BZ[0]+BZ[1])/2,mats.wall);
+  slab(2*WALL_X+16,8,BZ[1]-BZ[0],0,BY[1]+4,(BZ[0]+BZ[1])/2,mats.wall);
+  slab(2*WALL_X+16,BY[1]-BY[0],6,0,(BY[0]+BY[1])/2,BZ[0]+3,mats.floor);
+  const edges=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(2*WALL_X+16,BY[1]-BY[0]+8,BZ[1]-BZ[0])),new THREE.LineBasicMaterial({color:0x6c777c,transparent:true,opacity:0.7}));
+  edges.position.set(0,(BY[0]+BY[1])/2+4,(BZ[0]+BZ[1])/2); scene.add(edges);
+  // AFM head, stage, sample, tip
+  const head=new THREE.Mesh(new THREE.BoxGeometry(56,48,52),mats.head); head.position.set(0,20,30+26); scene.add(head);
+  const stageBlk=new THREE.Mesh(new THREE.BoxGeometry(74,74,60),mats.black); stageBlk.position.set(0,0,-12-30); scene.add(stageBlk);
+  const holder=new THREE.Mesh(new THREE.CylinderGeometry(9,9,11.5,40),mats.holder); holder.rotation.x=Math.PI/2; holder.position.set(0,0,-0.5-5.75); scene.add(holder);
+  const scv=document.createElement('canvas'); scv.width=scv.height=512; const sc=scv.getContext('2d');
+  sc.fillStyle='#4b5963'; sc.fillRect(0,0,512,512); sc.strokeStyle='rgba(220,230,235,0.35)'; sc.lineWidth=2;
+  for(let i=0;i<=10;i++){const q=i*51.2; sc.beginPath(); sc.moveTo(q,0); sc.lineTo(q,512); sc.stroke(); sc.beginPath(); sc.moveTo(0,q); sc.lineTo(512,q); sc.stroke();}
+  sc.strokeStyle='rgba(220,230,235,0.12)'; sc.lineWidth=1;
+  for(let i=0;i<=50;i++){const q=i*10.24; sc.beginPath(); sc.moveTo(q,0); sc.lineTo(q,512); sc.stroke(); sc.beginPath(); sc.moveTo(0,q); sc.lineTo(512,q); sc.stroke();}
+  const stex=new THREE.CanvasTexture(scv); stex.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());
+  const chip=new THREE.Mesh(new THREE.BoxGeometry(10,10,0.5),[mats.wafer,mats.wafer,mats.wafer,mats.wafer,std({map:stex,roughness:0.35,metalness:0.2}),mats.wafer]);
+  chip.position.set(0,0,-0.25); scene.add(chip);
+  const tipM=new THREE.Mesh(new THREE.ConeGeometry(0.02,0.08,16),mats.tip); tipM.rotation.x=-Math.PI/2; tipM.position.set(0,0,0.04); scene.add(tipM);
+  const cant=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.45,0.012),mats.tip); cant.position.set(0,0.2,0.086); scene.add(cant);
+  const cchip=new THREE.Mesh(new THREE.BoxGeometry(1.6,3.4,0.4),mats.alu); cchip.position.set(0,0.4+1.7,0.29); scene.add(cchip);
+
+  const dyn=new THREE.Group(); scene.add(dyn);
+  const unitCyl=new THREE.CylinderGeometry(1,1,1,20,1,true);
+  const mkCyl=(mat)=>{const m=new THREE.Mesh(unitCyl,mat); dyn.add(m); return m;};
+  const setCyl=(m,a,b,r)=>{const A=new THREE.Vector3(a[0],a[1],a[2]),B=new THREE.Vector3(b[0],b[1],b[2]); const d=B.clone().sub(A); const L=d.length(); m.position.copy(A).add(B).multiplyScalar(0.5); m.scale.set(r,Math.max(L,1e-6),r); m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),d.normalize());};
+  const inCore=mkCyl(beamMat), inHalo=mkCyl(beamSoft), b1Core=mkCyl(beamMat), b1Halo=mkCyl(beamSoft), b2Core=mkCyl(beamMat), b2Halo=mkCyl(beamSoft), focCore=mkCyl(beamMat);
+  const tz1=mkCyl(thzMat), tz2=mkCyl(thzMat), tz2h=mkCyl(thzSoft), tz3=mkCyl(thzMat), tz3h=mkCyl(thzSoft);
+  const NR=28;
+  const coneGeo=new THREE.BufferGeometry(); const conePos=new Float32Array(NR*2*3); coneGeo.setAttribute('position',new THREE.BufferAttribute(conePos,3));
+  const idx=[]; for(let i=0;i<NR;i++){const j=(i+1)%NR; idx.push(i,j,NR+j,i,NR+j,NR+i);} coneGeo.setIndex(idx);
+  const cone=new THREE.Mesh(coneGeo,coneMat); dyn.add(cone);
+  const spot=new THREE.Mesh(new THREE.CircleGeometry(1,40),new THREE.MeshBasicMaterial({color:0xd21a3f,transparent:true,opacity:0.92,depthWrite:false})); dyn.add(spot);
+  const ghostGeo=new THREE.BufferGeometry(); ghostGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(6),3));
+  const ghost=new THREE.Line(ghostGeo,new THREE.LineDashedMaterial({color:0xd21a3f,dashSize:6,gapSize:5,transparent:true,opacity:0.9})); dyn.add(ghost);
+  const trailGeo=new THREE.BufferGeometry(); const trailPos=new Float32Array(400*3); trailGeo.setAttribute('position',new THREE.BufferAttribute(trailPos,3));
+  const trailLine=new THREE.Line(trailGeo,new THREE.LineBasicMaterial({color:0xd21a3f,transparent:true,opacity:0.6})); dyn.add(trailLine);
+  const arrY=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(0,0,0.03),2.6,0xa86400,0.6,0.36); dyn.add(arrY);
+  const arrP=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(0,0,0.03),2.6,0x088e86,0.6,0.36); dyn.add(arrP);
+  // ports
+  const mkPort=()=>{const g=new THREE.Group(); const ring=new THREE.Mesh(new THREE.TorusGeometry(13,2.6,12,40),mats.black); ring.rotation.y=Math.PI/2; g.add(ring);
+    const win=new THREE.Mesh(new THREE.CircleGeometry(13,40),std({color:0x9fb3bb,transparent:true,opacity:0.3,depthWrite:false,side:THREE.DoubleSide})); win.rotation.y=Math.PI/2; g.add(win); scene.add(g); return g;};
+  const portR=mkPort(), portL=mkPort();
+  // fold mirrors
+  const mkFold=()=>{const g=new THREE.Group(); const face=new THREE.Mesh(new THREE.BoxGeometry(10,10,1),mats.mirror); face.position.z=-0.5; g.add(face);
+    const back=new THREE.Mesh(new THREE.BoxGeometry(11,11,1.5),mats.black); back.position.z=-1.75; g.add(back); dyn.add(g); return g;};
+  const fold1=mkFold(), fold2=mkFold();
+  const orientFold=(grp,c,n)=>{grp.position.set(c[0],c[1],c[2]); const zA=new THREE.Vector3(n[0],n[1],n[2]).normalize(), yA=new THREE.Vector3(0,0,1), xA=new THREE.Vector3().crossVectors(yA,zA); grp.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xA,yA,zA));};
+  let pmMesh=null, pmBody=null, mount=null, plate=null, postMesh=null, postBase=null; const actEnds={yaw:null,pitch:null};
+
+  function rebuildPM(g){
+    if(pmMesh){dyn.remove(pmMesh); pmMesh.geometry.dispose();}
+    if(pmBody){dyn.remove(pmBody); pmBody.geometry.dispose();}
+    const nPsi=72,nRho=28,psiMax=80*Math.PI/180;
+    const rhoP=Math.hypot(g.x0,g.h), rho1=rhoP+6.5;
+    const pos=[],ind=[];
+    for(let i=0;i<=nPsi;i++){const psi=-psiMax+2*psiMax*i/nPsi; const rmin=Math.max(1.0,1.0/Math.max(Math.cos(psi),0.06));
+      for(let j=0;j<=nRho;j++){const rho=rmin+(rho1-rmin)*j/nRho; const x=rho*Math.sin(psi), z=rho*Math.cos(psi); pos.push(x,rho*rho/(4*g.fp)-g.fp,z);}}
+    for(let i=0;i<nPsi;i++) for(let j=0;j<nRho;j++){const a=i*(nRho+1)+j,b=a+1,c=a+nRho+1,d=c+1; ind.push(a,c,b,b,c,d);}
+    const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); geo.setIndex(ind); geo.computeVertexNormals();
+    pmMesh=new THREE.Mesh(geo,mats.gold); dyn.add(pmMesh);
+    pmBody=new THREE.Mesh(new THREE.BoxGeometry(2*rho1+2,6,rho1),mats.pmBody); pmBody.position.set(0,-g.fp-3.4,0.6+rho1/2); dyn.add(pmBody);
+  }
+  function rebuildMount(g){
+    if(mount) scene.remove(mount);
+    if(postMesh){scene.remove(postMesh); scene.remove(postBase);}
+    const L=LAYOUTS[P.layout];
+    mount=new THREE.Group();
+    // right-handed local frame: x = right as seen from the mirror face (= −uBack), y = up, z = mirror normal
+    const xL=V.mul(g.uBack,-1);
+    const m4=new THREE.Matrix4().makeBasis(new THREE.Vector3(xL[0],xL[1],xL[2]),new THREE.Vector3(0,0,1),new THREE.Vector3(g.n0[0],g.n0[1],g.n0[2]));
+    mount.quaternion.setFromRotationMatrix(m4); mount.position.set(g.S[0],g.S[1],g.S[2]);
+    const a=17; const loc=(c)=>[-c[0]*a,c[1]*a]; // corners given as seen from behind
+    const pv=loc(L.pivot); const piv=new THREE.Vector3(pv[0],pv[1],-8);
+    plate=new THREE.Group(); plate.position.copy(piv); mount.add(plate);
+    const fpl=new THREE.Mesh(new THREE.BoxGeometry(2*a+8,2*a+8,6),mats.black); fpl.position.set(-piv.x,-piv.y,5); plate.add(fpl);
+    const mir=new THREE.Mesh(new THREE.CylinderGeometry(12.7,12.7,4,40),mats.mirror); mir.rotation.x=Math.PI/2; mir.position.set(-piv.x,-piv.y,8.6); plate.add(mir);
+    const bp=new THREE.Mesh(new THREE.BoxGeometry(2*a+8,2*a+8,8),mats.black); bp.position.set(0,0,-14); mount.add(bp);
+    const ball=new THREE.Mesh(new THREE.SphereGeometry(3.2,20,14),mats.steel); ball.position.copy(piv); mount.add(ball);
+    const mkAct=(c,mat)=>{const lc=loc(c); const grp=new THREE.Group();
+      const body=new THREE.Mesh(new THREE.CylinderGeometry(8,8,112,28),mat); body.rotation.x=Math.PI/2; body.position.set(0,0,-74); grp.add(body);
+      grp.position.set(lc[0],lc[1],0); mount.add(grp); return new THREE.Vector3(lc[0],lc[1],-130);};
+    const eYaw=mkAct(L.yaw,mats.yawAct), ePitch=mkAct(L.pitch,mats.pitchAct);
+    scene.add(mount); mount.updateMatrixWorld(true);
+    actEnds.yaw=eYaw.applyMatrix4(mount.matrixWorld); actEnds.pitch=ePitch.applyMatrix4(mount.matrixWorld);
+    const bottom=g.S[2]-(a+4); const pb=V.sub(g.S,V.mul(g.n0,14));
+    postMesh=new THREE.Mesh(new THREE.CylinderGeometry(6.35,6.35,bottom-(TABLE_Z+60),20),mats.steel); postMesh.rotation.x=Math.PI/2; postMesh.position.set(pb[0],pb[1],(bottom+TABLE_Z+60)/2); scene.add(postMesh);
+    postBase=new THREE.Mesh(new THREE.CylinderGeometry(12.7,12.7,60,24),mats.black); postBase.rotation.x=Math.PI/2; postBase.position.set(pb[0],pb[1],TABLE_Z+30); scene.add(postBase);
+  }
+
+  // labels
+  const labelsEl=$('labels'); const LBL={};
+  const mkLbl=(k,zh,en,cls)=>{const d=document.createElement('div'); d.className='lbl'+(cls?' '+cls:''); d.textContent=lx(zh,en); d.hidden=true; labelsEl.appendChild(d); LBL[k]={el:d,pos:new THREE.Vector3(),zh,en};};
+  mkLbl('mirror','转向镜（竖直）','Steering mirror (vertical)'); mkLbl('actY','下面那根 · 水平','Lower · horizontal','yaw'); mkLbl('actP','上面那根 · 竖直','Upper · vertical','pitch');
+  mkLbl('port','入射口（右侧壁）','Entrance port (right wall)'); mkLbl('exit','出口 → EOS','Exit → EOS','thz'); mkLbl('afm','AFM 盒（开口朝前）','AFM box (open to the front)');
+  mkLbl('fold1','竖直平面镜','Vertical fold mirror'); mkLbl('fold2','收集平面镜','Collection mirror','thz'); mkLbl('pm','抛物面镜（右照明 · 左收集）','Parabolic mirror (R in · L out)');
+  mkLbl('tip','针尖 / 焦点','Tip / focus'); mkLbl('spot','光斑','Spot','beam'); mkLbl('arrY','+水平','+horiz','yaw'); mkLbl('arrP','+竖直','+vert','pitch');
+  mkLbl('front','前（开口）','Front (open)'); mkLbl('back','后（背板）','Back (panel)'); mkLbl('frontIn','前（开口一侧）','Front (open side)'); mkLbl('backIn','后（背板一侧）','Back (panel side)');
+  const relabel=()=>{Object.keys(LBL).forEach(k=>{LBL[k].el.textContent=lx(LBL[k].zh,LBL[k].en);}); need=true;};
+  const VIEW_LABELS={overview:['mirror','port','exit','afm'],mirror:['mirror','actY','actP','port'],tip:['fold1','fold2','pm','tip','arrY','arrP','frontIn','backIn'],top:['tip','spot','arrY','arrP','front','back']};
+  let activeLabels=VIEW_LABELS.overview;
+
+  const presets={
+    overview:()=>({pos:[380,-860,520],tgt:[140,0,-30]}),
+    mirror:()=>{const g=geometry(P); const back=V.mul(g.n0,-1); return {pos:V.add(V.add(g.S,V.mul(back,330)),V.add(V.mul(g.uBack,170),[0,0,150])),tgt:V.add(V.add(g.S,V.mul(back,45)),[0,0,-10])};},
+    tip:()=>({pos:[16,-27,80],tgt:[0,-2,2]}),
+    top:()=>{const z=12/Math.min(1,camera.aspect||1); return {pos:[0,-0.1*z,z],tgt:[0,0,0]};}
+  };
+  let anim=null, need=true;
+  function goView(name,instant){
+    const pr=presets[name](); activeLabels=VIEW_LABELS[name]; head.visible=(name==='overview'||name==='mirror');
+    document.querySelectorAll('[data-view]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.view===name)));
+    const reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if(instant||reduce){camera.position.set(pr.pos[0],pr.pos[1],pr.pos[2]); controls.target.set(pr.tgt[0],pr.tgt[1],pr.tgt[2]); controls.update(); need=true; return;}
+    anim={t0:performance.now(),dur:700,p0:camera.position.clone(),q0:controls.target.clone(),p1:new THREE.Vector3(pr.pos[0],pr.pos[1],pr.pos[2]),q1:new THREE.Vector3(pr.tgt[0],pr.tgt[1],pr.tgt[2])};
+  }
+  controls.addEventListener('change',()=>{need=true;});
+  function resize(){const r=stage.getBoundingClientRect(); renderer.setSize(Math.max(1,r.width),Math.max(1,r.height),false); camera.aspect=r.width/Math.max(1,r.height); camera.updateProjectionMatrix(); need=true;}
+  new ResizeObserver(resize).observe(stage); resize();
+  function applyTheme(){
+    scene.background=new THREE.Color(css('--scene')||'#d6dcde');
+    const b=css('--beam'); if(b) [beamMat,beamSoft,coneMat,spot.material,ghost.material,trailLine.material].forEach(m=>m.color.set(b));
+    const t=css('--thz'); if(t) [thzMat,thzSoft].forEach(m=>m.color.set(t));
+    need=true;
+  }
+  applyTheme();
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{applyTheme(); drawAll();});
+  new MutationObserver(()=>{applyTheme(); drawAll();}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+
+  const keyOf=()=>[P.R,P.theta,P.beta,P.alpha,P.dist,P.layout].join('|');
+  let lastKey=null;
+  function update(s){
+    const g=s.c0.g;
+    if(lastKey!==keyOf()){rebuildPM(g); rebuildMount(g); lastKey=keyOf();}
+    orientFold(fold1,g.F1,g.nF1); orientFold(fold2,g.F2,g.nF2);
+    const N=displayGain();
+    const n=mirrorNormal(g,P,M.pitch/1000,M.yaw/1000,N);
+    const xL=V.mul(g.uBack,-1);
+    plate.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(V.dot(n,xL),n[2],V.dot(n,g.n0)).normalize());
+    // true-geometry beams up to the parabolic mirror
+    const inStart=V.sub(g.S,V.mul(g.d0,320));
+    setCyl(inCore,inStart,g.S,0.7); setCyl(inHalo,inStart,g.S,5);
+    const c=s.c.P?s.c:s.c0;
+    setCyl(b1Core,g.S,c.A,0.7); setCyl(b1Halo,g.S,c.A,5);
+    setCyl(b2Core,c.A,c.P,0.7); setCyl(b2Halo,c.A,c.P,5);
+    // ghost of the exaggerated outgoing direction
+    const d1x=V.norm(reflect(g.d0,n)); const gEnd=V.add(g.S,V.mul(d1x,200));
+    ghostGeo.attributes.position.array.set([g.S[0],g.S[1],g.S[2],gEnd[0],gEnd[1],gEnd[2]]); ghostGeo.attributes.position.needsUpdate=true; ghost.computeLineDistances();
+    ghost.visible=V.len(V.sub(d1x,s.c0.d1))>1e-4;
+    // exaggerated cone at the parabolic mirror (pivoting about the nominal PM point)
+    const dPM=V.norm(V.add(s.c0.d2,V.mul(V.sub(c.d2,s.c0.d2),N)));
+    const fr=perpFrame(dPM), e1=fr[0], e2=fr[1], C=s.c0.P; let ok=0;
+    for(let i=0;i<NR;i++){const ph=2*Math.PI*i/NR; const off=V.add(V.mul(e1,5*Math.cos(ph)),V.mul(e2,5*Math.sin(ph)));
+      const tr=traceIntoPM(V.add(V.sub(C,V.mul(dPM,30)),off),dPM,g);
+      if(tr){conePos.set(tr.P,i*3); conePos.set([tr.Q[0],tr.Q[1],0.004],(NR+i)*3); ok++;}}
+    coneGeo.attributes.position.needsUpdate=true; coneGeo.computeBoundingSphere(); cone.visible=ok===NR;
+    const chiefX=traceIntoPM(V.sub(C,V.mul(dPM,30)),dPM,g); const Qx=chiefX?chiefX.Q:[0,0,0];
+    setCyl(focCore,chiefX?chiefX.P:C,Qx,0.12);
+    spot.position.set(Qx[0],Qx[1],0.006);
+    // THz collection path (static): focus -> left half -> +Y -> collection fold -> out of the left wall
+    const P2=[-g.P[0],g.P[1],g.P[2]];
+    setCyl(tz1,[0,0,0.01],P2,0.12); setCyl(tz2,P2,g.F2,0.5); setCyl(tz2h,P2,g.F2,5);
+    const exitEnd=[-WALL_X-170,g.F2[1],g.F2[2]]; setCyl(tz3,g.F2,exitEnd,0.5); setCyl(tz3h,g.F2,exitEnd,5);
+    // trail (display scale)
+    const npt=Math.min(trail.length,400);
+    for(let i=0;i<npt;i++){const q=spotOffset(trail[trail.length-npt+i]); trailPos[i*3]=q[0]/1000*N; trailPos[i*3+1]=q[1]/1000*N; trailPos[i*3+2]=0.008;}
+    trailGeo.setDrawRange(0,npt); trailGeo.attributes.position.needsUpdate=true; trailGeo.computeBoundingSphere();
+    const ay=new THREE.Vector3(s.jy[0],s.jy[1],0).normalize(); arrY.setDirection(ay); arrY.setColor(new THREE.Color(css('--yaw')||'#a86400'));
+    const ap=new THREE.Vector3(s.jp[0],s.jp[1],0).normalize(); arrP.setDirection(ap); arrP.setColor(new THREE.Color(css('--pitch')||'#088e86'));
+    LBL.arrP.pos.set(ap.x*3.1,ap.y*3.1,0.05);
+    portR.position.set(WALL_X+8.5,g.yf,g.h); portL.position.set(-WALL_X-8.5,g.yf,g.h);
+    LBL.mirror.pos.set(g.S[0],g.S[1],g.S[2]+34);
+    LBL.actY.pos.copy(actEnds.yaw); LBL.actP.pos.copy(actEnds.pitch);
+    LBL.port.pos.set(WALL_X+8,g.yf,g.h+22); LBL.exit.pos.set(-WALL_X-90,g.yf,g.h+14);
+    LBL.afm.pos.set(-150,-165,205);
+    LBL.fold1.pos.set(g.F1[0]+2,g.F1[1],g.F1[2]+7.5); LBL.fold2.pos.set(g.F2[0]-2,g.F2[1],g.F2[2]+7.5);
+    LBL.pm.pos.set(0,-g.fp,Math.hypot(g.x0,g.h)+8);
+    LBL.tip.pos.set(0,0.2,0.6); LBL.spot.pos.set(Qx[0],Qx[1],0.05);
+    LBL.arrY.pos.set(ay.x*3.1,ay.y*3.1,0.05);
+    LBL.front.pos.set(0,-3.4,0.05); LBL.back.pos.set(0,3.4,0.05);
+    LBL.frontIn.pos.set(0,-g.fp-9,1); LBL.backIn.pos.set(0,g.yf+9,1);
+    need=true;
+  }
+  const tmp=new THREE.Vector3();
+  function placeLabels(){
+    const r=stage.getBoundingClientRect();
+    Object.keys(LBL).forEach(k=>{const L=LBL[k]; if(activeLabels.indexOf(k)<0){L.el.hidden=true; return;}
+      tmp.copy(L.pos).project(camera);
+      const vis=tmp.z<1&&tmp.z>-1&&Math.abs(tmp.x)<1.05&&Math.abs(tmp.y)<1.05;
+      L.el.hidden=!vis; if(vis) L.el.style.transform='translate('+((tmp.x+1)/2*r.width).toFixed(1)+'px,'+((1-tmp.y)/2*r.height).toFixed(1)+'px) translate(-50%,-120%)';});
+  }
+  function loop(now){
+    requestAnimationFrame(loop);
+    if(anim){const k=Math.min(1,(now-anim.t0)/anim.dur); const e=k<.5?2*k*k:1-Math.pow(-2*k+2,2)/2;
+      camera.position.lerpVectors(anim.p0,anim.p1,e); controls.target.lerpVectors(anim.q0,anim.q1,e); if(k>=1) anim=null; need=true;}
+    const moved=controls.update();
+    if(!(need||moved)) return; need=false;
+    const dist=camera.position.distanceTo(controls.target);
+    camera.near=Math.max(0.01,dist/400); camera.far=Math.max(3000,dist*40); camera.updateProjectionMatrix();
+    const s0=dist*0.007, cs=SPOT.cur, rs=SPOT.ref;
+    if(cs&&rs){spot.scale.set(s0*cs.fwhmL/rs.fwhmS,s0*cs.fwhmS/rs.fwhmS,1); spot.rotation.set(0,0,cs.ang); spot.material.opacity=0.3+0.62*Math.sqrt(Math.max(0,Math.min(1,cs.rel!==undefined?cs.rel:cs.peak)));}
+    else {spot.scale.set(s0/Math.cos(P.theta*Math.PI/180),s0,1); if(lastSolve) spot.rotation.set(0,0,Math.atan2(lastSolve.ph[1],lastSolve.ph[0]));}
+    renderer.render(scene,camera); placeLabels();
+  }
+  G={update,mark:()=>{need=true;},relabel};
+  document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>goView(b.dataset.view)));
+  goView('overview',true);
+  requestAnimationFrame(loop);
+}
+
+// ================= wiring =================
+function drawAll(){
+  const s=solve(); lastSolve=s;
+  try{ computeCur('fast'); }catch(err){ console.warn(err); SPOT.cur=null; SPOT.curSegs=null; }
+  updateTexts(s); drawScopes(s); drawShape(); if(G) G.update(s);
+  scheduleFine();
+}
+let drawQueued=false;
+function requestDraw(){ if(drawQueued) return; drawQueued=true; requestAnimationFrame(()=>{drawQueued=false; drawAll();}); }
+function pushTrail(){const last=trail[trail.length-1]; if(!last||Math.abs(last.dp-M.pitch)>1e-6||Math.abs(last.dy-M.yaw)>1e-6){trail.push({dp:M.pitch,dy:M.yaw}); if(trail.length>300) trail.shift();}}
+const MOTOR_IDS={yaw:['numYaw','rngYaw'],pitch:['numPitch','rngPitch']};
+function setMotor(ax,val,src){
+  const v=Math.max(-500,Math.min(500,Math.round(val*100)/100)); M[ax]=v;
+  const num=$(MOTOR_IDS[ax][0]), rng=$(MOTOR_IDS[ax][1]);
+  if(document.activeElement!==num) num.value=String(v);
+  if(src!=='range') rng.value=String(Math.max(-20,Math.min(20,v)));
+  pushTrail(); requestDraw();
+}
+function onParams(){ c0cache=null; requestDraw(); }
+function applyLangStatic(){
+  const en=LANG==='en', root=document.documentElement;
+  root.setAttribute('data-lang',LANG); root.lang=en?'en':'zh-CN';
+  document.title=en?'LTEM pump-spot steering':'LTEM 泵浦光斑转向';
+  document.querySelectorAll('[data-aria-en]').forEach(el=>{ if(el.dataset.ariaZh===undefined) el.dataset.ariaZh=el.getAttribute('aria-label')||''; el.setAttribute('aria-label',en?el.dataset.ariaEn:el.dataset.ariaZh); });
+  document.querySelectorAll('.langseg button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.lang===LANG)));
+}
+function setLang(l){
+  const nl=l==='en'?'en':'zh'; if(nl===LANG) return; LANG=nl;
+  try{localStorage.setItem('ltem-lang',LANG);}catch(e){}
+  applyLangStatic();
+  const st=$('strip'); if(st){st.textContent=''; delete st.dataset.built;}
+  SPOT.hover=null; const tip=$('trendTip'); if(tip) tip.hidden=true;
+  if(G&&G.relabel) G.relabel();
+  updateDSub(); drawAll();
+}
+function wire(){
+  applyLangStatic();
+  document.querySelectorAll('.langseg button').forEach(b=>b.addEventListener('click',()=>setLang(b.dataset.lang)));
+  Object.keys(MOTOR_IDS).forEach(ax=>{
+    $(MOTOR_IDS[ax][1]).addEventListener('input',e=>setMotor(ax,parseFloat(e.target.value),'range'));
+    $(MOTOR_IDS[ax][0]).addEventListener('input',e=>{const v=parseFloat(e.target.value); if(isFinite(v)) setMotor(ax,v,'num');});
+  });
+  document.querySelectorAll('.steps[data-axis]').forEach(st=>{const ax=st.dataset.axis;
+    st.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{ if(b.dataset.zero) setMotor(ax,0); else setMotor(ax,M[ax]+parseFloat(b.dataset.d)); }));});
+  $('zeroAll').addEventListener('click',()=>{setMotor('yaw',0); setMotor('pitch',0);});
+  $('clearTrail').addEventListener('click',()=>{trail.length=0; pushTrail(); requestDraw();});
+  document.querySelectorAll('[data-n]').forEach(b=>b.addEventListener('click',()=>{P.N=parseFloat(b.dataset.n); document.querySelectorAll('[data-n]').forEach(x=>x.setAttribute('aria-pressed',String(x===b))); requestDraw();}));
+  const bind=(id,key,out,unit,dec)=>{const el=$(id),o=$(out); const show=()=>{o.textContent=(dec?P[key].toFixed(dec):String(P[key]))+unit;}; el.addEventListener('input',()=>{P[key]=parseFloat(el.value); show(); onParams();}); show();};
+  bind('pR','R','oR',' mm',1); bind('pTheta','theta','oTheta','°',0); bind('pBeta','beta','oBeta','°',0);
+  bind('pL','L','oL',' mm',1); bind('pAlpha','alpha','oAlpha','°',0); bind('pDist','dist','oDist',' mm',0);
+  bind('pD','D','oD',' mm',1); bind('pLam','lam','oLam',' nm',0); bind('pNA','NA','oNA','',2);
+  $('pD').addEventListener('input',()=>{ if(P.Dauto){P.Dauto=false; $('pDauto').checked=false;} });
+  $('pDauto').addEventListener('change',e=>{P.Dauto=e.target.checked; onParams();});
+  wireTrend();
+  let rt=null; window.addEventListener('resize',()=>{clearTimeout(rt); rt=setTimeout(()=>{if(lastSolve){drawScopes(lastSolve); drawShape();}},80);});
+}
+for(let i=0;i<=20;i++) trail.push({dp:0,dy:M.yaw*i/20});
+wire();
+try{ init3D(); }catch(err){ $('fallback').hidden=false; console.warn(err); }
+drawAll();
+if(document.fonts&&document.fonts.ready) document.fonts.ready.then(()=>{ if(lastSolve){drawScopes(lastSolve); drawShape();} });
+})();
+</script>

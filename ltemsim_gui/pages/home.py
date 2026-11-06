@@ -45,6 +45,9 @@ QUICK = (
     ("tip", "target", "Tip-position chain",
      "The tip enters Poisson as an equipotential; each (X, h) is simulated, then demodulated jointly in cos nθ.",
      "25–60 min", ""),
+    ("steering", "crosshair", "Pump steering",
+     "Where the pump spot goes and how it deforms when the KS1-Z8 steering mirror moves; actuator travels for "
+     "each spot–tip offset X.", "instant", ""),
     ("explorer", "layers", "Solution explorer",
      "Open a solution.npz and explore ψ, E, n, p and EL2⁺ maps, line cuts and depth profiles.", "instant", ""),
     ("results", "folder", "Results browser", "Browse every figure, table and data file under results/.", "instant", ""),
