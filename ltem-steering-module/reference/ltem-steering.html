@@ -1286,11 +1286,15 @@ function init3D(){
     need=true;
   }
   const tmp=new THREE.Vector3();
+  // labels of the few-mm region around the tip: shown together only while that region is resolved on screen
+  const NEAR_TIP=['tip','spot','arrY','arrP','front','back'], NEAR_TIP_MIN_PX_PER_MM=6;
   function placeLabels(){
     const r=stage.getBoundingClientRect(), placed=[];
+    const pxPerMm=r.height/(2*camera.position.length()*Math.tan(camera.fov*Math.PI/360));
     Object.keys(LBL).forEach(k=>{if(activeLabels.indexOf(k)<0) LBL[k].el.hidden=true;});
-    // in activeLabels order; a label that would cover an earlier one is hidden (e.g. front/back when zoomed out)
+    // in activeLabels order; a label that would cover an earlier one is hidden
     activeLabels.forEach(k=>{const L=LBL[k];
+      if(NEAR_TIP.indexOf(k)>=0&&pxPerMm<NEAR_TIP_MIN_PX_PER_MM){L.el.hidden=true; return;}
       tmp.copy(L.pos).project(camera);
       const vis=tmp.z<1&&tmp.z>-1&&Math.abs(tmp.x)<1.05&&Math.abs(tmp.y)<1.05;
       L.el.hidden=!vis; if(!vis) return;

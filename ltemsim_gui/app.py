@@ -20,12 +20,12 @@ from .widgets.common import Page, label, reveal
 # (id, section, title, icon, module, class)
 PAGES = [
     ("home", "Overview", "Home", "home", "home", "HomePage"),
+    ("steering", "Simulate", "Pump steering", "crosshair", "steering", "SteeringPage"),
     ("steady", "Simulate", "Steady state", "grid", "steady", "SteadyPage"),
     ("sweep", "Simulate", "Parameter sweep", "sliders", "sweep", "SweepPage"),
     ("pulse", "Simulate", "Single-pulse chain", "zap", "pulse_chain", "PulseChainPage"),
     ("fdtd", "Simulate", "Pump FDTD (optics)", "waves", "fdtd", "FdtdPage"),
     ("tip", "Simulate", "Tip-position chain", "target", "tip_positions", "TipPositionsPage"),
-    ("steering", "Simulate", "Pump steering", "crosshair", "steering", "SteeringPage"),
     ("explorer", "Analyze", "Solution explorer", "layers", "explorer", "ExplorerPage"),
     ("results", "Analyze", "Results browser", "folder", "results", "ResultsPage"),
     ("measured", "Analyze", "Measured data", "table", "measured", "MeasuredPage"),

@@ -301,8 +301,10 @@ red, THz / collection violet.
   constant on-screen size times FWHM / (original short-axis FWHM), so a defocused spot filled the
   view at every zoom. It is now the half-maximum ellipse at the same display gain as the spot shift
   and the trail (µm × N / 1000 → mm), so it scales with zoom, with a 3-pixel floor so it stays
-  visible when zoomed out. Labels that would cover an earlier label are hidden (e.g. Front/Back in
-  the top view when zoomed out). Only the 3-D drawing changed; the page's numbers are the same.
+  visible when zoomed out. The labels of the few-mm region around the tip (Tip, Spot, +horiz, +vert,
+  Front, Back) are shown together only while that region is resolved (at least 6 px per mm at the
+  tip), so they disappear when zoomed out and come back when zoomed in; any label that would cover
+  an earlier one is hidden. Only the 3-D drawing changed; the page's numbers are the same.
 * **Not every parameter reaches the 3D page.** The page is driven
   through its own inputs, which exist only for the two travels and R, θ, β, L, α, dist,
   λ, NA and D (or D auto). Its sliders clamp and round to their range and step (R 6–30 mm

@@ -30,6 +30,9 @@ KIND_ICON = {"steady": "grid", "sweep": "sliders", "pulse": "zap", "redemod": "z
 
 # (page id, icon, title = sidebar name, description, typical runtime, highlighted note)
 QUICK = (
+    ("steering", "crosshair", "Pump steering",
+     "Where the pump spot goes and how it deforms when the KS1-Z8 steering mirror moves; actuator travels for "
+     "each spot–tip offset X.", "instant", ""),
     ("steady", "grid", "Steady state",
      "Self-consistent 2-D drift-diffusion + EL2 steady state: fields, carriers and the tip scan, compared with "
      "the measurement.", "coarse ~1 min · production ~7 min",
@@ -45,9 +48,6 @@ QUICK = (
     ("tip", "target", "Tip-position chain",
      "The tip enters Poisson as an equipotential; each (X, h) is simulated, then demodulated jointly in cos nθ.",
      "25–60 min", ""),
-    ("steering", "crosshair", "Pump steering",
-     "Where the pump spot goes and how it deforms when the KS1-Z8 steering mirror moves; actuator travels for "
-     "each spot–tip offset X.", "instant", ""),
     ("explorer", "layers", "Solution explorer",
      "Open a solution.npz and explore ψ, E, n, p and EL2⁺ maps, line cuts and depth profiles.", "instant", ""),
     ("results", "folder", "Results browser", "Browse every figure, table and data file under results/.", "instant", ""),
