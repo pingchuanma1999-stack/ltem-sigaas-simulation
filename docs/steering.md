@@ -26,7 +26,7 @@ This page covers only the integration.
 
 | path | content |
 |---|---|
-| `ltem-steering-module/` | the module as delivered, **unchanged**: JS reference core, NumPy port, `tests/golden.json`, the interactive page `reference/ltem-steering.html` (three.js 3-D model, bilingual). Do not edit it; `golden.json` is regenerated (`node tests/make_golden.mjs`) only for a deliberate physics change. |
+| `ltem-steering-module/` | the module as delivered: JS reference core, NumPy port, `tests/golden.json`, the interactive page `reference/ltem-steering.html` (three.js 3-D model, bilingual). The cores and `golden.json` are **unchanged**; do not edit them, and regenerate `golden.json` (`node tests/make_golden.mjs`) only for a deliberate physics change. The page has one display fix in its 3-D code (see "3D view" below). |
 | `ltem-steering-module/python/ltem_optics.py` | the NumPy core used here (only dependency NumPy) |
 | `ltemsim/steering.py` | the one adapter: parameters, actuator names, signs, frames, the offset solver. Every conversion between the core's conventions and ours is in this file and nowhere else. It loads the core under the private name `ltemsim._ltem_optics` (`steering.optics`), so the core's caches belong to this package. |
 | GUI: Simulate → Pump steering | the desktop page (tabs below); form fields from `paramspec.steering_specs()`, 3D tab in `ltemsim_gui/widgets/steering3d.py` |
@@ -297,7 +297,13 @@ red, THz / collection violet.
   OrbitControls) from cdn.jsdelivr.net. Offline the stage keeps the page's own fallback
   text and the tab says so; the other tabs compute locally. Without QtWebEngine the tab
   offers to open the page in the default browser (`ltemsim_gui/widgets/steering3d.py`).
-* **Not every parameter reaches the 3D page.** The page is loaded unchanged and driven
+* **3D spot size (display fix in the page).** As delivered, the page drew the spot glyph at a
+  constant on-screen size times FWHM / (original short-axis FWHM), so a defocused spot filled the
+  view at every zoom. It is now the half-maximum ellipse at the same display gain as the spot shift
+  and the trail (µm × N / 1000 → mm), so it scales with zoom, with a 3-pixel floor so it stays
+  visible when zoomed out. Labels that would cover an earlier label are hidden (e.g. Front/Back in
+  the top view when zoomed out). Only the 3-D drawing changed; the page's numbers are the same.
+* **Not every parameter reaches the 3D page.** The page is driven
   through its own inputs, which exist only for the two travels and R, θ, β, L, α, dist,
   λ, NA and D (or D auto). Its sliders clamp and round to their range and step (R 6–30 mm
   in 0.5, θ 40–72°, β 0–65°, L 15–60 mm, α 15–70°, dist 80–600 mm in 10, λ 700–1600 nm in

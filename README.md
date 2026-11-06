@@ -30,7 +30,7 @@ ltemsim/
 scripts/
   run_baseline.py        default run -> results/baseline/
   sweep.py               parameter sweeps (pump power, EL2, sigma_p, spot size)
-ltem-steering-module/        KS1-Z8 pump-spot steering module, vendored unchanged (own README, tests)
+ltem-steering-module/        KS1-Z8 pump-spot steering module, vendored (cores and golden values unchanged; own README, tests)
 data/measured_tip_scan.csv   measured RMS vs X for ±25 V (Oct 2026 notes)
 tests/test_numerics.py       Poisson vs analytic, equilibrium, Jacobian FD, dark current
 tests/test_steering.py       steering core vs golden.json, adapter signs and frames
@@ -80,7 +80,7 @@ results) or `"rod"` — the apex sphere plus a straight shank of width 2R. The G
 ## Pump steering (KS1-Z8 mirror, 泵浦光斑转向)
 
 The pump spot is moved on the sample by the external KS1-Z8 mirror (two Z812 actuators, KDC101
-controllers). `ltem-steering-module/` (vendored unchanged; physics and algorithm in its `README.md`)
+controllers). `ltem-steering-module/` (vendored; cores and golden values unchanged, physics and algorithm in its `README.md`)
 computes where the spot lands for given push-rod travels (exact chief-ray trace), its shape and peak
 intensity (scalar diffraction with the parabolic-mirror aperture) and the beam diameter for the smallest
 spot. `ltemsim/steering.py` is the only adapter: `lower` = lower Z812 = horizontal tilt (core `yaw`),

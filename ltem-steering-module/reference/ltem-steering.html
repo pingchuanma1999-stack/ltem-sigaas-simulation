@@ -1200,7 +1200,7 @@ function init3D(){
   mkLbl('tip','针尖 / 焦点','Tip / focus'); mkLbl('spot','光斑','Spot','beam'); mkLbl('arrY','+水平','+horiz','yaw'); mkLbl('arrP','+竖直','+vert','pitch');
   mkLbl('front','前（开口）','Front (open)'); mkLbl('back','后（背板）','Back (panel)'); mkLbl('frontIn','前（开口一侧）','Front (open side)'); mkLbl('backIn','后（背板一侧）','Back (panel side)');
   const relabel=()=>{Object.keys(LBL).forEach(k=>{LBL[k].el.textContent=lx(LBL[k].zh,LBL[k].en);}); need=true;};
-  const VIEW_LABELS={overview:['mirror','port','exit','afm'],mirror:['mirror','actY','actP','port'],tip:['fold1','fold2','pm','tip','arrY','arrP','frontIn','backIn'],top:['tip','spot','arrY','arrP','front','back']};
+  const VIEW_LABELS={overview:['mirror','port','exit','afm'],mirror:['mirror','actY','actP','port'],tip:['fold1','fold2','pm','tip','arrY','arrP','frontIn','backIn'],top:['spot','tip','arrY','arrP','front','back']};
   let activeLabels=VIEW_LABELS.overview;
 
   const presets={
@@ -1209,7 +1209,8 @@ function init3D(){
     tip:()=>({pos:[16,-27,80],tgt:[0,-2,2]}),
     top:()=>{const z=12/Math.min(1,camera.aspect||1); return {pos:[0,-0.1*z,z],tgt:[0,0,0]};}
   };
-  let anim=null, need=true;
+  let anim=null, need=true, dispN=1;
+  const SPOT_MIN_PX=3;          // smallest half-minor axis of the spot glyph on screen
   function goView(name,instant){
     const pr=presets[name](); activeLabels=VIEW_LABELS[name]; head.visible=(name==='overview'||name==='mirror');
     document.querySelectorAll('[data-view]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.view===name)));
@@ -1236,7 +1237,7 @@ function init3D(){
     const g=s.c0.g;
     if(lastKey!==keyOf()){rebuildPM(g); rebuildMount(g); lastKey=keyOf();}
     orientFold(fold1,g.F1,g.nF1); orientFold(fold2,g.F2,g.nF2);
-    const N=displayGain();
+    const N=displayGain(); dispN=N;
     const n=mirrorNormal(g,P,M.pitch/1000,M.yaw/1000,N);
     const xL=V.mul(g.uBack,-1);
     plate.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(V.dot(n,xL),n[2],V.dot(n,g.n0)).normalize());
@@ -1286,11 +1287,18 @@ function init3D(){
   }
   const tmp=new THREE.Vector3();
   function placeLabels(){
-    const r=stage.getBoundingClientRect();
-    Object.keys(LBL).forEach(k=>{const L=LBL[k]; if(activeLabels.indexOf(k)<0){L.el.hidden=true; return;}
+    const r=stage.getBoundingClientRect(), placed=[];
+    Object.keys(LBL).forEach(k=>{if(activeLabels.indexOf(k)<0) LBL[k].el.hidden=true;});
+    // in activeLabels order; a label that would cover an earlier one is hidden (e.g. front/back when zoomed out)
+    activeLabels.forEach(k=>{const L=LBL[k];
       tmp.copy(L.pos).project(camera);
       const vis=tmp.z<1&&tmp.z>-1&&Math.abs(tmp.x)<1.05&&Math.abs(tmp.y)<1.05;
-      L.el.hidden=!vis; if(vis) L.el.style.transform='translate('+((tmp.x+1)/2*r.width).toFixed(1)+'px,'+((1-tmp.y)/2*r.height).toFixed(1)+'px) translate(-50%,-120%)';});
+      L.el.hidden=!vis; if(!vis) return;
+      const x=(tmp.x+1)/2*r.width, y=(1-tmp.y)/2*r.height, w=L.el.offsetWidth, h=L.el.offsetHeight;
+      const box=[x-w/2-2,y-1.2*h-2,x+w/2+2,y-0.2*h+2];
+      if(placed.some(b=>box[0]<b[2]&&b[0]<box[2]&&box[1]<b[3]&&b[1]<box[3])){L.el.hidden=true; return;}
+      placed.push(box);
+      L.el.style.transform='translate('+x.toFixed(1)+'px,'+y.toFixed(1)+'px) translate(-50%,-120%)';});
   }
   function loop(now){
     requestAnimationFrame(loop);
@@ -1300,9 +1308,15 @@ function init3D(){
     if(!(need||moved)) return; need=false;
     const dist=camera.position.distanceTo(controls.target);
     camera.near=Math.max(0.01,dist/400); camera.far=Math.max(3000,dist*40); camera.updateProjectionMatrix();
-    const s0=dist*0.007, cs=SPOT.cur, rs=SPOT.ref;
-    if(cs&&rs){spot.scale.set(s0*cs.fwhmL/rs.fwhmS,s0*cs.fwhmS/rs.fwhmS,1); spot.rotation.set(0,0,cs.ang); spot.material.opacity=0.3+0.62*Math.sqrt(Math.max(0,Math.min(1,cs.rel!==undefined?cs.rel:cs.peak)));}
-    else {spot.scale.set(s0/Math.cos(P.theta*Math.PI/180),s0,1); if(lastSolve) spot.rotation.set(0,0,Math.atan2(lastSolve.ph[1],lastSolve.ph[0]));}
+    // spot: half-max ellipse at the display gain, like the spot shifts and the trail (µm × N/1000 → mm), so it
+    // grows and shrinks with zoom; never under SPOT_MIN_PX on screen, so it stays visible when zoomed out
+    const cs=SPOT.cur, rs=SPOT.ref;
+    const pxW=2*camera.position.distanceTo(spot.position)*Math.tan(camera.fov*Math.PI/360)/Math.max(1,stage.clientHeight);
+    let sa, sb;
+    if(cs){sa=cs.fwhmL/2; sb=cs.fwhmS/2; spot.rotation.set(0,0,cs.ang); spot.material.opacity=0.3+0.62*Math.sqrt(Math.max(0,Math.min(1,cs.rel!==undefined?cs.rel:cs.peak)));}
+    else {sb=(rs?rs.fwhmS:1.1)/2; sa=sb/Math.cos(P.theta*Math.PI/180); if(lastSolve) spot.rotation.set(0,0,Math.atan2(lastSolve.ph[1],lastSolve.ph[0]));}
+    const ks=Math.max(dispN/1000,SPOT_MIN_PX*pxW/Math.max(sb,1e-6));
+    spot.scale.set(ks*sa,ks*sb,1);
     renderer.render(scene,camera); placeLabels();
   }
   G={update,mark:()=>{need=true;},relabel};
