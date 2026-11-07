@@ -473,10 +473,15 @@ def fig_positions():
         d = json.load(open(os.path.join(base, folder, "demod_A180_h10.json")))
         r = np.array(d["rms"]["det3"])
         ax.plot(Xs, r / r.max(), color=col, lw=2, marker=mk, ms=7, mfc="white", label=lab + f"  (peak {r.max():.1e})")
+    fit_fn = os.path.join(ROOT, "results", "oddeven_fit.json")
+    if os.path.exists(fit_fn):
+        fit = json.load(open(fit_fn))
+        ax.plot(fit["X"], fit["scan_best"], color=C["green"], lw=2.6, marker="D", ms=7, mfc="white",
+                label=f"tip term scaled to {fit['alpha_best']:.2f} of the 12.5 V run (≈ {fit['V_tip_equiv_V']:.0f} V): fitted to the data")
     plot_measured(ax)
-    ax.axvline(0, color=C["grey"], lw=0.6); ax.set_xlim(-8.5, 8.5); ax.set_ylim(0, 1.15)
+    ax.axvline(0, color=C["grey"], lw=0.6); ax.set_xlim(-8.5, 8.5); ax.set_ylim(0, 1.45)
     ax.set_xlabel("X = beam position relative to the tip (µm)"); ax.set_ylabel("band-limited amplitude (n = 3), normalised")
-    ax.set_title("(c) the tip's DC potential decides the side"); ax.legend(loc="upper left", fontsize=9)
+    ax.set_title("(c) the tip DC term, scaled, sets the weak side"); ax.legend(loc="upper left", fontsize=8.5)
     fig.savefig(os.path.join(OUT, "sim_positions.png"), dpi=150)
     plt.close(fig)
 

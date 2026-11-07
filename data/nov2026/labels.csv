@@ -1,0 +1,10 @@
+file,date,bias_V,X_um,Y_um,kind,note
+22h45m12s_Scan1_Delay1.mat,2026-11-03,-25,-2.5,0,single,before moving the tip
+23h05m15s_Scan1_Delay1.mat,2026-11-03,-25,-2.5,0,single,after moving the tip to the middle
+23h27m21s_Scan2_Delay1.mat,2026-11-03,-25,5,0,single,scan 2 of 3 (scan 1 noisy and not used)
+23h27m21s_Scan3_Delay1.mat,2026-11-03,-25,5,0,single,scan 3 of 3
+00h28m32s_Mean_Delay1.mat,2026-11-04,25,-5,0,mean3,
+01h18m30s_Mean_Delay1.mat,2026-11-04,25,-2.5,0,mean3,
+02h07m42s_Mean_Delay1.mat,2026-11-04,25,-7.5,0,mean3,
+01h48m18s_Mean_Delay1.mat,2026-11-06,25,-7.5,0,mean3,
+04h25m30s_Mean_Delay1.mat,2026-11-06,25,-5,0,mean3,
