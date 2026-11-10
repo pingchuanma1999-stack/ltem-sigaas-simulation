@@ -251,3 +251,21 @@ Band-limited amplitude, n = 3, normalised (X = −7.5 … +7.5 µm):
   0.41 / 1.00 / 0.58: the anode side wins (as measured), the cathode lobe is reduced to 0.75 (measured ≈ 0) and the
   centre and ±2.5 positions are lifted by the reflection bands. The beam direction relative to the electrodes must be
   recorded.
+
+## 2026-11-10 — November far-side scans and the odd + even fit
+
+Data: `data/nov2026/` (raw `.mat` + `labels.csv`), analysed by `scripts/measured_nov.py` with the October metric
+(noise-corrected RMS in 82.80–83.20 mm). No +25 V, X = +5 µm reference exists in these sessions, so they are tied to the
+October scale through −25 V at X = −2.5 µm (0.52 ↔ 1.37 µV; ±20 %).
+
+- +25 V at X = −2.5 / −5 / −7.5 µm (means of 3, two days): 0.00 / 0.01 / 0.11, all at the noise level (±0.08); the two
+  days do not correlate with each other. The far side is empty.
+- −25 V at X = −2.5 µm: strong, two scans agree (r = 0.68). −25 V at X = +5 µm: noise (scans do not correlate).
+- `data/measured_tip_scan.csv` carries the new rows; every comparison figure picks them up.
+
+Fit (`scripts/oddeven_fit.py`, `results/oddeven_fit.json`): with O(X) from the grounded-tip per-position runs and E(X)
+from the +12.5 V runs minus those (even in X to 10 %, linear in V_tip at ±12.5 V), the scan |O + αE| fitted to the
+measured +25 V points gives α = 0.33 ± 0.04, i.e. a tip term of about a third of the 12.5 V run (≈ 4 V if linear).
+Fitted scan 0.10, 0.03, 0.18, 0.27, 0.49, 1.00, 0.35 against measured 0.11, 0.01, 0.00, 0.24, 0.59, 1.00, 0.15; the
+remaining misfit is +7.5 µm. Dember alone leaves ≥ 0.4 on the far side. One fitted number in a 2-D model: it fixes the
+size and shape of the even term the data need, not its origin.
