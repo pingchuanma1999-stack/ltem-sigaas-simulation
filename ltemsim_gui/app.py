@@ -6,7 +6,7 @@ import os
 import sys
 import traceback
 
-from PySide6.QtCore import QEvent, QSettings, QSize, Qt, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QStackedWidget,
@@ -20,6 +20,7 @@ from .widgets.common import Page, label, reveal
 # (id, section, title, icon, module, class)
 PAGES = [
     ("home", "Overview", "Home", "home", "home", "HomePage"),
+    ("steering", "Simulate", "Pump steering", "crosshair", "steering", "SteeringPage"),
     ("steady", "Simulate", "Steady state", "grid", "steady", "SteadyPage"),
     ("sweep", "Simulate", "Parameter sweep", "sliders", "sweep", "SweepPage"),
     ("pulse", "Simulate", "Single-pulse chain", "zap", "pulse_chain", "PulseChainPage"),
@@ -367,6 +368,8 @@ class MainWindow(QMainWindow):
                           "<h3>LTEM Sim</h3><p>Desktop interface for the SI-GaAs near-field LTEM simulation.</p>"
                           "<p>Steady-state drift-diffusion + EL2 solver, single-pulse emission chain (pump FDTD → carrier dynamics → "
                           "tip demodulation), parameter sweeps and result analysis.</p>"
+                          "<p>Pump steering: where the pump spot goes, and how it deforms, when the KS1-Z8 steering mirror "
+                          "outside the AFM moves (exact chief-ray trace + scalar diffraction, ltem-steering-module).</p>"
                           f"<p>Project: {paths.ROOT}<br>Python: {sys.executable}</p>")
 
     def closeEvent(self, e):
@@ -393,6 +396,10 @@ def main(argv=None):
     os.environ.setdefault("QT_API", "pyside6")
     from .macos import set_app_name
     set_app_name(paths.APP_NAME)
+    if QApplication.instance() is None:
+        # the 3-D view of the pump-steering page embeds a QtWebEngine page, which needs shared OpenGL contexts
+        # (only settable before the application object exists)
+        QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication.instance() or QApplication(argv or sys.argv)
     app.setApplicationName(paths.APP_NAME)
     app.setOrganizationName(paths.APP_ID)

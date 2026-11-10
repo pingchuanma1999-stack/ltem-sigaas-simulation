@@ -30,6 +30,8 @@ TITLES = {
     "LICENSE": "License",
     "docs/model.md": "Model and equations",
     "docs/pulse_chain.md": "Single-pulse chain",
+    "docs/steering.md": "Pump steering (KS1-Z8)",
+    "ltem-steering-module/README.md": "Steering module README",
     "docs/reference/pizzuto_fdm_demod_reference.m": "Pizzuto FDM demod (MATLAB)",
     "results/coarse_scenarios/contact_scenarios.md": "Contact scenarios (coarse grid)",
     "results/coarse_scenarios/lifetime_scenarios.md": "Lifetime scenarios (coarse grid)",
@@ -73,7 +75,7 @@ def doc_title(p: Path) -> str:
 def discover() -> list[tuple[str, list[Path]]]:
     """(group title, files) of the documents shipped with the repository."""
     R = paths.ROOT
-    project = [p for p in (R / "README.md", R / "LICENSE") if p.exists()]
+    project = [p for p in (R / "README.md", R / "LICENSE", R / "ltem-steering-module" / "README.md") if p.exists()]
     docs = sorted(paths.DOCS.glob("*.md")) if paths.DOCS.exists() else []
     ref = sorted(p for p in (paths.DOCS / "reference").glob("*") if p.is_file()) if (paths.DOCS / "reference").exists() else []
     results = sorted(p for p in paths.RESULTS.rglob("*.md") if paths.GUI_RUNS not in p.parents) if paths.RESULTS.exists() else []

@@ -222,6 +222,44 @@ def pulse_specs() -> list[FieldSpec]:
                      section_of=PULSE_SECTION_OF, basic=PULSE_BASIC)
 
 
+# ----------------------------------------------------------------------------- SteeringParams (pump steering)
+STEERING_LABELS = {
+    "R": "Focal length R", "theta": "Incidence angle θ", "beta": "Plane-of-incidence azimuth β", "NA": "Aperture NA",
+    "zLow": "Mirror lower edge z_low", "alpha": "Mirror incidence α", "dist": "Mirror → port distance",
+    "L": "Lever arm L", "yawSide": "Lower actuator side", "pitchSide": "Upper actuator side", "portX": "Port plane x",
+    "foldY": "Fold mirror y", "lam": "Wavelength λ", "D_auto": "Beam diameter: auto (smallest spot)",
+    "D": "Beam diameter D (1/e²)", "bias_axis_deg": "Bias-axis azimuth φ",
+}
+STEERING_UNITS = {"R": "mm", "theta": "deg", "beta": "deg", "zLow": "mm", "alpha": "deg", "dist": "mm", "L": "mm",
+                  "portX": "mm", "foldY": "mm", "lam": "nm", "D": "mm", "bias_axis_deg": "deg"}
+STEERING_SECTIONS = {"parabolic mirror and sample": "Parabolic mirror & sample", "steering mirror": "Steering mirror",
+                     "pump beam": "Pump beam", "sample orientation": "Sample orientation"}
+STEERING_CHOICES = {"yawSide": ("1", "-1"), "pitchSide": ("1", "-1")}
+STEERING_BASIC = {"R", "theta", "beta", "NA", "L", "lam", "D_auto", "D", "bias_axis_deg"}
+# ranges that keep the geometry defined (the core divides by L, takes asin(NA), needs 0 < θ, α < 90°); β >= 0 keeps
+# the pump on the port-side half of the parabolic mirror (the other half collects the THz; reference page: 0-65°)
+STEERING_BOUNDS = {
+    "R": (1.0, 200.0), "theta": (1.0, 89.0), "beta": (0.0, 89.0), "NA": (0.02, 0.95), "zLow": (0.0, None),
+    "alpha": (1.0, 89.0), "dist": (1.0, None), "L": (1.0, None), "portX": (1.0, None), "foldY": (0.1, None),
+    "lam": (100.0, 20000.0), "D": (0.5, 60.0), "bias_axis_deg": (-360.0, 360.0),
+}
+
+
+def steering_specs() -> list[FieldSpec]:
+    """Form fields of ltemsim.steering.SteeringParams.  The ±1 actuator sides are choices whose values are the
+    strings "1" / "-1" (SteeringParams.from_dict coerces them back to int)."""
+    from ltemsim.steering import SteeringParams
+    out = []
+    for s in specs_for(SteeringParams, labels=STEERING_LABELS, basic=STEERING_BASIC, choices=STEERING_CHOICES,
+                       units=STEERING_UNITS, section_zh=STEERING_SECTIONS, bounds=STEERING_BOUNDS):
+        if s.unit and s.help.startswith(s.unit + ","):          # "mm, ..." (the unit regex does not know mm)
+            s.help = s.help[len(s.unit) + 1:].strip()
+        if s.type == "choice":
+            s.default = str(s.default)
+        out.append(s)
+    return out
+
+
 # ----------------------------------------------------------------------------- value parsing
 def parse_value(spec: FieldSpec, text: str):
     """Text from an editor -> typed value; raises ValueError."""

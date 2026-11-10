@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
@@ -188,13 +189,15 @@ class ParamForm(QWidget):
         row = self.rows[name]
         try:
             v = self._raw(row)
+            if row.spec.type in ("float", "int") and not math.isfinite(v):
+                raise ValueError                # NaN passes both range checks below; inf is no parameter value
             if row.spec.type in ("float", "int") and row.spec.minimum is not None and v < row.spec.minimum:
                 raise ValueError
             if row.spec.type in ("float", "int") and row.spec.maximum is not None and v > row.spec.maximum:
                 raise ValueError
             row.valid = True
             modified = not self._same(v, row.spec.default)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):          # int('inf') raises OverflowError
             row.valid = False
             modified = True
         e = row.editor
@@ -247,7 +250,7 @@ class ParamForm(QWidget):
         for n, r in self.rows.items():
             try:
                 out[n] = self._raw(r)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
                 out[n] = r.spec.default
         return out
 
@@ -257,7 +260,7 @@ class ParamForm(QWidget):
         for n, r in self.rows.items():
             try:
                 v = self._raw(r)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
                 if strict:
                     raise ValueError(f"invalid value for parameter {n}")
                 out[n] = None
