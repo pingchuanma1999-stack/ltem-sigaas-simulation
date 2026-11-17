@@ -5,6 +5,10 @@ diffraction; the module's README holds the physics and the conventions).  The ch
 the GUI thread at every actuator change.  The diffraction spots, the peak-intensity curves, the shape gallery and the
 link table run in one background thread (the core keeps its caches in plain dicts) with "latest wins" coalescing.
 The 3-D beam-path model is the user's reference page, embedded by widgets/steering3d.py.
+The focal length R can be fitted to a measured actuator step (steering.calibrate_R; the default reproduces
+steering.CALIBRATION).  Parameters saved before the calibrated defaults (no steering/params_version) are migrated by
+migrate_params: an R, theta or D still at the module's old default takes the new one (D only while unused or together
+with R), anything else is kept.
 """
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ import re
 from PySide6.QtCore import QEvent, QObject, QSettings, QThreadPool, Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QBoxLayout, QCheckBox, QComboBox, QDoubleSpinBox,
-                               QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLineEdit, QMenu, QScrollArea,
+                               QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLineEdit, QMenu, QScrollArea,
                                QSizePolicy, QSlider, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 from shiboken6 import isValid
@@ -35,11 +39,13 @@ from ..widgets.steering3d import Steering3DView
 from ..workers import run_async
 
 SPIN_UM = 500.0                 # spin-box range ±500 µm (as the reference page)
-SLIDER_UM = 20.0                # slider range ±20 µm in 0.1 µm steps; values beyond it pin the slider at its end
+SLIDER_UM = 30.0                # slider range ±30 µm in 0.1 µm steps; values beyond it pin the slider at its end
 STEPS = (-1.0, -0.2, 0.2, 1.0)
-CURVE_TRAVELS = tuple(float(t) for t in range(-20, 21))        # peak-intensity curves, 'trend' quality
-GALLERY_TRAVELS = (-20.0, -10.0, -5.0, 0.0, 5.0, 10.0, 20.0)
-TABLE_TRAVELS = (-20, -10, -5, -2, 0, 2, 5, 10, 20)             # data table under the curves (as the reference page)
+# the travel ranges below cover the lower-only travels of X_DEFAULT with the calibrated defaults (X = ±7.5 µm needs
+#   +27.6 / -25.3 µm); the module's R = 16 mm needed only ±9 µm, so the reference page stops at ±20 µm
+CURVE_TRAVELS = tuple(float(t) for t in range(-30, 31))        # peak-intensity curves, 'trend' quality
+GALLERY_TRAVELS = (-30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0)
+TABLE_TRAVELS = (-30, -20, -10, -5, 0, 5, 10, 20, 30)           # data table under the curves (as docs/steering.md)
 X_DEFAULT = "-7.5, -5, -2.5, 0, 2.5, 5, 7.5"                    # the beam positions of the tip-position chain (X_LIST)
 MODES = (("lower", "Lower actuator only (recommended)"), ("both", "Both actuators (Y = 0)"),
          ("upper", "Upper actuator only"))
@@ -47,6 +53,11 @@ _MODE_NAMES = {k: v.split(" (")[0].lower() for k, v in MODES}    # link status: 
 VIEWS = (("top", "Overview (top)"), ("inside", "Inside"), ("side", "Side"), ("mirror", "Mirror"))
 GAINS = (10, 100, 400)
 ACTUATORS = (("lower", "Lower · horizontal"), ("upper", "Upper · vertical"))
+CALIB_ACTUATORS = (("upper", "Upper · vertical (pitch)"), ("lower", "Lower · horizontal"))
+STEP_UM = 0.2                   # the Z812's minimum step: the actuator texts and the calibration line report the spot
+                                #   shift of one such step (exact trace)
+PARAMS_VERSION = 2              # steering/params_version. 2: the defaults are the calibrated R and theta = 45 deg
+OLD_DEFAULTS = {"R": 16.0, "theta": 60.0, "D": 13.0}            # SteeringParams' defaults before version 2 (module's)
 TRAIL_MAX = 200                 # trail points kept
 TRAIL_RETRACE = 60              # at most this many are re-traced (evenly thinned) when the parameters change
 FINE_MS = 250                   # the 'fine' spot follows this long after the last slider movement
@@ -71,6 +82,21 @@ SHAPE_ROWS = (("fwhm", "FWHM (long × short)"), ("ang", "Long axis vs plane of i
               ("off", "Brightest point vs chief-ray hit"))
 LINK_COLS = ("X (µm)", "Lower (µm)", "Lower (counts)", "Upper (µm)", "Upper (counts)", "Landed Y (µm)",
              "Defocus (µm)", "Δ arrival (fs)", "Peak (%)", "FWHM (µm)")
+CALIB_HELP = (f"Default from steering.CALIBRATION: {steering.CALIBRATION['source']}.\n"
+              "Better: start from the aligned position (Zero both), move one actuator by ~50 µm, measure how far the "
+              "spot moves on the AFM top-view camera and enter both, the travel with its sign (at such steps an "
+              f"extend and a retract move the spot differently). L stays at {SteeringParams().L:g} mm (KS1-Z8 spec: "
+              "0.2 µm step = 1.1″), so the measured step sets R; every other parameter is kept. R also enters the "
+              "diffraction model: D auto, the FWHM and the peak curves follow the fitted R.")
+
+
+def calib_note() -> str:
+    """Where the default R comes from (steering.CALIBRATION), and that it is an estimate."""
+    c = steering.CALIBRATION
+    return (f"Default R = {SteeringParams().R:g} mm reproduces {c['spot_um'] * 1e3:g} nm per {c['travel_um']:g} µm "
+            f"step of the {c['actuator']} actuator at θ = {c['theta']:g}° (steering.CALIBRATION: Pizzuto et al., θ "
+            "assumed): an effective value, well below a real neaspec mirror (~10–16 mm). Replace it by a camera "
+            "calibration.")
 
 
 def settings() -> QSettings:
@@ -145,12 +171,14 @@ def shape_readouts(s: dict, ref: dict, plane) -> dict:
     }
 
 
-def per_um_text(per, curve_rows=None) -> str:
-    """'Per µm → spot …' line of one actuator (rich text), with the peak at ±5 µm when the curve is known."""
+def per_um_text(per, curve_rows=None, step_nm=None) -> str:
+    """'Per µm → spot …' line of one actuator (rich text), with the peak at ±5 µm when the curve is known.
+    step_nm: spot shift of one STEP_UM step (exact trace); without it, the per-µm slope times the step."""
     px, py = per
     mag = math.hypot(px, py)
+    step = mag * STEP_UM * 1e3 if step_nm is None else step_nm
     txt = (f"Per µm → spot <b>{mag:.2f} µm</b> ({lr(px)} {abs(px):.2f} · {fb(py)} {abs(py):.2f})"
-           f" · 0.2 µm step → {mag * 200:.0f} nm")
+           f" · {STEP_UM:g} µm step → {step:.1f} nm")
     if curve_rows:
         p5 = [r["rel"] for r in curve_rows if abs(abs(r["travel_um"]) - 5.0) < 1e-9 and r.get("rel") is not None]
         if len(p5) == 2:
@@ -224,6 +252,49 @@ def _float(v, default=0.0) -> float:
     except (TypeError, ValueError):
         return default
     return f if math.isfinite(f) else default
+
+
+def _truthy(v) -> bool:
+    """A saved bool (JSON, QSettings strings), read as SteeringParams.from_dict does."""
+    return v if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+def migrate_params(d: dict, version: int) -> dict:
+    """Saved steering/params of an older params_version, brought up to date.  Before version 2 the defaults were the
+    module's (OLD_DEFAULTS: R 16 mm, theta 60 deg, D 13 mm): a saved R, theta or D equal to its old default becomes
+    the new default; every other saved value, and a value changed away from the old default, is kept.  A D of 13 mm
+    in use (D auto off) with a customised R is the user's beam, not a default, and is kept too: D moves only while it
+    is unused (D auto on) or together with R."""
+    if version >= PARAMS_VERSION:
+        return d
+    new = SteeringParams()
+    out = dict(d)
+    d_in_use = not _truthy(d.get("D_auto", True))                  # D auto defaulted to on before version 2
+    custom_R = _float(d.get("R", OLD_DEFAULTS["R"]), math.nan) != OLD_DEFAULTS["R"]
+    for k, old in OLD_DEFAULTS.items():
+        if k == "D" and d_in_use and custom_R:
+            continue
+        if k in out and _float(out[k], math.nan) == old:
+            out[k] = getattr(new, k)
+    return out
+
+
+def step_shifts_nm(sp: SteeringParams) -> dict:
+    """{'lower': nm, 'upper': nm}: spot shift of one STEP_UM step of each actuator (exact trace; an actuator whose
+    step misses the parabolic mirror is left out)."""
+    out = {}
+    for a, travels in (("lower", (STEP_UM, 0.0)), ("upper", (0.0, STEP_UM))):
+        try:
+            out[a] = steering.steer(sp, *travels).shift_um * 1e3
+        except (ValueError, ArithmeticError):
+            pass
+    return out
+
+
+def calib_text(sp: SteeringParams, steps: dict) -> str:
+    """'R = 5.332 mm · per 0.2 µm step: upper 55.0 nm, lower 59.6 nm' (steps from step_shifts_nm)."""
+    per = ", ".join(f"{a} {steps[a]:.1f} nm" if a in steps else f"{a} —" for a in ("upper", "lower"))
+    return f"R = {sp.R:.4f}".rstrip("0").rstrip(".") + f" mm · per {STEP_UM:g} µm step: {per}"
 
 
 # ----------------------------------------------------------------------------- background calls (worker thread)
@@ -439,6 +510,7 @@ class SteeringPage(Page):
         self.lower = self.upper = 0.0
         self.st = None              # Steering at the current travels (None: the chief ray misses)
         self.st0 = None             # Steering at (0, 0): per-µm coefficients, plane of incidence, hints
+        self.steps = {}             # step_shifts_nm of the current parameters
         self.st_error = ""
         self.trail = []             # [(lower, upper, spot_xy, port_yz)], oldest first
         self.D = None               # resolved beam diameter (mm) of the current parameters
@@ -456,6 +528,7 @@ class SteeringPage(Page):
         self._shown = 0
         self._dirty = set()
         self._closed = False
+        self._restore_note = ""     # saved parameters _restore had to drop, shown in params_warn
         self._measured = None
         self._shape_wide = self._spot_wide = None
         self.queue = _CoreQueue(self)
@@ -507,6 +580,9 @@ class SteeringPage(Page):
         self.x_edit.textChanged.connect(lambda *_: self._link_timer.start())
         self.mode_combo.currentIndexChanged.connect(lambda *_: self._request_link())
         self.measured_cb.toggled.connect(lambda *_: (self._mark("link"), self._save_timer.start()))
+        for sig in (self.calib_combo.currentIndexChanged, self.calib_travel.valueChanged,
+                    self.calib_shift.valueChanged):
+            sig.connect(lambda *_: (self.calib_warn.hide(), self._save_timer.start()))    # the warning was for these
         ThemeManager.instance().changed.connect(self._retheme)
         app = QApplication.instance()
         if app is not None:
@@ -521,6 +597,10 @@ class SteeringPage(Page):
             self._apply_params(force=True)
             self.params_warn.setText("⚠ The saved parameters could not be used; back to the defaults.")
             self.params_warn.show()
+        else:
+            if self._restore_note and self.params_warn.isHidden():     # shown until the parameters are next applied
+                self.params_warn.setText(self._restore_note)
+                self.params_warn.show()
 
     def _timer(self, ms, slot) -> QTimer:
         tm = QTimer(self)
@@ -567,11 +647,76 @@ class SteeringPage(Page):
         ll.addWidget(self.params_warn)
         self.form = ParamForm(steering_specs(), scroll=False)
         ll.addWidget(self.form)
+        ll.addWidget(self._build_calibration())
         ll.addStretch(1)
 
         area = self._scrolled(inner)
         area.setFixedWidth(self.LEFT_W)
         return area
+
+    def _build_calibration(self) -> QWidget:
+        """'Calibrate R from a measured step': fits R (steering.calibrate_R) and puts it in the parameter form."""
+        c = steering.CALIBRATION
+        g = QGroupBox("Calibrate R from a measured step")      # styled and aligned as the form's groups
+        g.setToolTip(CALIB_HELP)
+        gl = QGridLayout(g)
+        gl.setContentsMargins(8, 10, 8, 6)
+        gl.setHorizontalSpacing(8)
+        gl.setVerticalSpacing(5)
+        gl.setColumnMinimumWidth(0, self.form.rows["R"].group.layout().columnMinimumWidth(0))
+        gl.setColumnStretch(1, 1)
+        self.calib_combo = QComboBox()
+        for key, text in CALIB_ACTUATORS:
+            self.calib_combo.addItem(text, key)
+        self.calib_combo.setCurrentIndex(max(self.calib_combo.findData(c["actuator"]), 0))
+        self.calib_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.calib_combo.setMinimumContentsLength(12)        # elides instead of widening the column
+        self.calib_combo.setToolTip("The actuator that was moved (the other one stays put)")
+        self.calib_travel = QDoubleSpinBox()
+        self.calib_travel.setRange(-SPIN_UM, SPIN_UM)
+        self.calib_travel.setDecimals(3)
+        self.calib_travel.setSingleStep(0.1)
+        self.calib_travel.setSuffix(" µm")
+        self.calib_travel.setValue(c["travel_um"])
+        self.calib_travel.setToolTip("Signed push-rod travel from the aligned position (both actuators at 0) to the "
+                                     "second spot position: + = extend, i.e. the change of the KDC101 reading "
+                                     "(0.001 mm = 1 µm). At camera-sized steps the response is asymmetric, so the "
+                                     "sign matters.")
+        self.calib_shift = QDoubleSpinBox()
+        self.calib_shift.setRange(0.1, 1e6)
+        self.calib_shift.setDecimals(1)
+        self.calib_shift.setSingleStep(1.0)
+        self.calib_shift.setSuffix(" nm")
+        self.calib_shift.setValue(c["spot_um"] * 1e3)
+        self.calib_shift.setToolTip("Distance the spot moved on the sample (e.g. measured on the AFM top-view camera)")
+        fit = button("Fit R", self._fit_R, tooltip="Find the focal length R for which this travel of this actuator "
+                                                   "moves the spot this far (exact trace; every other parameter is "
+                                                   "kept) and put it in the form")
+        rows = (("Actuator", self.calib_combo), ("Actuator travel", self.calib_travel),
+                ("Measured spot shift", self.calib_shift), ("", fit))
+        for r, (text, w) in enumerate(rows):
+            if text:
+                lab = label(text, wrap=True)
+                lab.setToolTip(w.toolTip())
+                gl.addWidget(lab, r, 0)
+            if isinstance(w, QDoubleSpinBox):
+                w.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            gl.addWidget(w, r, 1)
+        self.calib_result = label("", selectable=True, wrap=True)
+        self.calib_result.setToolTip(f"With the current parameters: spot shift of one {STEP_UM:g} µm step of each "
+                                     "actuator (exact trace)")
+        self.calib_warn = label("", wrap=True)
+        self.calib_warn.hide()
+        note = label(calib_note(), "muted", wrap=True)
+        note.setToolTip(CALIB_HELP)
+        for i, w in enumerate((self.calib_result, self.calib_warn, note)):
+            gl.addWidget(w, len(rows) + i, 0, 1, 2)
+        box = QWidget()
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(0, 0, 6, 0)                   # the right margin of the form's groups (ParamForm)
+        bl.addWidget(g)
+        return box
 
     @staticmethod
     def _scrolled(w: QWidget) -> QScrollArea:
@@ -875,7 +1020,7 @@ class SteeringPage(Page):
         pal = views.palette(t)
         for key, a in self.act.items():
             a.set_color(pal[key], t)
-        for w in (self.warn, self.params_warn):
+        for w in (self.warn, self.params_warn, self.calib_warn):
             w.setStyleSheet(f"color: {t.warning};")
         # the plots re-run their own drawing routines on theme changes (PlotWidget)
 
@@ -887,15 +1032,33 @@ class SteeringPage(Page):
         except (TypeError, ValueError):
             d = {}
         if isinstance(d, dict) and d:
-            try:
-                sp = SteeringParams.from_dict(d)
-                good = {k: v for k, v in _form_values(sp).items()      # json.loads accepts NaN and Infinity
-                        if not (isinstance(v, float) and not math.isfinite(v))}
-                self.form.set_values(good)
-            except (TypeError, ValueError, OverflowError):
-                pass
+            version = int(_float(s.value("steering/params_version"), 0))
+            if version < PARAMS_VERSION:            # saved with the old defaults: migrate, and keep the result
+                d = migrate_params(d, version)
+                s.setValue("steering/params", json.dumps(d))
+                s.setValue("steering/params_version", PARAMS_VERSION)
+            good, dropped = {}, []
+            for k, v in d.items():                  # key by key: one unusable value must not lose all the others
+                if k not in self.form.rows:
+                    continue                        # unknown keys are ignored (as SteeringParams.from_dict does)
+                try:
+                    v = getattr(SteeringParams.from_dict({k: v}), k)
+                except (TypeError, ValueError, OverflowError):
+                    dropped.append(k)
+                    continue
+                if isinstance(v, float) and not math.isfinite(v):  # json.loads accepts NaN and Infinity
+                    dropped.append(k)
+                    continue
+                good[k] = v
+            if good:
+                self.form.set_values({k: v for k, v in _form_values(SteeringParams.from_dict(good)).items()
+                                      if k in good})
             for n in self.form.invalid_fields():    # out of range now (e.g. bounds changed): back to the default
                 self.form.reset_field(n)
+                dropped.append(n)
+            if dropped:                             # shown once the parameters are applied (__init__)
+                names = ", ".join(dict.fromkeys(self.form.rows[n].spec.label for n in dropped))
+                self._restore_note = f"⚠ Saved value(s) not usable, back to the default: {names}."
         lo = max(-SPIN_UM, min(SPIN_UM, _float(s.value("steering/lower_um"), 0.0)))
         up = max(-SPIN_UM, min(SPIN_UM, _float(s.value("steering/upper_um"), 0.0)))
         self.act["lower"].set_value(lo)
@@ -912,6 +1075,11 @@ class SteeringPage(Page):
         i = self.mode_combo.findData(s.value("steering/link_mode", "lower"))
         self.mode_combo.setCurrentIndex(max(i, 0))
         self.measured_cb.setChecked(str(s.value("steering/measured", "false")).lower() in ("1", "true"))
+        c = steering.CALIBRATION
+        i = self.calib_combo.findData(s.value("steering/calib_actuator", c["actuator"]))
+        self.calib_combo.setCurrentIndex(max(i, 0))
+        self.calib_travel.setValue(_float(s.value("steering/calib_travel_um"), c["travel_um"]))     # spin boxes clamp
+        self.calib_shift.setValue(_float(s.value("steering/calib_spot_nm"), c["spot_um"] * 1e3))
         tab = int(_float(s.value("steering/tab"), 0))
         if 0 <= tab < self.tabs.count():
             self.tabs.setCurrentIndex(tab)
@@ -923,6 +1091,10 @@ class SteeringPage(Page):
         s.setValue("steering/lower_um", self.lower)
         s.setValue("steering/upper_um", self.upper)
         s.setValue("steering/params", json.dumps(_form_values(self.sp)))
+        s.setValue("steering/params_version", PARAMS_VERSION)
+        s.setValue("steering/calib_actuator", self.calib_combo.currentData())
+        s.setValue("steering/calib_travel_um", self.calib_travel.value())
+        s.setValue("steering/calib_spot_nm", self.calib_shift.value())
         s.setValue("steering/view", self.view_combo.currentData())
         s.setValue("steering/gain", self.gain_combo.currentData())
         s.setValue("steering/link_x", self.x_edit.text())
@@ -953,17 +1125,21 @@ class SteeringPage(Page):
             auto.setText("")
 
     def _on_form(self):
-        self._sync_d_field()
+        self.calib_warn.hide()                  # the warning was for the previous parameters (Fit R sets a new one
+        self._sync_d_field()                    #   after its own form edits)
         self._param_timer.start()
 
+    def _invalid_fields(self) -> list:
+        """Invalid form fields that hold the parameters back: D is unused (and greyed out) while D auto is on, so an
+        invalid D does not count then."""
+        d_unused = self.form.rows["D_auto"].editor.isChecked()
+        return [n for n in self.form.invalid_fields() if not (d_unused and n == "D")]
+
     def _apply_params(self, force=False):
-        invalid = self.form.invalid_fields()
-        # D is unused (and greyed out) while D auto is on: an invalid D must not hold back the other fields
-        d_unused = self.form.rows["D_auto"].editor.isChecked() and "D" in invalid
-        bad = [n for n in invalid if not (d_unused and n == "D")]
+        bad = self._invalid_fields()
         if not bad:
             vals = self.form.values()
-            if d_unused:
+            if "D" in self.form.invalid_fields():
                 vals["D"] = self.sp.D               # keep the last valid D for when auto is switched off
             try:
                 sp = SteeringParams.from_dict(vals)
@@ -992,6 +1168,8 @@ class SteeringPage(Page):
             self.st0 = steering.steer(sp)
         except (ValueError, ArithmeticError):
             self.st0 = None
+        self.steps = step_shifts_nm(sp)
+        self.calib_result.setText(calib_text(sp, self.steps))
         self._retrace_trail()
         self._sync_d_field()
         self._update_steering(record=True)
@@ -1003,6 +1181,38 @@ class SteeringPage(Page):
         self._request_link()
         self._mark(*self.plots)
         self._save_timer.start()
+
+    def _fit_R(self):
+        """Fit R to the measured step (steering.calibrate_R with the current parameters) and put it in the form, from
+        where everything recomputes.  Problems show as a warning line under the result."""
+        if not self.form.rows["R"].valid:           # replaced by the fit anyway: start from the R in use
+            self.form.set_values({"R": self.sp.R})
+        self._param_timer.stop()
+        self._apply_params()                        # pending edits first: the fit keeps every other parameter
+        bad = self._invalid_fields()
+        if bad:
+            names = ", ".join(self.form.rows[n].spec.label for n in bad)
+            return self._calib_warning(f"Fix the invalid parameters first ({names}): the fit keeps all of them.")
+        actuator, travel, shift_nm = (self.calib_combo.currentData(), self.calib_travel.value(),
+                                      self.calib_shift.value())
+        if travel == 0:
+            return self._calib_warning("Enter a non-zero actuator travel.")
+        try:
+            R = round(steering.calibrate_R(self.sp, actuator, travel, shift_nm / 1e3), 4)
+        except (ValueError, ArithmeticError, RuntimeError) as e:
+            return self._calib_warning(f"Fit R failed: {e}")
+        spec = self.form.rows["R"].spec
+        if not (spec.minimum <= R <= spec.maximum):
+            return self._calib_warning(f"Fit R: R = {R:g} mm is outside the allowed {spec.minimum:g}–"
+                                       f"{spec.maximum:g} mm; R is unchanged.")
+        self.calib_warn.hide()
+        self.form.set_values({"R": R})
+        self._param_timer.stop()
+        self._apply_params()
+
+    def _calib_warning(self, text: str):
+        self.calib_warn.setText("⚠ " + text)
+        self.calib_warn.show()
 
     # ------------------------------------------------------------------ actuators
     def _on_actuator(self, key, value, dragging):
@@ -1095,7 +1305,7 @@ class SteeringPage(Page):
                 a.per.setText("Per µm: — (the chief ray misses the parabolic mirror at the aligned position)")
                 a.hint.setText("")
                 continue
-            a.per.setText(per_um_text(st0.per_um[key], rows.get(key)))
+            a.per.setText(per_um_text(st0.per_um[key], rows.get(key), self.steps.get(key)))
             if key == "lower":
                 a.hint.setText(f"Extend: mirror turns {'CCW' if st0.lower_turns_beam_to_front else 'CW'} (top view)")
             else:

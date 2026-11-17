@@ -1,11 +1,13 @@
 """3D beam-path model of the setup: the user's reference page in a QWebEngineView, driven by the native controls.
 
-The page (ltem-steering-module/reference/ltem-steering.html) is loaded unchanged.  Once it has loaded we press its
-English button, hide everything but the 3D section with an injected style sheet and push the actuator travels and
+The page (ltem-steering-module/reference/ltem-steering.html) is loaded as it is in the repo (its #pR range widened, see
+below).  Once it has loaded we press its English button, hide everything but the 3D section with an injected style
+sheet and push the actuator travels and
 instrument parameters through the page's own inputs (#numYaw, #numPitch, #pR ... #pD, #pDauto), dispatching the
 events its handlers listen to.  The page's sliders clamp and round to their range and step; what the model cannot
-show is reported in a banner above the view.  three.js 0.128.0 comes from cdn.jsdelivr.net: offline, the page's own
-fallback text stays in the stage.
+show is reported in a banner above the view (roundings below SNAP_REL are not).  The file's #pR slider was widened to
+2-30 mm in 0.01 mm steps (from 6-30 mm in 0.5 mm) so that the calibrated default R (~5.3 mm) is not clipped.
+three.js 0.128.0 comes from cdn.jsdelivr.net: offline, the page's own fallback text stays in the stage.
 
 QtWebEngine wants Qt.ApplicationAttribute.AA_ShareOpenGLContexts set before the QApplication is created (app.py
 main()).  Without it, or without QtWebEngine, the widget shows why and offers the page in the default browser.
@@ -29,7 +31,7 @@ from .common import button, label
 INFO = "Interactive 3D model from the reference page (three.js from the internet) · drag to rotate, scroll to zoom"
 # SteeringParams field -> (input id, min, max, step, label, unit): the page's range inputs (#params in the HTML)
 RANGES = {
-    "R": ("pR", 6.0, 30.0, 0.5, "R", "mm"),
+    "R": ("pR", 2.0, 30.0, 0.01, "R", "mm"),
     "theta": ("pTheta", 40.0, 72.0, 1.0, "θ", "°"),
     "beta": ("pBeta", 0.0, 65.0, 1.0, "β", "°"),
     "L": ("pL", 15.0, 60.0, 0.1, "L", "mm"),
@@ -40,6 +42,8 @@ RANGES = {
     "D": ("pD", 3.0, 24.0, 0.5, "D", "mm"),
 }
 MOTOR_LIMIT_UM = 500.0               # setMotor() in the page clamps the travel to ±500 um (and rounds to 0.01 um)
+SNAP_REL = 1e-3                      # a value the slider step moves by less than this fraction is not reported: the
+                                     #   drawing cannot show it (e.g. the calibrated default R, drawn to 0.01 mm)
 NOT_ON_PAGE = ("zLow", "portX", "foldY", "yawSide", "pitchSide")
 UNSYNCED_HELP = (
     "The 3D model follows the actuator travels and R, θ, β, L, α, the mirror–port distance, λ, NA and D (or D auto). "
@@ -130,7 +134,7 @@ def page_values(lower_um: float, upper_um: float, sp: SteeringParams) -> tuple[d
         if field == "D" and sp.D_auto:
             continue                                           # the page finds the auto diameter itself
         v = float(getattr(sp, field))
-        u = f" {unit}" if unit else ""
+        u = f" {unit}" if unit not in ("", "°") else unit
         if not math.isfinite(v):                               # min/max keep NaN, math.floor(NaN) raises
             notes.append(f"{name} {v:g}{u} not shown")
             continue
@@ -139,7 +143,7 @@ def page_values(lower_um: float, upper_um: float, sp: SteeringParams) -> tuple[d
         shown = float(f"{shown:.10g}")
         if c != v:
             notes.append(f"{name} {v:g}{u} clipped to {lo:g}–{hi:g}{u}")
-        elif abs(shown - v) > 1e-9 * max(1.0, abs(v)):
+        elif abs(shown - v) > SNAP_REL * abs(v):
             notes.append(f"{name} {v:g}{u} shown as {shown:g}{u} (slider step {step:g})")
         vals[el] = _fmt(shown)
     default = SteeringParams()

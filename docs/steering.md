@@ -20,15 +20,18 @@ The physics, the full algorithm, the validation and the sources are in
 [`ltem-steering-module/README.md`](../ltem-steering-module/README.md); the brief the
 module came with is
 [`ltem-steering-module/HANDOFF_PROMPT.md`](../ltem-steering-module/HANDOFF_PROMPT.md).
-This page covers only the integration.
+This page covers only the integration. The module README's numbers are for the module's
+own defaults (R = 16 mm, θ = 60°, D = 13.0 mm); this package's defaults are calibrated
+(R = 5.332 mm, θ = 45°, see "Calibration of the spot shift"), so its numbers differ, and
+`steering.module_defaults()` gives the module's set as `SteeringParams`.
 
 ## Where things live
 
 | path | content |
 |---|---|
-| `ltem-steering-module/` | the module as delivered: JS reference core, NumPy port, `tests/golden.json`, the interactive page `reference/ltem-steering.html` (three.js 3-D model, bilingual). The cores and `golden.json` are **unchanged**; do not edit them, and regenerate `golden.json` (`node tests/make_golden.mjs`) only for a deliberate physics change. The page has one display fix in its 3-D code (see "3D view" below). |
+| `ltem-steering-module/` | the module as delivered: JS reference core, NumPy port, `tests/golden.json`, the interactive page `reference/ltem-steering.html` (three.js 3-D model, bilingual). The cores and `golden.json` are **unchanged**; do not edit them, and regenerate `golden.json` (`node tests/make_golden.mjs`) only for a deliberate physics change. The page has a display fix in its 3-D code and a widened R slider (`#pR` 2–30 mm in 0.01, was 6–30 in 0.5) for the calibrated R (see "Limitations" below). |
 | `ltem-steering-module/python/ltem_optics.py` | the NumPy core used here (only dependency NumPy) |
-| `ltemsim/steering.py` | the one adapter: parameters, actuator names, signs, frames, the offset solver. Every conversion between the core's conventions and ours is in this file and nowhere else. It loads the core under the private name `ltemsim._ltem_optics` (`steering.optics`), so the core's caches belong to this package. |
+| `ltemsim/steering.py` | the one adapter: parameters (calibrated defaults; `CALIBRATION`, `calibrate_R`, `module_defaults`), actuator names, signs, frames, the offset solver. Every conversion between the core's conventions and ours is in this file and nowhere else. It loads the core under the private name `ltemsim._ltem_optics` (`steering.optics`), so the core's caches belong to this package. |
 | GUI: Simulate → Pump steering | the desktop page (tabs below); form fields from `paramspec.steering_specs()`, 3D tab in `ltemsim_gui/widgets/steering3d.py` |
 | `tests/test_steering.py` | golden values through the core and again through the adapter; actuator signs, mirrored mounts, aligned-spot shape, frame round trips, the offset solver, parameter handling, `plan_offsets` |
 | `tests/test_gui_steering.py` | the GUI page (offscreen) |
@@ -42,19 +45,25 @@ This page covers only the integration.
 | `lower` (`lower_um`) | `yaw` | lower right (the pivot, the manual knob, is lower left) | horizontal |
 | `upper` (`upper_um`) | `pitch` | upper left | vertical |
 
-Response to +1 µm of travel with the default parameters (lab frame, below):
+Response to +1 µm of travel with the default (calibrated) parameters (lab frame, below):
 
 | actuator | spot shift (ΔX, ΔY) | size | direction | port shift | defocus |
 |---|---|---|---|---|---|
-| lower | (−0.848, −0.321) µm | 0.907 µm | left and toward the front, mostly across the plane of incidence | 13.3 µm toward the front | 0.32 µm |
-| upper | (+0.737, −0.923) µm | 1.181 µm | right and toward the front, along the plane of incidence toward the parabolic mirror | 9.4 µm down | 1.02 µm |
+| lower | (−0.2824, −0.0932) µm | 0.2974 µm | left and toward the front, mostly across the plane of incidence | 13.3 µm toward the front | 0.095 µm |
+| upper | (+0.1419, −0.2360) µm | 0.2754 µm | right and toward the front, along the plane of incidence toward the parabolic mirror | 9.4 µm down | 0.189 µm |
+
+One 0.2 µm step (1.1″) moves the spot 59.6 nm with the lower and 55.0 nm with the upper
+actuator; one KDC101 count 8.6 nm and 8.0 nm. With the module's own defaults (R = 16 mm,
+θ = 60°) the same table reads (−0.848, −0.321) and (+0.737, −0.923) µm per µm, as in the
+module README.
 
 * Travel is push-rod extension in µm. **+ = the rod extends = the KDC101 reading
   increases.** 1 mm = 34,555 encoder counts (`KDC101_COUNTS_PER_UM = 34.555`, ≈ 29 nm per
   count); `kdc101_counts(travel_um)` converts. The reading comes from the motor encoder,
   not from the rod tip.
-* The mirror turns by δ = travel / L. The two directions are 108° apart on the sample,
-  so either actuator alone also moves the spot across the bias axis.
+* The mirror turns by δ = travel / L. The two directions are 103° apart on the sample
+  (108° with the module's θ = 60°), so either actuator alone also moves the spot across
+  the bias axis.
 * `yawSide` / `pitchSide` describe where the actuators sit, seen from the actuator side:
   `yawSide` = +1 / −1 puts the horizontal-tilt (lower) actuator right / left of the pivot,
   `pitchSide` = +1 / −1 the vertical-tilt (upper) actuator above / below it. Each −1 flips
@@ -63,7 +72,7 @@ Response to +1 µm of travel with the default parameters (lab frame, below):
   one.
 * Per-µm coefficients (`Steering.per_um`) are forward differences over +1 µm at the
   current geometry; the response is slightly nonlinear at large travel (X = +5 µm needs
-  −5.869 µm of lower travel; the linear estimate is −5/0.848 = −5.894 µm).
+  −17.136 µm of lower travel; the linear estimate is −5/0.2824 = −17.71 µm).
   The coefficients hold at travel 0; `travel_for_offset` iterates on the exact trace
   (damped Newton, Jacobian re-evaluated at every step, overshooting steps halved) and
   marks a target as reached (`converged`) when the spot lands within 1e-4 µm of it
@@ -105,8 +114,8 @@ Response to +1 µm of travel with the default parameters (lab frame, below):
 * Normalisations: `peak` is Strehl-like (≈ 1 for the aligned beam); `I * s["k"]` is the
   intensity relative to the aligned peak; `rel` is the peak per unit laser power relative
   to the aligned spot (clipping included), i.e. "peak intensity, original = 100 %". The
-  intensity is across the beam; per unit sample area it is smaller by ≈ cos θ = 0.5, a
-  constant at fixed geometry.
+  intensity is across the beam; per unit sample area it is smaller by ≈ cos θ (0.71 at
+  the default θ = 45°), a constant at fixed geometry.
 
 ### Simulation frame and `bias_axis_deg`
 
@@ -133,16 +142,17 @@ depends on it:
 
 | φ | lower: (X, Y) per +1 µm | upper: (X, Y) per +1 µm |
 |---|---|---|
-| 0° (default) | (−0.848, −0.321) | (+0.737, −0.923) |
-| 30° | (−0.895, +0.146) | (+0.177, −1.167) |
-| 90° (+x toward the back) | (−0.321, +0.848) | (−0.923, −0.737) |
-| 20.7° | (−0.907, 0) | (+0.362, −1.124) |
-| −51.4° | (−0.278, −0.863) | (+1.181, 0) |
+| 0° (default) | (−0.2824, −0.0932) | (+0.1419, −0.2360) |
+| 30° | (−0.2911, +0.0605) | (+0.0049, −0.2754) |
+| 90° (+x toward the back) | (−0.0932, +0.2824) | (−0.2360, −0.1419) |
+| 18.3° | (−0.2974, 0) | (+0.0606, −0.2687) |
+| −59.0° | (−0.0656, −0.2900) | (+0.2754, 0) |
 
 The last two rows are the mountings for which one actuator alone scans purely along the
-bias axis; the same holds at φ + 180° with the travel sign reversed (−159.3° for the
-lower, +128.6° for the upper actuator). For any other φ, a pure-X scan needs both
-actuators (`actuators="both"`).
+bias axis; the same holds at φ + 180° with the travel sign reversed (−161.7° for the
+lower, +121.0° for the upper actuator). For any other φ, a pure-X scan needs both
+actuators (`actuators="both"`). These angles depend on θ (and β), hardly on R: with the
+module's θ = 60° they are 20.7° / −159.3° (lower) and −51.4° / +128.6° (upper).
 
 ## Parameters
 
@@ -152,8 +162,8 @@ trip it; `from_dict` takes a partial dict, ignores unknown keys and coerces stri
 
 | field | default | unit | meaning | status |
 |---|---|---|---|---|
-| `R` | 16.0 | mm | effective focal length of the parabolic mirror (chief point → focus) | reported for another neaspec THz-TDS s-SNOM; **calibrate** |
-| `theta` | 60.0 | deg | angle of incidence on the sample | neaspec standard |
+| `R` | 5.332 | mm | effective focal length of the parabolic mirror (chief point → focus) | **calibrated** from the 55 nm per 0.2 µm step of Pizzuto et al. (upper actuator, θ = 45°; see "Calibration of the spot shift"); an effective value, about half a plausible real focal length: replace it with a camera calibration. Module default 16 (reported for another neaspec THz-TDS s-SNOM) |
+| `theta` | 45.0 | deg | angle of incidence on the sample | **assumed** for the calibration; neaspec standard and module default 60 |
 | `beta` | 45.0 | deg | azimuth of the plane of incidence from the front–back axis toward the port side (GUI: 0–89°; β < 0 would put the pump on the THz collection half) | user's sketch (40–50°). Leaves the lower actuator's left–right (lab X) shift unchanged, but changes its front–back shift, the upper actuator's shift in both directions and the plane of incidence (along/across split, defocus): it matters for the upper actuator, for both, and for any φ ≠ 0 |
 | `NA` | 0.42 | – | illumination aperture: cone of half-angle asin(NA) around the aligned chief ray | neaspec patent example; a published neaspec IR mirror has 0.46 |
 | `zLow` | 1.0 | mm | height of the parabolic mirror's lower edge above the sample | neaspec patent |
@@ -165,14 +175,113 @@ trip it; `from_dict` takes a partial dict, ignores unknown keys and coerces stri
 | `portX` | 260.0 | mm | x of the entrance-port plane | model geometry, ~1 % effect |
 | `foldY` | 6.0 | mm | y of the fold-mirror centre behind the tip | model geometry, negligible |
 | `lam` | 820.0 | nm | pump wavelength | as `Params.wavelength_nm` |
-| `D_auto` | True | – | use the input-beam diameter for the smallest spot (13.0 mm with the defaults) | the optics are aligned for the smallest spot |
-| `D` | 13.0 | mm | 1/e² input-beam diameter, used when `D_auto` is off | **measure** before the AFM |
+| `D_auto` | True | – | use the input-beam diameter for the smallest spot (4.4 mm with the defaults; 13.0 mm with the module's R = 16 mm, θ = 60°) | the optics are aligned for the smallest spot |
+| `D` | 4.4 | mm | 1/e² input-beam diameter, used when `D_auto` is off | **measure** before the AFM |
 | `bias_axis_deg` | 0.0 | deg | azimuth of the simulation's +x in the lab frame | **assumed**; set from the sample mounting |
 
-The directions do not depend on the uncertain values; the magnitudes scale with R/L; the
-spot shape depends strongly on D and NA. To calibrate R/L, step 50 µm and measure the
-shift with the AFM top-view camera (the module README compares the model with the
-≈ 55 nm per 1.1″ quoted by Pizzuto et al.).
+The directions depend on θ, β and α, and hardly on R or L (≤ 0.2° for R = 5.3–16 mm or
+L = 20–60 mm); the magnitudes scale with R/L; the spot shape depends strongly on D and NA.
+R is the parameter calibrated against a measured step (next section).
+
+## Calibration of the spot shift
+
+**The data.** One 0.2 µm step of a Z812 (0.0002 mm on the KDC101, the KS1-Z8's minimum
+repeatable step of 1.1″) moves the pump spot by ≈ 55 nm, the estimate of Pizzuto et al.
+(both papers; module README, "Sources"). It is quoted for the pitch direction of the
+mirror, so it is taken as the **upper** (vertical-tilt) actuator. The angle of incidence
+on the sample inside the AFM is **assumed** to be 45° (θ = 45°; the neaspec standard and
+the module's default is 60°). Both are recorded in `steering.CALIBRATION`:
+
+    {"actuator": "upper", "travel_um": 0.2, "spot_um": 0.055, "theta": 45.0, "source": ...}
+
+**Why R is the fitted parameter.** The lever arm is fixed by the KS1-Z8 specification,
+L = 37.7 mm (module: 1.1″ ≈ 5.3 µrad per 0.2 µm step); the step tilts the mirror by
+δ = 0.2 µm / 37.7 mm = 5.305 µrad ≈ 1.09″. The mirror turns by δ = travel / L,
+the beam by ≈ 2δ, and the parabolic mirror turns that angle into a shift ≈ 2δ · R at the
+focus, so every spot shift scales with R/L. With L fixed, the measured step sets R, the
+one geometric number not known for this instrument. `steering.calibrate_R(sp, actuator,
+travel_um, spot_um)` solves the exact chief-ray trace for R, every other parameter of `sp`
+kept. The travel is signed and starts from the aligned position (both actuators at 0). R is
+searched outward from the linear estimate R · spot / shift(R) in steps of × 1.25
+(`CALIB_RATIO`); the sign change nearest the estimate is refined by Brent's method, and an R
+for which the step takes the chief ray off the parabolic mirror is skipped. `ValueError` for a
+bad input, or when no R in (R/20, 20 R) reproduces the shift:
+
+    from ltemsim.steering import SteeringParams, calibrate_R, module_defaults
+    calibrate_R(SteeringParams(), "upper", 0.2, 0.055)    # 5.332 mm  (θ = 45°: the default R)
+    calibrate_R(module_defaults(), "upper", 0.2, 0.055)   # 3.728 mm  if θ were 60°
+    calibrate_R(SteeringParams(), "lower", 0.2, 0.055)    # 4.921 mm  if the 55 nm were the horizontal step
+
+The fitted R belongs to the assumed θ and to the choice of actuator: the pair (R, θ)
+matters, not R alone.
+
+**The result:** R = 5.332 mm, the new default (θ = 45°, D auto = 4.4 mm). Per 0.2 µm step,
+exact trace, lab frame:
+
+| actuator | spot shift (ΔX, ΔY) per 0.2 µm | size | per µm of travel | per KDC101 count |
+|---|---|---|---|---|
+| upper (pitch, calibrated) | (+28.31, −47.16) nm | 55.00 nm | (+0.1419, −0.2360) µm, 0.2754 µm | 8.0 nm |
+| lower (yaw, derived) | (−56.55, −18.81) nm | 59.60 nm | (−0.2824, −0.0932) µm, 0.2974 µm | 8.6 nm |
+
+So the horizontal (lower) actuator moves the spot **59.6 nm per step: 56.6 nm to the left
+plus 18.8 nm toward the front** (per µm of travel: 0.282 µm left, 0.093 µm toward the
+front). The per-µm values are forward differences over 1 µm, the per-count values are
+per µm ÷ 34.555.
+
+**Small-angle cross-check** (δ = 0.2 µm / 37.7 mm = 5.305 µrad):
+
+* lower (horizontal tilt): the beam turns by 2δ in the horizontal plane, so
+  |ΔX| = 2Rδ = 2 × 5.332 mm × 5.305 µrad = 56.6 nm (exact 56.55 nm). The tilted sample adds
+  a front–back part, ΔY/ΔX = sin θ sin β / (1 + sin θ cos β) = 1/3 at θ = β = 45°, i.e.
+  18.9 nm (exact 18.81 nm).
+* upper (vertical tilt): the 45° fold reduces the vertical turn to 2δ cos α, and the
+  sample stretches a shift along the plane of incidence by 1/cos θ:
+  ≈ 2Rδ cos α / cos θ = 56.6 nm at α = θ = 45°, within 3 % of the exact 55.00 nm.
+
+The same check on the module's defaults (R = 16 mm, θ = 60°) gives |ΔX| = 2Rδ = 170 nm and
+ΔY/ΔX = 0.38, i.e. the 0.18 µm lower step of its README's literature comparison.
+
+**Caveat: R = 5.33 mm is an effective value.** A neaspec parabolic mirror's focal length is
+more like 10–16 mm (16 mm is reported for another neaspec THz-TDS s-SNOM, the module
+default). 55 nm ÷ 5.3 µrad = 10.4 mm: the estimate looks like (focal length × mirror
+angle) without the factor 2 by which a reflection turns the beam (module README,
+"Literature comparison"). If so, a ~10 mm mirror moves the spot ≈ 0.11 µm per step, twice
+the calibrated value, and the X ↔ travel conversion below is off by that factor. R also
+enters the diffraction model, so the spot-shape results (D auto, FWHM, peak vs travel)
+correspond to this effective R. What changes with R and θ (`'trend'` spot at X = +5 µm
+with the lower actuator alone):
+
+| R, θ | D auto | aligned FWHM | step: lower / upper | X = +5 µm, lower only: travel, `rel` |
+|---|---|---|---|---|
+| 5.332 mm, 45° (default) | 4.4 mm | 1.560 × 1.113 µm | 59.6 / 55.0 nm | −17.136 µm, 0.52 |
+| 10.4 mm, 45° | 8.5 mm | 1.562 × 1.116 µm | 116.3 / 107.3 nm | −8.991 µm, 0.54 |
+| 16 mm, 45° | 13.1 mm | 1.562 × 1.115 µm | 178.9 / 165.0 nm | −5.871 µm, 0.54 |
+| 16 mm, 60° (module) | 13.0 mm | 2.177 × 1.115 µm | 181.6 / 235.8 nm | −5.869 µm, 0.60 |
+
+With D auto the aligned spot is set by NA and θ, not by R; the travel needed for a given X
+scales with L/R, and the peak at a given X depends on R only weakly.
+
+**Replace it with a camera calibration.** From the aligned position (the spot on the tip,
+both actuators at the model's 0), step one actuator by ~50 µm (≈ 1728 counts), measure the
+spot shift on the AFM top-view camera, and enter the travel **with its sign** and the shift
+in the page's "Calibrate R from a measured step" control, or call
+`steering.calibrate_R(sp, actuator, travel_um, spot_um)` and set `R` to the result. Measure
+θ if possible: R is fitted for the θ in `sp`. A large step makes the 29 nm encoder
+resolution negligible; reach the starting point moving in the direction of the step
+(backlash < 8 µm). At such steps the response is asymmetric: at the default R, ±50 µm moves
+the spot 13.42 / 17.52 µm (lower, extend / retract) and 15.96 / 13.05 µm (upper), so a
+retract entered as +50 µm fits R = 6.838 (lower) or 4.028 mm (upper) instead of 5.332 mm.
+Do not go much beyond ~50 µm: the shift stops growing with R once the step is large (100 µm
+of the upper actuator at R = 5.3 mm sits at the minimum of shift against R, and no R fits).
+
+**Saved settings.** GUI settings saved before the calibration (settings key
+`steering/params_version` < 2) are migrated automatically, field by field: a saved R, θ or
+D equal to its old default (16 mm, 60°, 13.0 mm) becomes the new default; a value that
+had been customised, and every other saved value, is kept (`migrate_params` in
+`ltemsim_gui/pages/steering.py`). D = 13 mm in use (D auto off) next to a customised R is
+the user's beam and stays; D moves only while it is unused or together with R. The
+migrated set is saved back once. A saved value that cannot be read (wrong type, NaN, out of
+range) goes back to its default on its own, and the page names it above the form.
 
 ## From Python
 
@@ -182,83 +291,95 @@ shift with the AFM top-view camera (the module README compares the model with th
 
     sp = SteeringParams()                     # defaults; set bias_axis_deg from the mounting
     r = steer(sp, lower_um=4, upper_um=0)     # chief ray
-    r.spot_um                                 # (-3.387, -1.272) lab µm: + port wall, + back
-    r.X_um, r.Y_um                            # (-3.387, -1.272) simulation frame (φ = 0)
-    r.per_um                                  # {'lower': (-0.848, -0.321), 'upper': (0.737, -0.923)}
-    r.port_um, r.defocus_um, r.arrival_fs     # (-53.05, 0.0) µm, 1.295 µm, 4.32 fs
+    r.spot_um                                 # (-1.124, -0.359) lab µm: + port wall, + back
+    r.X_um, r.Y_um                            # (-1.124, -0.359) simulation frame (φ = 0)
+    r.per_um                                  # {'lower': (-0.2824, -0.0932), 'upper': (0.1419, -0.2360)}
+    r.port_um, r.defocus_um, r.arrival_fs     # (-53.05, 0.0) µm, 0.382 µm, 1.28 fs
 
     s = spot(sp, 4, 0, "fine")                # None when no spot forms
-    s["fwhmL"], s["fwhmS"], s["rel"]          # 2.18 µm, 1.27 µm, 0.783
+    s["fwhmL"], s["fwhmS"], s["rel"]          # 1.55 µm, 1.13 µm, 0.962
     s["I"].shape, s["W"]                      # (72, 72) float32, 3.5 µm
 
     sol = travel_for_offset(sp, 5.0)          # both actuators, Y = 0
-    sol["lower_um"], sol["upper_um"]          # -4.480, +1.588 µm (converged, residual 2e-11 µm)
+    sol["lower_um"], sol["upper_um"]          # -13.707, +6.320 µm (converged, residual 4e-8 µm)
     sol = travel_for_offset(sp, 5.0, actuators="lower")
-    sol["lower_um"], sol["steering"].Y_um     # -5.869 µm, +1.930 µm (Y is not controlled)
-    kdc101_counts(sol["lower_um"])            # -202.8 counts
+    sol["lower_um"], sol["steering"].Y_um     # -17.136 µm, +1.960 µm (Y is not controlled)
+    kdc101_counts(sol["lower_um"])            # -592.1 counts
 
     rows = plan_offsets(sp, [-7.5, -5, -2.5, 0, 2.5, 5, 7.5], actuators="lower")
     curve = peak_curve(sp, "upper", np.linspace(-10, 10, 41))
 
-The aligned spot (`reference_spot(sp)`): peak 0.99999, FWHM 2.177 × 1.115 µm (aspect
-1.95 ≈ 1/cos θ), long axis at −45.1°, i.e. along the plane of incidence, area 1.89 µm²,
-D = 13.0 mm. The upper actuator degrades it much faster than the lower one: at +4 µm of
-upper travel `rel` = 0.477 (FWHM 2.51 × 1.31 µm, window grown to W = 5.6 µm) against
-0.783 for the lower.
+The aligned spot (`reference_spot(sp)`): peak 1.0000, FWHM 1.560 × 1.113 µm (aspect
+1.40 ≈ 1/cos θ = 1.41), long axis at −45.2°, i.e. along the plane of incidence, area
+1.35 µm², D = 4.4 mm (module defaults: FWHM 2.177 × 1.115 µm, aspect 1.95, D = 13.0 mm). Up
+to ~10 µm of travel both actuators keep it alike (`rel` 0.962 lower, 0.961 upper at +4 µm;
+0.798 and 0.780 at +10 µm); beyond that the upper one degrades it faster: at +20 µm `rel` =
+0.396 for the upper (FWHM 2.89 × 1.24 µm, defocus 3.96 µm, window grown to W = 5.6 µm)
+against 0.484 for the lower.
 
 `plan_offsets` for the X list of the tip-position chain (`scripts/run_tip_positions.py`),
 default parameters, `'trend'` spots:
 
 | X (µm) | −7.5 | −5 | −2.5 | 0 | +2.5 | +5 | +7.5 |
 |---|---|---|---|---|---|---|---|
-| lower only: travel (µm) | +8.885 | +5.912 | +2.951 | 0 | −2.940 | −5.869 | −8.787 |
-| KDC101 counts | +307.0 | +204.3 | +102.0 | 0 | −101.6 | −202.8 | −303.6 |
-| Y it gives (µm) | −2.78 | −1.87 | −0.94 | 0 | +0.96 | +1.93 | +2.92 |
-| `rel` | 0.41 | 0.60 | 0.87 | 1.00 | 0.87 | 0.60 | 0.40 |
-| FWHM (µm) | 2.73 × 1.94 | 2.22 × 1.54 | 2.18 × 1.19 | 2.20 × 1.13 | 2.19 × 1.19 | 2.22 × 1.55 | 2.83 × 2.01 |
-| both, Y = 0: lower / upper (µm) | | +4.562 / −1.575 | | 0 / 0 | | −4.480 / +1.588 | |
-| both: `rel` | | 0.56 | | 1.00 | | 0.56 | |
+| lower only: travel (µm) | +27.626 | +18.185 | +8.968 | 0 | −8.704 | −17.136 | −25.293 |
+| KDC101 counts | +954.6 | +628.4 | +309.9 | 0 | −300.8 | −592.1 | −874.0 |
+| Y it gives (µm) | −1.79 | −1.36 | −0.76 | 0 | +0.91 | +1.96 | +3.15 |
+| `rel` | 0.36 | 0.53 | 0.83 | 1.00 | 0.84 | 0.52 | 0.28 |
+| FWHM (µm) | 2.11 × 1.47 | 1.76 × 1.47 | 1.52 × 1.19 | 1.59 × 1.14 | 1.61 × 1.19 | 1.80 × 1.55 | 3.29 × 1.77 |
+| both, Y = 0: lower / upper (µm) | +24.563 / −7.197 | +15.820 / −5.231 | +7.635 / −2.797 | 0 / 0 | −7.104 / +3.066 | −13.707 / +6.320 | −19.842 / +9.696 |
+| both: `rel` | 0.37 | 0.53 | 0.83 | 1.00 | 0.84 | 0.53 | 0.31 |
 
-Holding Y = 0 costs peak intensity (0.56 instead of 0.60 at ±5 µm) because the upper
-actuator defocuses (3.06 µm instead of 1.9 µm). `rel` of a `'trend'` spot is relative to
-the aligned `'fine'` spot (0.9998 at travel 0); `peak_curve` normalises to the same
-quality, so its travel-0 point reads 1 to ~1e-4.
+With these defaults, holding Y = 0 costs no peak intensity (0.53 against 0.52–0.53 for the
+lower actuator alone at ±5 µm), although the defocus grows (2.50 µm instead of 1.52–1.82
+µm). With the module's defaults it did (0.56 instead of 0.60). `rel` of a `'trend'` spot is
+relative to the aligned `'fine'` spot (1.0007 at travel 0); `peak_curve` normalises to the
+same quality, so its travel-0 point reads 1 to ~1e-4.
 
-Peak intensity `rel` vs travel (`peak_curve`, `'trend'`):
+Peak intensity `rel` vs travel (`peak_curve`, `'trend'`; ±30 µm covers the lower-only
+travels of the X list above):
 
-| travel (µm) | −10 | −7.5 | −5 | −2.5 | 0 | +2.5 | +5 | +7.5 | +10 |
+| travel (µm) | −30 | −20 | −10 | −5 | 0 | +5 | +10 | +20 | +30 |
 |---|---|---|---|---|---|---|---|---|---|
-| lower | 0.35 | 0.47 | 0.69 | 0.91 | 1.00 | 0.91 | 0.69 | 0.48 | 0.37 |
-| upper | 0.10 | 0.18 | 0.33 | 0.75 | 1.00 | 0.75 | 0.33 | 0.17 | 0.09 |
+| lower | 0.23 | 0.42 | 0.79 | 0.95 | 1.00 | 0.94 | 0.80 | 0.48 | 0.33 |
+| upper | 0.28 | 0.44 | 0.79 | 0.94 | 1.00 | 0.94 | 0.78 | 0.39 | 0.22 |
 
 ## Performance
 
-Single thread, measured on the Apple M5 Pro of this checkout (the module README gives
-2.8 GHz Xeon numbers, ~2–4× slower):
+Single thread, default (calibrated) parameters, measured on the Apple M5 Pro of this
+checkout (the module README gives 2.8 GHz Xeon numbers for its own defaults, ~2–4× slower):
 
 | call | time |
 |---|---|
 | `steer` | 0.5 ms (four chief rays) |
-| `spot` `'fine'` | 2.7 ms (lower 2 µm) – 13 ms (upper 10 µm, large window) |
-| `spot` `'fast'` | 1.5 – 8 ms |
-| `spot` `'trend'` | 1.2 – 7 ms |
-| `D_auto` (first call per parameter set, then cached by the core) | 29 ms |
-| `peak_curve`, 41 points, `'trend'` | 55 ms (lower), 100 ms (upper) |
+| `spot` `'fine'` | 3.5 ms (either actuator, 2–20 µm) – 7 ms (upper 20 µm, large window) |
+| `spot` `'fast'` | 1.6 – 3.3 ms |
+| `spot` `'trend'` | 1.3 – 2.8 ms |
+| `D_auto` (first call per parameter set, then cached by the core) | 26 ms |
+| `peak_curve`, 41 points (±10 µm), `'trend'` | 57 ms (either actuator) |
 | `plan_offsets`, 7 rows, lower only | 26 ms |
 
 The slow end of each range is large upper travel: the defocused spot needs a larger
-window. In interactive code compute `'fast'` while a value is being dragged and `'fine'`
+window. With the module's defaults (R = 16 mm, θ = 60°) the upper actuator defocuses about
+five times more per µm (1.02 against 0.19 µm), so its spots are slower at the same travel
+(`'fine'` 17 ms against 3.5 ms at upper 10 µm, `peak_curve` upper 110 ms against 57 ms).
+In interactive code compute `'fast'` while a value is being dragged and `'fine'`
 when idle, keep `'fine'` at large travel off the GUI thread (`run_async`), and use
 `'trend'` for sweeps. The core caches the auto D and the aligned reference spot per
 full parameter set; every other result, including `reference_spot`, is a fresh copy.
 
 ## GUI page (Simulate → Pump steering)
 
-A left column with the two actuators (spin box ±500 µm, slider ±20 µm in 0.1 µm steps, step
+A left column with the two actuators (spin box ±500 µm, slider ±30 µm in 0.1 µm steps, step
 buttons −1 / −0.2 / +0.2 / +1 µm and Zero, the per-µm spot shift, the KDC101 change in mm and
 counts) above the `SteeringParams` form (basic fields first; the ±1 sides as choices; D is
-greyed out while D auto is on and the resolved value is shown beside the checkbox), and five
-tabs.
+greyed out while D auto is on and the resolved value is shown beside the checkbox) and the
+"Calibrate R from a measured step" box (actuator, signed travel in µm from the aligned
+position, measured spot shift in nm, "Fit R", which runs `calibrate_R` with the current
+parameters and puts the result in the form; below it the spot shift of one 0.2 µm step of
+each actuator), and five tabs. The slider, the peak curves, the shape gallery and the data
+table span ±30 µm, which covers the lower-only travels of the X list in "Link to
+simulation" (+27.6 / −25.3 µm for X = ∓7.5 µm).
 
 * **Spot.** The beam at the entrance port (seen from outside the box, facing the port) and the
   spot on the sample (top view: the diffraction spot with its half-maximum contour, the aligned
@@ -268,7 +389,7 @@ tabs.
 * **Spot shape.** The current spot magnified around its chief-ray hit with its metrics (FWHM,
   long axis vs the plane of incidence, half-max area, peak = `rel`, brightest point vs the
   chief-ray hit); peak intensity against travel for each actuator (`peak_curve`, 'trend'),
-  i.e. how far the spot can be moved before it degrades; the spot shapes from −20 to +20 µm;
+  i.e. how far the spot can be moved before it degrades; the spot shapes from −30 to +30 µm;
   a data table.
 * **Setup.** 2-D schematics from the exact chief-ray trace, tilts drawn ×10 / ×100 / ×400:
   the whole path from above (box interior | port wall, steering mirror and the two Z812s), the
@@ -307,22 +428,30 @@ red, THz / collection violet.
   an earlier one is hidden. Only the 3-D drawing changed; the page's numbers are the same.
 * **Not every parameter reaches the 3D page.** The page is driven
   through its own inputs, which exist only for the two travels and R, θ, β, L, α, dist,
-  λ, NA and D (or D auto). Its sliders clamp and round to their range and step (R 6–30 mm
-  in 0.5, θ 40–72°, β 0–65°, L 15–60 mm, α 15–70°, dist 80–600 mm in 10, λ 700–1600 nm in
+  λ, NA and D (or D auto). Its sliders clamp and round to their range and step (R 2–30 mm
+  in 0.01, θ 40–72°, β 0–65°, L 15–60 mm, α 15–70°, dist 80–600 mm in 10, λ 700–1600 nm in
   10, NA 0.25–0.6, D 3–24 mm in 0.5; travel ±500 µm in 0.01 µm); the tab lists every value
   the model shows clipped, rounded or not at all. `zLow`, `portX`, `foldY`, `yawSide`, `pitchSide` and
   `bias_axis_deg` have no input there: the 3-D model always draws zLow = 1 mm, the port at
   260 mm, the fold mirror 6 mm behind the tip and an upright mount, in the lab frame, with
   no bias axis. The numbers in the other tabs come from the adapter and use every
-  parameter.
+  parameter. The page's R slider was widened from 6–30 mm in 0.5 to 2–30 mm in 0.01 mm, so
+  the calibrated default R = 5.332 mm is drawn as 5.33 mm; roundings below 0.1 %
+  (`SNAP_REL`) are not listed.
 * **The sample orientation is assumed** (φ = 0) until `bias_axis_deg` is set; the X of
   every row in "Link to simulation" depends on it.
 * **2-D link.** The simulation takes X only. The Y that a single-actuator scan adds
-  (+1.93 µm at X = +5 µm), the defocus and the change of spot size are reported, not fed
+  (+1.96 µm at X = +5 µm), the defocus and the change of spot size are reported, not fed
   into the 2-D model. `Params.spot_w_um` (1/e² radius, assumed 3 µm ↔ FWHM 3.5 µm) stays a
-  separate input; the aligned spot predicted here is FWHM 2.18 × 1.12 µm (1/e² radii
-  ≈ 1.85 × 0.95 µm) for an ideal TEM00 beam.
+  separate input; the aligned spot predicted here is FWHM 1.56 × 1.11 µm (1/e² radii
+  ≈ 1.32 × 0.95 µm) for an ideal TEM00 beam at θ = 45° (2.18 × 1.12 µm at the module's
+  θ = 60°).
+* **The calibration is a literature estimate.** R = 5.332 mm reproduces 55 nm per 0.2 µm
+  step of the upper actuator at an assumed θ = 45°; it is about half a plausible real focal
+  length, so every travel ↔ X conversion may be off by up to a factor ~2 until a camera
+  calibration replaces it ("Calibration of the spot shift").
 * **From the module** (details in its README): scalar diffraction without polarisation;
   ideal TEM00 input and mirror surfaces; an aperture fixed in space; best focus at travel
   (0, 0) assumed; no actuator backlash (Z812 < 8 µm: approach each target from the same
-  side) or load effects; magnitudes ∝ R/L with R not measured on this instrument.
+  side) or load effects; magnitudes ∝ R/L with R fitted to a literature step, not measured
+  on this instrument.
