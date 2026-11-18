@@ -16,6 +16,9 @@ Conventions are those of ltemsim.steering and the vendored module README:
   mirror (the label says which gain is shown); the inside and side views
   magnify only the angle of the beam arriving at the parabolic mirror, pivoting about the aligned chief point
   (as the reference page does), so the beam stays on the mirror while the spot shift grows by the gain.
+  The core tilts the mirror by travel / L (the KS1-Z8's nominal lever): draw_schematic hands it the effective travels
+  steering.core_travel(sp, t) = kappa * t (SteeringParams.tilt_scale), as the adapter does, so every view shows the
+  calibrated tilt; the mirror view labels the real push-rod travels and KDC101 counts.
 """
 from __future__ import annotations
 
@@ -511,6 +514,7 @@ def _on_mirror(c, p, g, c0) -> bool:
     return P[2] >= p["zLow"] and float(np.dot(_unit(P), p0)) >= math.cos(apA) - 1e-12
 
 
+# _walk_gain ... _view_side take the core's travels (kappa * real travel, steering.core_travel): draw_schematic converts
 def _walk_gain(p, lower_um, upper_um, gain):
     """Largest gain <= `gain` whose exaggerated exact trace stays on the mirrors (see _on_mirror): (gain, trace).
     Falls back to the true trace (gain 1)."""
@@ -964,8 +968,10 @@ def _view_side(fig, p, g, lower_um, upper_um, gain, pal, t):
                 zorder=9)
 
 
-def _view_mirror(fig, p, lower_um, upper_um, gain, pal, t):
-    """The KS1-Z8 seen from the actuator side (behind the mount), with the tilts and the KDC101 readings."""
+def _view_mirror(fig, p, lower_um, upper_um, gain, pal, t, kappa=1.0):
+    """The KS1-Z8 seen from the actuator side (behind the mount), with the tilts and the KDC101 readings.
+    lower_um, upper_um: REAL push-rod travels (labels, KDC101); the tilt drawn and quoted is the effective one,
+    kappa * travel / L (kappa = SteeringParams.tilt_scale)."""
     L, ys, ps = p["L"], (1 if p["yawSide"] >= 0 else -1), (1 if p["pitchSide"] >= 0 else -1)
     wide = fig.get_figwidth() / max(fig.get_figheight(), 1e-6) > 1.45
     gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 0.9]) if wide else fig.add_gridspec(2, 1, height_ratios=[2.4, 1])
@@ -1020,13 +1026,14 @@ def _view_mirror(fig, p, lower_um, upper_um, gain, pal, t):
                 ha="right" if ys > 0 else "left", va="center", fontsize=FS_SMALL, color=t.muted, zorder=9)
     ax.set_title("KS1-Z8 seen from the actuator side", fontsize=FS, color=t.muted, loc="left", pad=3)
 
-    # readings: tilt delta = travel / L and the change of the KDC101 display
+    # readings: effective tilt delta = kappa * travel / L, the change of the KDC101 display from the real travel
     for i, (name, title) in enumerate((("lower", "Lower Z812 · horizontal"), ("upper", "Upper Z812 · vertical"))):
         v = travel[name]
-        d = v / L                                         # mrad (um / mm)
+        d = kappa * v / L                                 # mrad (um / mm)
         state = "rod extends" if v > 0 else ("rod retracts" if v < 0 else "aligned")
         lines = [f"travel {_signed(v, '{:.3f}')} µm · {state}",
-                 f"δ = {_signed(d * 1e3, '{:.1f}')} µrad = {_signed(d * 1e-3 * 206264.806, '{:.1f}')}″",
+                 f"δ = {_signed(d * 1e3, '{:.1f}')} µrad = {_signed(d * 1e-3 * 206264.806, '{:.1f}')}″"
+                 " (κ × nominal)",
                  f"KDC101 {_signed(v / 1000, '{:.4f}')} mm",
                  f"   = {_signed(steering.kdc101_counts(v), '{:,.0f}')} encoder counts"]
         x0, y0 = (0.02, 0.95 - 0.43 * i) if wide else (0.01 + 0.5 * i, 0.98)
@@ -1034,14 +1041,16 @@ def _view_mirror(fig, p, lower_um, upper_um, gain, pal, t):
                 fontweight="bold")
         tx.text(x0, y0 - (0.07 if wide else 0.19), "\n".join(lines), transform=tx.transAxes, ha="left", va="top",
                 fontsize=FS_SMALL, color=t.text, linespacing=1.3)
-    tx.text(0.01, 0.0, "δ = travel / L · × rod extends (pushes the plate away), • retracts",
-            transform=tx.transAxes, ha="left", va="bottom", fontsize=7, color=t.muted)
+    tx.text(0.01, 0.0, f"δ = κ × travel / L (effective tilt, κ = {kappa:.5g} × nominal)\n"
+                       "× rod extends (pushes the plate away), • retracts", transform=tx.transAxes, ha="left",
+            va="bottom", fontsize=7, color=t.muted, linespacing=1.25)
 
 
 def draw_schematic(fig, sp, lower_um, upper_um, view, gain, t) -> None:
-    """2-D schematic of the pump path for the actuator travels (um), angles exaggerated by `gain`.
-    view: 'top' (whole path from above), 'inside' (box interior near the tip), 'side' (plane of incidence),
-    'mirror' (the KS1-Z8 seen from the actuator side)."""
+    """2-D schematic of the pump path for the actuator travels (um, real push-rod travel), angles exaggerated by
+    `gain`.  view: 'top' (whole path from above), 'inside' (box interior near the tip), 'side' (plane of incidence),
+    'mirror' (the KS1-Z8 seen from the actuator side).  The traces use the effective travels kappa * travel
+    (steering.core_travel), as every adapter call does."""
     pal = palette(t)
     if sp is None:
         _note(fig.add_subplot(), "No steering parameters", t)
@@ -1049,15 +1058,16 @@ def draw_schematic(fig, sp, lower_um, upper_um, view, gain, t) -> None:
     p = steering.resolve(sp)
     g = steering.optics.geometry(p)
     lower, upper = float(lower_um or 0.0), float(upper_um or 0.0)
+    eff_lower, eff_upper = steering.core_travel(sp, lower), steering.core_travel(sp, upper)   # the tilt the core sees
     view = view or "top"
     if view == "top":
-        _view_top(fig, p, g, lower, upper, gain, pal, t)
+        _view_top(fig, p, g, eff_lower, eff_upper, gain, pal, t)
     elif view == "inside":
-        _view_inside(fig, p, g, lower, upper, gain, pal, t)
+        _view_inside(fig, p, g, eff_lower, eff_upper, gain, pal, t)
     elif view == "side":
-        _view_side(fig, p, g, lower, upper, gain, pal, t)
+        _view_side(fig, p, g, eff_lower, eff_upper, gain, pal, t)
     elif view == "mirror":
-        _view_mirror(fig, p, lower, upper, gain, pal, t)
+        _view_mirror(fig, p, lower, upper, gain, pal, t, kappa=steering.core_travel(sp, 1.0))
     else:
         _note(fig.add_subplot(), f"Unknown view {view!r}", t)
 

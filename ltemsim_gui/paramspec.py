@@ -226,22 +226,24 @@ def pulse_specs() -> list[FieldSpec]:
 STEERING_LABELS = {
     "R": "Focal length R", "theta": "Incidence angle θ", "beta": "Plane-of-incidence azimuth β", "NA": "Aperture NA",
     "zLow": "Mirror lower edge z_low", "alpha": "Mirror incidence α", "dist": "Mirror → port distance",
-    "L": "Lever arm L", "yawSide": "Lower actuator side", "pitchSide": "Upper actuator side", "portX": "Port plane x",
-    "foldY": "Fold mirror y", "lam": "Wavelength λ", "D_auto": "Beam diameter: auto (smallest spot)",
-    "D": "Beam diameter D (1/e²)", "bias_axis_deg": "Bias-axis azimuth φ",
+    "L": "Lever arm L", "tilt_scale": "Tilt calibration κ", "yawSide": "Lower actuator side",
+    "pitchSide": "Upper actuator side", "portX": "Port plane x", "foldY": "Fold mirror y", "lam": "Wavelength λ",
+    "D_auto": "Beam diameter: auto (smallest spot)", "D": "Beam diameter D (1/e²)",
+    "bias_axis_deg": "Bias-axis azimuth φ",
 }
 STEERING_UNITS = {"R": "mm", "theta": "deg", "beta": "deg", "zLow": "mm", "alpha": "deg", "dist": "mm", "L": "mm",
                   "portX": "mm", "foldY": "mm", "lam": "nm", "D": "mm", "bias_axis_deg": "deg"}
 STEERING_SECTIONS = {"parabolic mirror and sample": "Parabolic mirror & sample", "steering mirror": "Steering mirror",
                      "pump beam": "Pump beam", "sample orientation": "Sample orientation"}
 STEERING_CHOICES = {"yawSide": ("1", "-1"), "pitchSide": ("1", "-1")}
-STEERING_BASIC = {"R", "theta", "beta", "NA", "L", "lam", "D_auto", "D", "bias_axis_deg"}
+STEERING_BASIC = {"R", "theta", "beta", "NA", "L", "tilt_scale", "lam", "D_auto", "D", "bias_axis_deg"}
 # ranges that keep the geometry defined (the core divides by L, takes asin(NA), needs 0 < θ, α < 90°); β >= 0 keeps
-# the pump on the port-side half of the parabolic mirror (the other half collects the THz; reference page: 0-65°)
+# the pump on the port-side half of the parabolic mirror (the other half collects the THz; reference page: 0-65°);
+# the tilt calibration κ is dimensionless (steering.core_travel needs it positive)
 STEERING_BOUNDS = {
     "R": (1.0, 200.0), "theta": (1.0, 89.0), "beta": (0.0, 89.0), "NA": (0.02, 0.95), "zLow": (0.0, None),
-    "alpha": (1.0, 89.0), "dist": (1.0, None), "L": (1.0, None), "portX": (1.0, None), "foldY": (0.1, None),
-    "lam": (100.0, 20000.0), "D": (0.5, 60.0), "bias_axis_deg": (-360.0, 360.0),
+    "alpha": (1.0, 89.0), "dist": (1.0, None), "L": (1.0, None), "tilt_scale": (0.001, 10.0), "portX": (1.0, None),
+    "foldY": (0.1, None), "lam": (100.0, 20000.0), "D": (0.5, 60.0), "bias_axis_deg": (-360.0, 360.0),
 }
 
 

@@ -6,7 +6,10 @@ sheet and push the actuator travels and
 instrument parameters through the page's own inputs (#numYaw, #numPitch, #pR ... #pD, #pDauto), dispatching the
 events its handlers listen to.  The page's sliders clamp and round to their range and step; what the model cannot
 show is reported in a banner above the view (roundings below SNAP_REL are not).  The file's #pR slider was widened to
-2-30 mm in 0.01 mm steps (from 6-30 mm in 0.5 mm) so that the calibrated default R (~5.3 mm) is not clipped.
+2-30 mm in 0.01 mm steps (from 6-30 mm in 0.5 mm); the default R = 16 mm lies inside it.
+The page tilts the mirror by travel / L (the nominal KS1-Z8 lever), so it is handed the effective travels
+steering.core_travel(sp, t) = kappa * t (SteeringParams.tilt_scale), as the adapter hands the core: the model shows
+the calibrated tilt and spot position.
 three.js 0.128.0 comes from cdn.jsdelivr.net: offline, the page's own fallback text stays in the stage.
 
 QtWebEngine wants Qt.ApplicationAttribute.AA_ShareOpenGLContexts set before the QApplication is created (app.py
@@ -23,12 +26,15 @@ from PySide6.QtCore import QCoreApplication, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import QHBoxLayout, QStackedWidget, QVBoxLayout, QWidget
 
-from ltemsim.steering import REFERENCE_PAGE, SteeringParams
+from ltemsim.steering import REFERENCE_PAGE, SteeringParams, core_travel
 
 from ..theme import ThemeManager
 from .common import button, label
 
 INFO = "Interactive 3D model from the reference page (three.js from the internet) · drag to rotate, scroll to zoom"
+KAPPA_HELP = ("The page tilts the mirror by travel / L (the nominal KS1-Z8 lever), so it is handed κ × travel "
+              "(Tilt calibration κ): the model shows the calibrated mirror tilt and spot position (that travel "
+              "rounded to 0.01 µm).")
 # SteeringParams field -> (input id, min, max, step, label, unit): the page's range inputs (#params in the HTML)
 RANGES = {
     "R": ("pR", 2.0, 30.0, 0.01, "R", "mm"),
@@ -41,12 +47,14 @@ RANGES = {
     "NA": ("pNA", 0.25, 0.6, 0.01, "NA", ""),
     "D": ("pD", 3.0, 24.0, 0.5, "D", "mm"),
 }
-MOTOR_LIMIT_UM = 500.0               # setMotor() in the page clamps the travel to ±500 um (and rounds to 0.01 um)
+MOTOR_LIMIT_UM = 500.0               # setMotor() in the page clamps the travel to ±500 um (and rounds to 0.01 um); the
+                                     #   limit applies to the effective travel kappa * travel that the page is handed
 SNAP_REL = 1e-3                      # a value the slider step moves by less than this fraction is not reported: the
-                                     #   drawing cannot show it (e.g. the calibrated default R, drawn to 0.01 mm)
+                                     #   drawing cannot show it (e.g. an R between two 0.01 mm slider steps)
 NOT_ON_PAGE = ("zLow", "portX", "foldY", "yawSide", "pitchSide")
 UNSYNCED_HELP = (
-    "The 3D model follows the actuator travels and R, θ, β, L, α, the mirror–port distance, λ, NA and D (or D auto). "
+    "The 3D model follows the actuator travels and R, θ, β, L, α, the mirror–port distance, λ, NA and D "
+    "(or D auto). " + KAPPA_HELP + " "
     "The reference page has no inputs for zLow, portX, foldY, yawSide, pitchSide or bias_axis_deg: it always draws "
     "zLow = 1 mm, the entrance port at 260 mm, the fold mirror 6 mm behind the tip and an upright mount "
     "(yawSide = pitchSide = +1), in the lab frame (+X port wall, +Y back panel), so the bias axis is not drawn. "
@@ -117,19 +125,26 @@ def _fmt(x: float) -> str:
 
 
 def page_values(lower_um: float, upper_um: float, sp: SteeringParams) -> tuple[dict, bool, list[str]]:
-    """What the page will show: ({input id: value}, D auto, notes on everything it shows differently)."""
+    """What the page will show: ({input id: value}, D auto, notes on everything it shows differently).
+    lower_um, upper_um are the real push-rod travels; #numYaw / #numPitch get the effective ones, kappa * travel."""
     notes = []
     vals = {}
     for key, actuator in (("numYaw", lower_um), ("numPitch", upper_um)):
+        name = "lower" if key == "numYaw" else "upper"
         v = float(actuator)
         if not math.isfinite(v):
-            notes.append(f"{'lower' if key == 'numYaw' else 'upper'} actuator {v:g} µm not shown")
+            notes.append(f"{name} actuator {v:g} µm not shown")
             continue
-        if abs(v) > MOTOR_LIMIT_UM:
-            name = "lower" if key == "numYaw" else "upper"
-            notes.append(f"{name} actuator {v:g} µm clipped to ±{MOTOR_LIMIT_UM:g} µm")
-            v = math.copysign(MOTOR_LIMIT_UM, v)
-        vals[key] = _fmt(round(v, 2))
+        try:
+            e = core_travel(sp, v)
+        except ValueError:
+            notes.append(f"{name} actuator not shown (tilt calibration κ = {sp.tilt_scale!r} is no positive number)")
+            continue
+        if abs(e) > MOTOR_LIMIT_UM:
+            eff = f" (κ × travel = {e:g} µm)" if e != v else ""
+            notes.append(f"{name} actuator {v:g} µm{eff} clipped to ±{MOTOR_LIMIT_UM:g} µm")
+            e = math.copysign(MOTOR_LIMIT_UM, e)
+        vals[key] = _fmt(round(e, 2))
     for field, (el, lo, hi, step, name, unit) in RANGES.items():
         if field == "D" and sp.D_auto:
             continue                                           # the page finds the auto diameter itself
@@ -178,7 +193,7 @@ class Steering3DView(QWidget):
         bar.setContentsMargins(0, 0, 0, 0)
         bar.setSpacing(8)
         self.info = label(INFO, "muted", wrap=True)
-        self.info.setToolTip(UNSYNCED_HELP)
+        self.info.setToolTip(UNSYNCED_HELP)                 # says that the travels are pushed as κ × travel
         bar.addWidget(self.info, 1)
         self.reload_btn = button("Reload", self.reload, tooltip="Load the reference page again")
         bar.addWidget(self.reload_btn)
@@ -207,7 +222,8 @@ class Steering3DView(QWidget):
 
     # ------------------------------------------------------------------ public
     def set_state(self, lower_um: float, upper_um: float, sp: SteeringParams) -> None:
-        """Remember the actuator travels (um) and parameters; pushed to the page once it has loaded."""
+        """Remember the actuator travels (um, real push-rod travel) and parameters; pushed to the page once it has
+        loaded (the travels as kappa * travel, page_values)."""
         self._state = (float(lower_um), float(upper_um), replace(sp))
         notes = page_values(*self._state)[2]
         self.banner.setText("3D view: " + " · ".join(notes) if notes else "")

@@ -19,8 +19,12 @@ Conventions
       X = dX cos(phi) + dY sin(phi)        (along the bias axis)
       Y = -dX sin(phi) + dY cos(phi)       (across it, along the electrode edges; the 2-D model ignores it)
 
-  With the default phi = 0 the lower actuator moves X by -0.282 um per um of travel (-0.848 with module_defaults():
-  R = 16 mm, theta = 60 deg).
+  With the default phi = 0 the lower actuator moves X by -0.283 um per um of travel (-0.848 with module_defaults():
+  R = 16 mm, theta = 60 deg, tilt_scale = 1).
+* Tilt calibration.  The core tilts the mirror by travel / L (the KS1-Z8's nominal lever).  ``tilt_scale`` (kappa)
+  scales that tilt to match a measured spot step: the core is handed kappa * travel, everything in this API (and
+  the KDC101 counts) stays the real push-rod travel.  The geometry (R, theta, ...) is left physical, so the
+  diffraction model and the 3-D drawing stay meaningful.
 """
 from __future__ import annotations
 
@@ -59,11 +63,9 @@ optics = _load_core()
 @dataclass
 class SteeringParams:
     # --------------------------------------------------- parabolic mirror and sample
-    R: float = 5.332                # mm, effective focal length of the parabolic mirror (chief point to focus).
-                                    #   CALIBRATED (see CALIBRATION): one 0.2 um step of the upper (pitch) actuator moves
-                                    #   the spot 55 nm (Pizzuto et al.) at theta = 45 deg. Spot shifts scale with R/L. A
-                                    #   real neaspec mirror is ~10-16 mm; the 55 nm estimate seems to leave out the factor
-                                    #   2 of the reflection, so recalibrate with the AFM camera (module default 16)
+    R: float = 16.0                 # mm, effective focal length of the parabolic mirror (chief point to focus).
+                                    #   Reported for another neaspec THz-TDS s-SNOM. Geometry: it places the fold mirrors and
+                                    #   the parabolic mirror; the spot-shift calibration is tilt_scale, not R
     theta: float = 45.0             # deg, angle of incidence on the sample (ASSUMED 45 for the calibration; neaspec
                                     #   standard and module default 60)
     beta: float = 45.0              # deg, azimuth of the plane of incidence from the front-back axis toward the port side
@@ -78,7 +80,12 @@ class SteeringParams:
     alpha: float = 45.0             # deg, angle of incidence on the steering mirror (a 90 deg fold; setup photo)
     dist: float = 250.0             # mm, steering mirror to entrance-port plane (sets the beam shift at the port)
     L: float = 37.7                 # mm, lever arm from actuator contact to pivot (KS1-Z8: 0.2 um step = 1.1 arcsec)
-    yawSide: int = 1                # +1: lower (horizontal-tilt) actuator right of the pivot seen from the actuator side
+    tilt_scale: float = 0.33336     # effective mirror tilt per um of travel as a fraction of the nominal 1/L. CALIBRATED
+                                    #   (see CALIBRATION): one 0.2 um step of the upper (pitch) actuator moves the spot 55 nm
+                                    #   (Pizzuto et al.) at theta = 45 deg; 1 = the nominal lever (module). Below 1: the spot
+                                    #   moves less than the nominal tilt and R predict (the 55 nm estimate may leave out the
+                                    #   factor 2 of the reflection). Replace by a camera calibration
+    yawSide: int = 1               # +1: lower (horizontal-tilt) actuator right of the pivot seen from the actuator side
                                     #   (upright mount); -1: left of it. A mount turned upside down (rotated 180 deg about
                                     #   the mirror normal) needs yawSide = pitchSide = -1, and its 'lower' (horizontal-tilt)
                                     #   actuator is then physically the upper one
@@ -88,9 +95,9 @@ class SteeringParams:
     foldY: float = 6.0              # mm, y of the fold-mirror centre behind the tip (model geometry, negligible effect)
     # ------------------------------------------------------------------------ pump beam
     lam: float = 820.0              # nm, pump wavelength (Mai Tai, as Params.wavelength_nm)
-    D_auto: bool = True             # use the input-beam diameter that gives the smallest spot (4.4 mm with the defaults,
-                                    #   13.0 mm with the module's R = 16 mm, theta = 60 deg)
-    D: float = 4.4                  # mm, 1/e^2 diameter of the input beam, used when D_auto is off. Measure before the AFM
+    D_auto: bool = True             # use the input-beam diameter that gives the smallest spot (13.1 mm with the defaults,
+                                    #   13.0 mm with the module's theta = 60 deg)
+    D: float = 13.1                 # mm, 1/e^2 diameter of the input beam, used when D_auto is off. Measure before the AFM
     # --------------------------------------------------------------- sample orientation
     bias_axis_deg: float = 0.0      # deg, azimuth of the simulation's +x (bias axis, toward the +x electrode) in the lab
                                     #   frame, from +X (port wall) toward +Y (back). ASSUMED: set it from the sample mounting
@@ -113,17 +120,28 @@ class SteeringParams:
         return cls(**kw)
 
 
-# Where the default R comes from: the actuator-step / spot-step pair it reproduces, and the assumption made with it.
-CALIBRATION = {"actuator": "upper", "travel_um": 0.2, "spot_um": 0.055, "theta": 45.0,
+# Where the default tilt_scale comes from: the actuator-step / spot-step pair it reproduces, and the assumption made
+# with it (the other parameters at their defaults).
+CALIBRATION = {"actuator": "upper", "travel_um": 0.2, "spot_um": 0.055, "theta": 45.0, "fits": "tilt_scale",
                "source": "Pizzuto et al. (55 nm per 1.1 arcsec = 0.2 um Z812 step), taken as the pitch (upper) "
                          "direction; 45 deg incidence on the sample assumed"}
 
 
 def module_defaults() -> SteeringParams:
-    """The vendored module's own defaults (R = 16 mm, theta = 60 deg, D 13.0 mm), as SteeringParams."""
+    """The vendored module's own defaults (R = 16 mm, theta = 60 deg, D 13.0 mm, nominal tilt), as SteeringParams."""
     d = optics.DEFAULTS
     return replace(SteeringParams(), **{k: d[k] for k in ("R", "theta", "beta", "alpha", "dist", "L", "lam", "NA",
-                                                          "zLow", "portX", "foldY", "yawSide", "pitchSide")}, D=13.0)
+                                                          "zLow", "portX", "foldY", "yawSide", "pitchSide")},
+                   D=13.0, tilt_scale=1.0)
+
+
+def core_travel(sp: SteeringParams, travel_um: float) -> float:
+    """Travel (um) to hand the core for a real push-rod travel: tilt_scale * travel.  Raises ValueError for a
+    tilt_scale that is not a positive number."""
+    k = sp.tilt_scale
+    if not (isinstance(k, (int, float)) and math.isfinite(k) and k > 0):
+        raise ValueError(f"tilt_scale must be a positive number, not {k!r}")
+    return float(travel_um) * k
 
 
 def to_core(sp: SteeringParams) -> dict:
@@ -190,91 +208,81 @@ class Steering:
 
 def steer(sp: SteeringParams, lower_um: float = 0.0, upper_um: float = 0.0) -> Steering:
     """Chief-ray response; raises ValueError when the chief ray misses the parabolic mirror."""
-    r = optics.steering_response(to_core(sp), yaw_um=float(lower_um), pitch_um=float(upper_um))
+    k = core_travel(sp, 1.0)
+    r = optics.steering_response(to_core(sp), yaw_um=k * float(lower_um), pitch_um=k * float(upper_um))
     dx, dy = r["spot_um"]
     X, Y = lab_to_sim(dx, dy, sp)
-    per = {a: tuple(r["perUm"][_CORE_AXIS[a]]) for a in ACTUATORS}
+    per = {a: tuple(k * v for v in r["perUm"][_CORE_AXIS[a]]) for a in ACTUATORS}     # per um of REAL travel
     return Steering(
         lower_um=float(lower_um), upper_um=float(upper_um), spot_um=(dx, dy), X_um=X, Y_um=Y,
         port_um=tuple(r["port_um"]), along_um=r["along_um"], across_um=r["across_um"],
         defocus_um=r["defocus_um"], arrival_fs=r["arrival_fs"], per_um=per,
         per_um_sim={a: lab_to_sim(*per[a], sp) for a in ACTUATORS},
-        port_per_um={a: tuple(r["perUmPort"][_CORE_AXIS[a]]) for a in ACTUATORS},
+        port_per_um={a: tuple(k * v for v in r["perUmPort"][_CORE_AXIS[a]]) for a in ACTUATORS},
         incidence_plane=tuple(r["incidencePlane"]), lower_turns_beam_to_front=r["yawTurnsBeamToFront"])
 
 
-CALIB_SPAN = 20.0               # calibrate_R searches R in (R/CALIB_SPAN, R*CALIB_SPAN) of the starting parameters
-CALIB_RATIO = 1.25              # ... outward from its linear estimate, in steps of this ratio
+CALIB_GROW = 1.5                # calibrate_tilt_scale widens its bracket by this factor until the shift is passed
+CALIB_EDGE_HALVINGS = 60        # ... and bisects this often for the mirror edge when a trial misses the mirror
 
 
-class _Miss(Exception):
-    """The chief ray misses the parabolic mirror (inside calibrate_R's root search)."""
+def _shift_text(spot_um: float) -> str:
+    """A spot shift for a message: in um from 1 um up, in nm below."""
+    return f"{spot_um:.4g} µm" if spot_um >= 1 else f"{spot_um * 1e3:.4g} nm"
 
 
-def calibrate_R(sp: SteeringParams, actuator: str, travel_um: float, spot_um: float) -> float:
-    """Focal length R (mm) for which `travel_um` of one actuator, from the aligned position (both at 0), moves the
-    spot by `spot_um` (exact trace; every other parameter of sp is kept).  L stays tied to the KS1-Z8 spec (0.2 um
-    step = 1.1 arcsec), so the measured step sets how far a mirror tilt moves the spot.  The travel is signed: at
+def calibrate_tilt_scale(sp: SteeringParams, actuator: str, travel_um: float, spot_um: float) -> float:
+    """tilt_scale for which `travel_um` of one actuator, from the aligned position (both at 0), moves the spot by
+    `spot_um` (exact trace; every other parameter of sp, R included, is kept).  The travel is signed: at
     camera-sized steps an extend and a retract of the same size move the spot by different amounts.
 
-    The shift is nearly proportional to R, so the search starts at the linear estimate R0 = R * spot / shift(R) and
-    walks outward on both sides in steps of CALIB_RATIO; the sign change nearest R0 is refined by Brent's method.
-    An R for which the step takes the chief ray off the parabolic mirror is skipped (at large steps that happens at
-    small R, where the shift is also not monotonic in R).  Raises ValueError for a bad input, or when no R in
-    (R/20, 20 R) reproduces the shift."""
+    Solved for the effective travel t = tilt_scale * travel at the nominal tilt: the shift grows monotonically with
+    |t| from 0 until the chief ray leaves the parabolic mirror, so the first crossing is bracketed from t = 0 and
+    refined by Brent's method.  A trial travel that takes the chief ray off the mirror is not the end: the mirror
+    edge is then bisected between the last travel that hit it and that one, and the shift at the edge decides.
+    Raises ValueError for a bad input, or when the actuator cannot move the spot that far before the chief ray
+    leaves the mirror."""
     if actuator not in _CORE_AXIS:
         raise ValueError(f"actuator must be 'lower' or 'upper', not {actuator!r}")
     if not (math.isfinite(travel_um) and travel_um != 0 and math.isfinite(spot_um) and spot_um > 0):
         raise ValueError("need a non-zero travel and a positive spot shift")
-    if not (math.isfinite(sp.R) and sp.R > 0):
-        raise ValueError(f"the starting focal length must be positive, not {sp.R!r}")
-    lo, up = (travel_um, 0.0) if actuator == "lower" else (0.0, travel_um)
-    R_min, R_max = sp.R / CALIB_SPAN, sp.R * CALIB_SPAN
-    missed = []
+    nominal = replace(sp, tilt_scale=1.0)
+    sign = 1.0 if travel_um > 0 else -1.0
 
-    def excess(R):
-        """Shift at R minus the measured one; None when the chief ray misses the parabolic mirror."""
+    def excess(t):                                   # shift for effective travel sign*t minus the measured one
+        lo, up = (sign * t, 0.0) if actuator == "lower" else (0.0, sign * t)
+        return steer(nominal, lo, up).shift_um - spot_um
+
+    per = math.hypot(*steer(nominal).per_um[actuator])          # also raises when the aligned ray misses
+    t_hi = spot_um / per
+    lo_t = 0.0
+    for _ in range(60):
         try:
-            return steer(replace(sp, R=R), lo, up).shift_um - spot_um
-        except (ValueError, ArithmeticError):
-            missed.append(R)
-            return None
-
-    def strict(R):                                   # for brentq: a miss inside a bracket aborts that bracket
-        e = excess(R)
-        if e is None:
-            raise _Miss
-        return e
-
-    e = excess(sp.R)
-    R0 = sp.R if e is None or e + spot_um <= 0 else sp.R * spot_um / (e + spot_um)
-    R0 = min(max(R0, R_min), R_max)
-    e0 = excess(R0)
-    from scipy.optimize import brentq
-    # the two outward walks; each keeps its last valid point (a miss breaks the pair: never bracket across it)
-    walks = [[R0, e0, 1.0 / CALIB_RATIO, R_min], [R0, e0, CALIB_RATIO, R_max]]
-    if e0 is not None and e0 < 0:                    # shift too small: a larger R is the likelier side, try it first
-        walks.reverse()
-    while walks:
-        for w in list(walks):
-            R_prev, e_prev, ratio, end = w
-            R = min(R_prev * ratio, end) if ratio > 1 else max(R_prev * ratio, end)
-            e = excess(R)
-            if e is not None and e == 0:
-                return float(R)
-            if e is not None and e_prev is not None and (e < 0) != (e_prev < 0):
-                a, b = sorted((R_prev, R))
+            e = excess(t_hi)
+        except ValueError:                           # t_hi is beyond the mirror edge: find the edge in [lo_t, t_hi]
+            hit, miss = lo_t, t_hi
+            for _ in range(CALIB_EDGE_HALVINGS):
+                mid = 0.5 * (hit + miss)
                 try:
-                    return float(brentq(strict, a, b, xtol=1e-9))
-                except _Miss:
-                    pass                             # the mirror's edge lies inside this bracket: walk on
-            w[0], w[1] = R, e
-            if R == end:
-                walks.remove(w)
-    hint = (" (at this step the chief ray misses the parabolic mirror for part of that range: try a smaller step)"
-            if missed else "")
-    raise ValueError(f"no focal length between {R_min:.3g} and {R_max:.3g} mm reproduces {spot_um:.4g} µm for "
-                     f"{travel_um:g} µm of the {actuator} actuator{hint}")
+                    excess(mid)
+                except ValueError:
+                    miss = mid
+                else:
+                    hit = mid
+            e = excess(hit)
+            if e < 0:
+                raise ValueError(f"the {actuator} actuator cannot move the spot {_shift_text(spot_um)}: the chief "
+                                 f"ray leaves the parabolic mirror first") from None
+            t_hi = hit
+            break
+        if e >= 0:
+            break
+        lo_t, t_hi = t_hi, t_hi * CALIB_GROW
+    else:
+        raise ValueError(f"the {actuator} actuator does not move the spot {_shift_text(spot_um)}")
+    from scipy.optimize import brentq
+    t = brentq(excess, lo_t, t_hi, xtol=1e-12) if e > 0 else t_hi
+    return float(t / abs(travel_um))
 
 
 SOLVER_STEP_UM = 0.01          # travel step of the solver's finite-difference Jacobian
@@ -285,7 +293,7 @@ _MAX_HALVINGS = 30              # backtracking: a Newton step is halved at most 
 def _sim_spot(p: dict, Q0, sp: SteeringParams, t) -> np.ndarray | None:
     """(X, Y) of the chief-ray hit for travels t = (lower, upper) um, or None when it misses the parabolic mirror.
     The same trace as steer() (core parameters p, aligned hit Q0), without its per-um differences."""
-    c = optics.trace_chief(p, float(t[1]) / 1000, float(t[0]) / 1000)
+    c = optics.trace_chief(p, core_travel(sp, t[1]) / 1000, core_travel(sp, t[0]) / 1000)
     if "Q" not in c:
         return None
     dQ = (c["Q"] - Q0) * 1000
@@ -377,8 +385,8 @@ def spot(sp: SteeringParams, lower_um: float = 0.0, upper_um: float = 0.0, quali
     axis from +X toward +Y), area (um^2), peakAt, cx, cy (um relative to x0), D (mm).
     'fine' takes ~6-50 ms, 'fast' ~3-32 ms, 'trend' ~2-29 ms; keep 'fine' at large travel off the GUI thread.
     """
-    return optics.spot_shape(resolve(sp), yaw_um=float(lower_um), pitch_um=float(upper_um), quality=quality,
-                             W_start=W_start)
+    return optics.spot_shape(resolve(sp), yaw_um=core_travel(sp, lower_um), pitch_um=core_travel(sp, upper_um),
+                             quality=quality, W_start=W_start)
 
 
 def reference_spot(sp: SteeringParams):
@@ -401,7 +409,11 @@ def peak_curve(sp: SteeringParams, actuator: str, travels_um, quality="trend") -
     where no spot forms.  Normalised to an aligned spot of the same quality (travel 0 reads 1)."""
     if actuator not in _CORE_AXIS:
         raise ValueError(f"actuator must be 'lower' or 'upper', not {actuator!r}")
-    return optics.peak_curve(resolve(sp), _CORE_AXIS[actuator], [float(t) for t in travels_um], quality=quality)
+    travels = [float(t) for t in travels_um]
+    rows = optics.peak_curve(resolve(sp), _CORE_AXIS[actuator], [core_travel(sp, t) for t in travels], quality=quality)
+    for row, t in zip(rows, travels):               # report the real push-rod travel
+        row["travel_um"] = t
+    return rows
 
 
 def plan_offsets(sp: SteeringParams, X_list_um, actuators: str = "lower", quality="trend") -> list[dict]:

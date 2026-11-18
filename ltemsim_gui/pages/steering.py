@@ -5,10 +5,12 @@ diffraction; the module's README holds the physics and the conventions).  The ch
 the GUI thread at every actuator change.  The diffraction spots, the peak-intensity curves, the shape gallery and the
 link table run in one background thread (the core keeps its caches in plain dicts) with "latest wins" coalescing.
 The 3-D beam-path model is the user's reference page, embedded by widgets/steering3d.py.
-The focal length R can be fitted to a measured actuator step (steering.calibrate_R; the default reproduces
-steering.CALIBRATION).  Parameters saved before the calibrated defaults (no steering/params_version) are migrated by
-migrate_params: an R, theta or D still at the module's old default takes the new one (D only while unused or together
-with R), anything else is kept.
+The tilt calibration kappa (SteeringParams.tilt_scale: the fraction of the nominal KS1-Z8 tilt travel / L that a
+measured spot step implies) can be fitted to a measured actuator step (steering.calibrate_tilt_scale; the default
+reproduces steering.CALIBRATION); R stays the physical focal length.  Parameters saved by an older version (lower
+steering/params_version), and a JSON preset loaded without tilt_scale, are migrated by migrate_params: an R, theta
+or D still at an old default takes the new one (D only while unused or together with R), an R fitted to the spot step
+by version 2 is converted to kappa (convert_fitted_R), anything else is kept.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import csv
 import json
 import math
 import re
+from dataclasses import replace
 
 from PySide6.QtCore import QEvent, QObject, QSettings, QThreadPool, Qt, QTimer, Signal
 from PySide6.QtGui import QColor
@@ -29,7 +32,7 @@ from ltemsim import steering
 from ltemsim.steering import SteeringParams
 
 from .. import nav, paths
-from ..paramspec import steering_specs
+from ..paramspec import STEERING_BOUNDS, steering_specs
 from ..theme import ThemeManager
 from ..widgets import steering_views as views
 from ..widgets.common import Page, button, card, error_box, hline, label, open_external
@@ -42,7 +45,8 @@ SPIN_UM = 500.0                 # spin-box range ±500 µm (as the reference pag
 SLIDER_UM = 30.0                # slider range ±30 µm in 0.1 µm steps; values beyond it pin the slider at its end
 STEPS = (-1.0, -0.2, 0.2, 1.0)
 # the travel ranges below cover the lower-only travels of X_DEFAULT with the calibrated defaults (X = ±7.5 µm needs
-#   +27.6 / -25.3 µm); the module's R = 16 mm needed only ±9 µm, so the reference page stops at ±20 µm
+#   +26.6 / -26.4 µm); the module's nominal tilt (kappa = 1) needed only ±9 µm, so the reference page stops at
+#   ±20 µm
 CURVE_TRAVELS = tuple(float(t) for t in range(-30, 31))        # peak-intensity curves, 'trend' quality
 GALLERY_TRAVELS = (-30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0)
 TABLE_TRAVELS = (-30, -20, -10, -5, 0, 5, 10, 20, 30)           # data table under the curves (as docs/steering.md)
@@ -56,8 +60,13 @@ ACTUATORS = (("lower", "Lower · horizontal"), ("upper", "Upper · vertical"))
 CALIB_ACTUATORS = (("upper", "Upper · vertical (pitch)"), ("lower", "Lower · horizontal"))
 STEP_UM = 0.2                   # the Z812's minimum step: the actuator texts and the calibration line report the spot
                                 #   shift of one such step (exact trace)
-PARAMS_VERSION = 2              # steering/params_version. 2: the defaults are the calibrated R and theta = 45 deg
+PARAMS_VERSION = 3              # steering/params_version. 2: R fitted to the spot step (5.332 mm), theta = 45 deg;
+                                #   3: R physical again (16 mm), the spot step fitted by the tilt calibration kappa
 OLD_DEFAULTS = {"R": 16.0, "theta": 60.0, "D": 13.0}            # SteeringParams' defaults before version 2 (module's)
+V2_DEFAULTS = {"R": 5.332, "theta": 45.0, "D": 4.4}             # ... in version 2
+OLD_R = (OLD_DEFAULTS["R"], V2_DEFAULTS["R"])                   # an R saved before version 3 at one of these is no fit;
+                                                                #   any other R saved by version 2 is (convert_fitted_R)
+OLD_D = (OLD_DEFAULTS["D"], V2_DEFAULTS["D"])
 TRAIL_MAX = 200                 # trail points kept
 TRAIL_RETRACE = 60              # at most this many are re-traced (evenly thinned) when the parameters change
 FINE_MS = 250                   # the 'fine' spot follows this long after the last slider movement
@@ -85,18 +94,34 @@ LINK_COLS = ("X (µm)", "Lower (µm)", "Lower (counts)", "Upper (µm)", "Upper (
 CALIB_HELP = (f"Default from steering.CALIBRATION: {steering.CALIBRATION['source']}.\n"
               "Better: start from the aligned position (Zero both), move one actuator by ~50 µm, measure how far the "
               "spot moves on the AFM top-view camera and enter both, the travel with its sign (at such steps an "
-              f"extend and a retract move the spot differently). L stays at {SteeringParams().L:g} mm (KS1-Z8 spec: "
-              "0.2 µm step = 1.1″), so the measured step sets R; every other parameter is kept. R also enters the "
-              "diffraction model: D auto, the FWHM and the peak curves follow the fitted R.")
+              "extend and a retract move the spot differently). κ is the fraction of the nominal KS1-Z8 tilt (travel "
+              f"/ L, L = {SteeringParams().L:g} mm: 0.2 µm step = 1.1″) that the measured step implies: the optics "
+              "is handed κ × travel. R stays the physical focal length and every other parameter is kept; the "
+              "actuator travels and the KDC101 counts stay those of the real push rod.")
 
 
 def calib_note() -> str:
-    """Where the default R comes from (steering.CALIBRATION), and that it is an estimate."""
+    """Where the default kappa comes from (steering.CALIBRATION), what it means, and that it is an estimate."""
     c = steering.CALIBRATION
-    return (f"Default R = {SteeringParams().R:g} mm reproduces {c['spot_um'] * 1e3:g} nm per {c['travel_um']:g} µm "
-            f"step of the {c['actuator']} actuator at θ = {c['theta']:g}° (steering.CALIBRATION: Pizzuto et al., θ "
-            "assumed): an effective value, well below a real neaspec mirror (~10–16 mm). Replace it by a camera "
-            "calibration.")
+    return (f"Default κ = {SteeringParams().tilt_scale:g}: the fraction of the nominal KS1-Z8 tilt (travel / L) "
+            f"that {c['spot_um'] * 1e3:g} nm per {c['travel_um']:g} µm step of the {c['actuator']} actuator at "
+            f"θ = {c['theta']:g}° implies (steering.CALIBRATION: Pizzuto et al., θ assumed). R stays the physical "
+            "focal length. Replace κ by a camera calibration.")
+
+
+def migration_note(saved: dict, migrated: dict) -> str:
+    """The note shown once when migrate_params(saved) converted an R fitted by version 2 (the old 'Fit R') to the tilt
+    calibration kappa (convert_fitted_R); '' when it did not."""
+    if "tilt_scale" in saved or "tilt_scale" not in migrated:
+        return ""
+    R0, R1 = _float(saved.get("R"), math.nan), _float(migrated.get("R"), math.nan)
+    k = _float(migrated["tilt_scale"], math.nan)
+    if R1 == R0:                                # the conversion failed: the version-2 model as it was
+        return (f"Saved R = {R0:g} mm was fitted to the spot step (the old 'Fit R'). It could not be converted to the "
+                f"tilt calibration κ at the physical focal length ({SteeringParams().R:g} mm), so it is kept with "
+                f"κ = {k:g}: the spot steps are as before.")
+    return (f"Saved R = {R0:g} mm was fitted to the spot step (the old 'Fit R'). The spot step is now calibrated by "
+            f"κ: converted to κ = {k:g} with R = {R1:g} mm, the physical focal length. The spot steps are unchanged.")
 
 
 def settings() -> QSettings:
@@ -259,23 +284,59 @@ def _truthy(v) -> bool:
     return v if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
+def round_kappa(k: float) -> float:
+    """A fitted kappa as it goes into the form: 5 significant figures (the default 0.33336 is the fit of
+    steering.CALIBRATION rounded so)."""
+    return float(f"{k:.5g}")
+
+
+def convert_fitted_R(d: dict) -> dict:
+    """{'R': 16, 'tilt_scale': kappa} for a parameter set of version 2 whose R was fitted to the spot step (the old
+    'Fit R', at the nominal tilt kappa = 1): R goes back to the physical default and kappa is fitted
+    (steering.calibrate_tilt_scale) so that one STEP_UM step of the upper actuator (steering.CALIBRATION's) moves the
+    spot as the version-2 model did; the lower step then agrees to < 0.1 nm, and kappa comes out near R / 16 mm.
+    When that fails (a set the optics cannot trace, or a kappa outside the form's range), R is kept with kappa = 1:
+    exactly the version-2 model."""
+    new = SteeringParams()
+    try:
+        old = replace(SteeringParams.from_dict(d), tilt_scale=1.0)
+        shift = steering.steer(old, 0.0, STEP_UM).shift_um
+        k = steering.calibrate_tilt_scale(replace(old, R=new.R), "upper", STEP_UM, shift)
+    except (TypeError, ValueError, ArithmeticError):
+        k = math.nan
+    lo, hi = STEERING_BOUNDS["tilt_scale"]
+    if lo <= k <= hi:
+        return {"R": new.R, "tilt_scale": round_kappa(k)}
+    return {"tilt_scale": 1.0}
+
+
 def migrate_params(d: dict, version: int) -> dict:
-    """Saved steering/params of an older params_version, brought up to date.  Before version 2 the defaults were the
-    module's (OLD_DEFAULTS: R 16 mm, theta 60 deg, D 13 mm): a saved R, theta or D equal to its old default becomes
-    the new default; every other saved value, and a value changed away from the old default, is kept.  A D of 13 mm
-    in use (D auto off) with a customised R is the user's beam, not a default, and is kept too: D moves only while it
-    is unused (D auto on) or together with R."""
+    """Saved steering/params of an older params_version, brought up to date; every saved value that is not at an old
+    default is kept, a fitted R as the kappa that gives the same spot step.
+    * Before version 2 the defaults were the module's (OLD_DEFAULTS: R 16 mm, theta 60 deg, D 13 mm); version 2 had
+      R = 5.332 mm fitted to the spot step and D 4.4 mm (V2_DEFAULTS).  Before version 3, an R at either old default
+      (OLD_R) becomes the physical default (16 mm), and before version 2 a theta of 60 deg becomes 45 deg.
+    * Any other R saved by version 2 came from the old 'Fit R' (R was version 2's only spot-step calibration, at the
+      nominal tilt): convert_fitted_R turns it into kappa with R = 16 mm, unless the set has a tilt_scale.  An R
+      saved before version 2 was a physical choice and is kept, with the default kappa.
+    * A D at either old default (OLD_D) becomes the new default only while it is unused (D auto on, or not saved) or
+      together with R (the saved R at an old default): a D in use with a customised R is the user's beam.
+    * tilt_scale (kappa) did not exist before version 3: a missing one takes the default (the form's)."""
     if version >= PARAMS_VERSION:
         return d
     new = SteeringParams()
     out = dict(d)
-    d_in_use = not _truthy(d.get("D_auto", True))                  # D auto defaulted to on before version 2
-    custom_R = _float(d.get("R", OLD_DEFAULTS["R"]), math.nan) != OLD_DEFAULTS["R"]
-    for k, old in OLD_DEFAULTS.items():
-        if k == "D" and d_in_use and custom_R:
-            continue
-        if k in out and _float(out[k], math.nan) == old:
-            out[k] = getattr(new, k)
+    d_in_use = not _truthy(d.get("D_auto", True))                  # D auto defaulted to on before version 3
+    R = _float(d.get("R", OLD_DEFAULTS["R"]), math.nan)            # an R never saved was a default too
+    default_R = R in OLD_R
+    if "R" in out and default_R:
+        out["R"] = new.R
+    if version < 2 and "theta" in out and _float(out["theta"], math.nan) == OLD_DEFAULTS["theta"]:
+        out["theta"] = new.theta
+    if "D" in out and _float(out["D"], math.nan) in OLD_D and (not d_in_use or default_R):
+        out["D"] = new.D
+    if version == 2 and "R" in out and not default_R and R > 0 and "tilt_scale" not in out:
+        out.update(convert_fitted_R(out))
     return out
 
 
@@ -292,9 +353,9 @@ def step_shifts_nm(sp: SteeringParams) -> dict:
 
 
 def calib_text(sp: SteeringParams, steps: dict) -> str:
-    """'R = 5.332 mm · per 0.2 µm step: upper 55.0 nm, lower 59.6 nm' (steps from step_shifts_nm)."""
+    """'κ = 0.33336 · per 0.2 µm step: upper 55.0 nm, lower 59.6 nm' (steps from step_shifts_nm)."""
     per = ", ".join(f"{a} {steps[a]:.1f} nm" if a in steps else f"{a} —" for a in ("upper", "lower"))
-    return f"R = {sp.R:.4f}".rstrip("0").rstrip(".") + f" mm · per {STEP_UM:g} µm step: {per}"
+    return f"κ = {sp.tilt_scale:.5g} · per {STEP_UM:g} µm step: {per}"
 
 
 # ----------------------------------------------------------------------------- background calls (worker thread)
@@ -490,6 +551,15 @@ QSlider::handle:horizontal {{ background: {c}; width: 14px; height: 14px; margin
         self.spin.setValue(i / 10)
 
 
+class _ParamsForm(ParamForm):
+    """The page's parameter form.  Its Load… is the page's (SteeringPage.load_preset, via load_requested), which
+    migrates a preset saved before the tilt calibration kappa existed."""
+    load_requested = Signal()
+
+    def load_dialog(self):
+        self.load_requested.emit()
+
+
 # ----------------------------------------------------------------------------- page
 class SteeringPage(Page):
     title = "Pump steering"
@@ -529,6 +599,7 @@ class SteeringPage(Page):
         self._dirty = set()
         self._closed = False
         self._restore_note = ""     # saved parameters _restore had to drop, shown in params_warn
+        self._migrate_note = ""     # a fitted R of version 2 converted to kappa (migration_note), shown in params_warn
         self._measured = None
         self._shape_wide = self._spot_wide = None
         self.queue = _CoreQueue(self)
@@ -571,6 +642,7 @@ class SteeringPage(Page):
 
         self._restore()
         self.form.changed.connect(self._on_form)
+        self.form.load_requested.connect(self._load_dialog)
         for a in self.act.values():
             a.changed.connect(lambda v, dragging, k=a.key: self._on_actuator(k, v, dragging))
             a.released.connect(self._on_released)
@@ -595,12 +667,11 @@ class SteeringPage(Page):
             self.form.reset_all()
             self._sync_d_field()
             self._apply_params(force=True)
-            self.params_warn.setText("⚠ The saved parameters could not be used; back to the defaults.")
-            self.params_warn.show()
+            self._params_message("⚠ The saved parameters could not be used; back to the defaults.")
         else:
-            if self._restore_note and self.params_warn.isHidden():     # shown until the parameters are next applied
-                self.params_warn.setText(self._restore_note)
-                self.params_warn.show()
+            notes = [n for n in (self._restore_note, self._migrate_note) if n]
+            if notes and self.params_warn.isHidden():     # shown until the parameters are next applied
+                self._params_message("\n".join(notes))
 
     def _timer(self, ms, slot) -> QTimer:
         tm = QTimer(self)
@@ -645,7 +716,7 @@ class SteeringPage(Page):
         self.params_warn = label("", wrap=True)
         self.params_warn.hide()
         ll.addWidget(self.params_warn)
-        self.form = ParamForm(steering_specs(), scroll=False)
+        self.form = _ParamsForm(steering_specs(), scroll=False)
         ll.addWidget(self.form)
         ll.addWidget(self._build_calibration())
         ll.addStretch(1)
@@ -655,15 +726,16 @@ class SteeringPage(Page):
         return area
 
     def _build_calibration(self) -> QWidget:
-        """'Calibrate R from a measured step': fits R (steering.calibrate_R) and puts it in the parameter form."""
+        """'Calibrate the spot shift from a measured step': fits the tilt calibration kappa
+        (steering.calibrate_tilt_scale) and puts it in the parameter form."""
         c = steering.CALIBRATION
-        g = QGroupBox("Calibrate R from a measured step")      # styled and aligned as the form's groups
+        g = QGroupBox("Calibrate the spot shift from a measured step")      # styled and aligned as the form's groups
         g.setToolTip(CALIB_HELP)
         gl = QGridLayout(g)
         gl.setContentsMargins(8, 10, 8, 6)
         gl.setHorizontalSpacing(8)
         gl.setVerticalSpacing(5)
-        gl.setColumnMinimumWidth(0, self.form.rows["R"].group.layout().columnMinimumWidth(0))
+        gl.setColumnMinimumWidth(0, self.form.rows["tilt_scale"].group.layout().columnMinimumWidth(0))
         gl.setColumnStretch(1, 1)
         self.calib_combo = QComboBox()
         for key, text in CALIB_ACTUATORS:
@@ -689,9 +761,9 @@ class SteeringPage(Page):
         self.calib_shift.setSuffix(" nm")
         self.calib_shift.setValue(c["spot_um"] * 1e3)
         self.calib_shift.setToolTip("Distance the spot moved on the sample (e.g. measured on the AFM top-view camera)")
-        fit = button("Fit R", self._fit_R, tooltip="Find the focal length R for which this travel of this actuator "
-                                                   "moves the spot this far (exact trace; every other parameter is "
-                                                   "kept) and put it in the form")
+        fit = button("Fit κ", self._fit_kappa,
+                     tooltip="Find the tilt calibration κ for which this travel of this actuator moves the spot this "
+                             "far (exact trace; R and every other parameter are kept) and put it in the form")
         rows = (("Actuator", self.calib_combo), ("Actuator travel", self.calib_travel),
                 ("Measured spot shift", self.calib_shift), ("", fit))
         for r, (text, w) in enumerate(rows):
@@ -704,8 +776,8 @@ class SteeringPage(Page):
             w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             gl.addWidget(w, r, 1)
         self.calib_result = label("", selectable=True, wrap=True)
-        self.calib_result.setToolTip(f"With the current parameters: spot shift of one {STEP_UM:g} µm step of each "
-                                     "actuator (exact trace)")
+        self.calib_result.setToolTip(f"The tilt calibration κ in use and, with the current parameters, the spot shift "
+                                     f"of one {STEP_UM:g} µm step of each actuator (exact trace)")
         self.calib_warn = label("", wrap=True)
         self.calib_warn.hide()
         note = label(calib_note(), "muted", wrap=True)
@@ -895,9 +967,11 @@ class SteeringPage(Page):
         self.gain_combo.setCurrentIndex(GAINS.index(100))
         self.gain_combo.setToolTip("Mirror tilts and the resulting beam deflections are drawn this many times larger")
         ctl.addWidget(self.gain_combo)
-        hint = label("Exact chief-ray trace; mirror tilts and deflections drawn × gain", "muted")
+        hint = label("Exact chief-ray trace at the calibrated tilt (κ); mirror tilts and deflections drawn × gain",
+                     "muted")
         hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        hint.setToolTip(hint.text())                # cut off in narrow windows
+        hint.setToolTip(hint.text() + ". The mirror tilts by κ × travel / L (Tilt calibration κ); the travels and "
+                        "the KDC101 counts are those of the real push rod.")       # cut off in narrow windows
         ctl.addWidget(hint, 1)
         vl.addLayout(ctl)
         self.plot_schem = self._plot(toolbar=True, min_h=220)
@@ -1020,9 +1094,14 @@ class SteeringPage(Page):
         pal = views.palette(t)
         for key, a in self.act.items():
             a.set_color(pal[key], t)
-        for w in (self.warn, self.params_warn, self.calib_warn):
+        for w in (self.warn, self.calib_warn, self.params_warn):
             w.setStyleSheet(f"color: {t.warning};")
         # the plots re-run their own drawing routines on theme changes (PlotWidget)
+
+    def _params_message(self, text: str):
+        """Show a warning or a note above the parameter form (until the parameters are next applied)."""
+        self.params_warn.setText(text)
+        self.params_warn.show()
 
     # ------------------------------------------------------------------ state persistence
     def _restore(self):
@@ -1033,7 +1112,9 @@ class SteeringPage(Page):
             d = {}
         if isinstance(d, dict) and d:
             version = int(_float(s.value("steering/params_version"), 0))
-            if version < PARAMS_VERSION:            # saved with the old defaults: migrate, and keep the result
+            migrated = version < PARAMS_VERSION
+            saved = d
+            if migrated:                            # saved with the old defaults: migrate, and keep the result
                 d = migrate_params(d, version)
                 s.setValue("steering/params", json.dumps(d))
                 s.setValue("steering/params_version", PARAMS_VERSION)
@@ -1059,6 +1140,8 @@ class SteeringPage(Page):
             if dropped:                             # shown once the parameters are applied (__init__)
                 names = ", ".join(dict.fromkeys(self.form.rows[n].spec.label for n in dropped))
                 self._restore_note = f"⚠ Saved value(s) not usable, back to the default: {names}."
+            if migrated and not {"R", "tilt_scale"} & set(dropped):
+                self._migrate_note = migration_note(saved, d)   # a fitted R of version 2 converted to kappa
         lo = max(-SPIN_UM, min(SPIN_UM, _float(s.value("steering/lower_um"), 0.0)))
         up = max(-SPIN_UM, min(SPIN_UM, _float(s.value("steering/upper_um"), 0.0)))
         self.act["lower"].set_value(lo)
@@ -1125,7 +1208,7 @@ class SteeringPage(Page):
             auto.setText("")
 
     def _on_form(self):
-        self.calib_warn.hide()                  # the warning was for the previous parameters (Fit R sets a new one
+        self.calib_warn.hide()                  # the warning was for the previous parameters (Fit κ sets a new one
         self._sync_d_field()                    #   after its own form edits)
         self._param_timer.start()
 
@@ -1144,15 +1227,13 @@ class SteeringPage(Page):
             try:
                 sp = SteeringParams.from_dict(vals)
             except (TypeError, ValueError) as e:
-                self.params_warn.setText(f"⚠ {e}")
-                self.params_warn.show()
+                self._params_message(f"⚠ {e}")
                 return
             # NaN / inf pass every range check: never let them reach the optics, the 3D page or the saved state
             bad = [k for k, v in sp.to_dict().items() if isinstance(v, float) and not math.isfinite(v)]
         if bad:
             names = ", ".join(self.form.rows[n].spec.label if n in self.form.rows else n for n in bad)
-            self.params_warn.setText(f"⚠ Invalid value: {names}. The plots keep the last valid parameters.")
-            self.params_warn.show()
+            self._params_message(f"⚠ Invalid value: {names}. The plots keep the last valid parameters.")
             return
         self.params_warn.hide()
         key = _key(sp)
@@ -1182,11 +1263,12 @@ class SteeringPage(Page):
         self._mark(*self.plots)
         self._save_timer.start()
 
-    def _fit_R(self):
-        """Fit R to the measured step (steering.calibrate_R with the current parameters) and put it in the form, from
-        where everything recomputes.  Problems show as a warning line under the result."""
-        if not self.form.rows["R"].valid:           # replaced by the fit anyway: start from the R in use
-            self.form.set_values({"R": self.sp.R})
+    def _fit_kappa(self):
+        """Fit the tilt calibration kappa to the measured step (steering.calibrate_tilt_scale with the current
+        parameters, R included) and put it in the form, from where everything recomputes.  Problems show as a warning
+        line under the result."""
+        if not self.form.rows["tilt_scale"].valid:  # replaced by the fit anyway: start from the kappa in use
+            self.form.set_values({"tilt_scale": self.sp.tilt_scale})
         self._param_timer.stop()
         self._apply_params()                        # pending edits first: the fit keeps every other parameter
         bad = self._invalid_fields()
@@ -1198,21 +1280,51 @@ class SteeringPage(Page):
         if travel == 0:
             return self._calib_warning("Enter a non-zero actuator travel.")
         try:
-            R = round(steering.calibrate_R(self.sp, actuator, travel, shift_nm / 1e3), 4)
+            k = steering.calibrate_tilt_scale(self.sp, actuator, travel, shift_nm / 1e3)
         except (ValueError, ArithmeticError, RuntimeError) as e:
-            return self._calib_warning(f"Fit R failed: {e}")
-        spec = self.form.rows["R"].spec
-        if not (spec.minimum <= R <= spec.maximum):
-            return self._calib_warning(f"Fit R: R = {R:g} mm is outside the allowed {spec.minimum:g}–"
-                                       f"{spec.maximum:g} mm; R is unchanged.")
+            return self._calib_warning(f"Fit κ failed: {e}")
+        spec = self.form.rows["tilt_scale"].spec
+        if not (spec.minimum <= k <= spec.maximum):    # the fit itself: rounded, a tiny kappa would read 0
+            return self._calib_warning(f"Fit κ: κ = {k:.3g} is outside the allowed {spec.minimum:g}–"
+                                       f"{spec.maximum:g}; κ is unchanged.")
         self.calib_warn.hide()
-        self.form.set_values({"R": R})
+        self.form.set_values({"tilt_scale": round_kappa(k)})     # the range's ends survive the rounding
         self._param_timer.stop()
         self._apply_params()
 
     def _calib_warning(self, text: str):
         self.calib_warn.setText("⚠ " + text)
         self.calib_warn.show()
+
+    def _load_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load parameters", str(paths.RESULTS), "JSON (*.json)")
+        if path:
+            self.load_preset(path)
+
+    def load_preset(self, path):
+        """The parameter form's Load… (in place of ParamForm.load_dialog): a JSON preset, or a params.json whose
+        'params' dict is used; fields it leaves out go back to their defaults.  Presets carry no version: one without
+        tilt_scale was saved before the tilt calibration kappa existed and is migrated as a version-2 state
+        (migrate_params: R 5.332 mm becomes 16 mm, a fitted R becomes kappa), with the note when an R is converted."""
+        try:
+            with open(path, encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, ValueError) as e:
+            return self._params_message(f"⚠ Could not load the preset: {e}")
+        if isinstance(d, dict) and isinstance(d.get("params"), dict):
+            d = d["params"]
+        if not isinstance(d, dict):
+            return self._params_message("⚠ Could not load the preset: it holds no parameter names and values.")
+        d = {k: v for k, v in d.items() if k in self.form.rows}
+        note = ""
+        if d and "tilt_scale" not in d:
+            m = migrate_params(d, 2)
+            d, note = m, migration_note(d, m)
+        self.form.set_values(d, reset_others=True)
+        self._param_timer.stop()
+        self._apply_params()                    # now: the note is shown until the parameters are next applied
+        if note:
+            self._params_message(note if self.params_warn.isHidden() else self.params_warn.text() + "\n" + note)
 
     # ------------------------------------------------------------------ actuators
     def _on_actuator(self, key, value, dragging):
@@ -1529,10 +1641,10 @@ class SteeringPage(Page):
         try:
             with open(path, "w", newline="", encoding="utf-8") as fh:
                 w = csv.writer(fh)
-                w.writerow([*cols, "actuators", "bias_axis_deg", "R_mm", "L_mm", "D_mm"])
+                w.writerow([*cols, "actuators", "bias_axis_deg", "R_mm", "L_mm", "tilt_scale", "D_mm"])
                 for r in rows:
                     w.writerow([*("" if r.get(c) is None else r.get(c) for c in cols), mode, sp.bias_axis_deg,
-                                sp.R, sp.L, "" if D is None else D])
+                                sp.R, sp.L, sp.tilt_scale, "" if D is None else D])
         except OSError as e:
             error_box(self, "Export CSV", f"Could not write {path}", str(e))
 
