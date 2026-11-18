@@ -30,6 +30,9 @@ KIND_ICON = {"steady": "grid", "sweep": "sliders", "pulse": "zap", "redemod": "z
 
 # (page id, icon, title = sidebar name, description, typical runtime, highlighted note)
 QUICK = (
+    ("steering", "crosshair", "Pump steering",
+     "Where the pump spot goes and how it deforms when the KS1-Z8 steering mirror moves; actuator travels for "
+     "each spot–tip offset X.", "instant", ""),
     ("steady", "grid", "Steady state",
      "Self-consistent 2-D drift-diffusion + EL2 steady state: fields, carriers and the tip scan, compared with "
      "the measurement.", "coarse ~1 min · production ~7 min",

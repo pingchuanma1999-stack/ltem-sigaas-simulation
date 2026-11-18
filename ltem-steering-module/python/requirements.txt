@@ -1,0 +1,5 @@
+numpy>=1.22
+# tests
+pytest>=7
+# optional, only for `python python/example.py --plot`
+matplotlib>=3.5

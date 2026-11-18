@@ -26,12 +26,16 @@ ltemsim/
   solver.py      Simulation driver, Solution container (save/load .npz)
   tip.py         emission proxy P = n_pulse·E, tip E_z response, tip scan
   plots.py       figures
+  steering.py    adapter to the pump-steering module (actuators, signs, lab <-> simulation frame, tilt calibration)
 scripts/
   run_baseline.py        default run -> results/baseline/
   sweep.py               parameter sweeps (pump power, EL2, sigma_p, spot size)
+ltem-steering-module/        KS1-Z8 pump-spot steering module, vendored (cores and golden values unchanged; own README, tests)
 data/measured_tip_scan.csv   measured RMS vs X for ±25 V (Oct 2026 notes)
 tests/test_numerics.py       Poisson vs analytic, equilibrium, Jacobian FD, dark current
+tests/test_steering.py       steering core vs golden.json, adapter signs and frames
 docs/model.md                equations, discretisation, assumptions
+docs/steering.md             pump steering: conventions, parameters, calibration of the spot shift, API, GUI page
 ```
 
 ## Run
@@ -72,6 +76,44 @@ sequential scripts. On an 18-core M5 Pro, 18 concurrent coarse solves give 10× 
 
 Tip shape: `FDTDConfig.tip_shape` and `PulseConfig.tip_shape` take `"cone"` (default, as in the committed
 results) or `"rod"` — the apex sphere plus a straight shank of width 2R. The GUI uses the rod by default.
+
+## Pump steering (KS1-Z8 mirror, 泵浦光斑转向)
+
+The pump spot is moved on the sample by the external KS1-Z8 mirror (two Z812 actuators, KDC101
+controllers). `ltem-steering-module/` (vendored; cores and golden values unchanged, physics and algorithm in its `README.md`)
+computes where the spot lands for given push-rod travels (exact chief-ray trace), its shape and peak
+intensity (scalar diffraction with the parabolic-mirror aperture) and the beam diameter for the smallest
+spot. `ltemsim/steering.py` is the only adapter: `lower` = lower Z812 = horizontal tilt (core `yaw`),
+`upper` = upper Z812 = vertical tilt (core `pitch`), + = rod extends = KDC101 reading rises; lab frame
++X toward the port wall, +Y toward the back. The spot shift projected on the bias axis is the
+experimental X, through `SteeringParams.bias_axis_deg` (default 0 is **assumed**: set it from the sample
+mounting). R = 16 mm is the parabolic mirror's focal length (geometry) and θ = 45° is assumed; the
+spot shift is calibrated by the tilt scale κ (`SteeringParams.tilt_scale`): the mirror turns by
+κ · travel / L, and κ = 0.33336 reproduces the 55 nm spot step per 0.2 µm (0.0002 mm) actuator step of
+Pizzuto et al., taken as the upper (pitch) actuator. The spot thus moves a third of what the nominal
+KS1-Z8 tilt predicts (the 55 nm estimate may leave out the factor 2 of the reflection). The lower
+(horizontal) actuator then moves the spot 59.6 nm per step (56.6 nm left, 18.9 nm toward the front),
+i.e. (−0.283, −0.094) µm per µm, and X = +5 µm needs −17.61 µm of lower travel (−609 KDC101 counts).
+Every travel in the API and the GUI is the real push-rod travel; the optics core is handed κ × travel.
+Replace κ with a camera calibration (`calibrate_tilt_scale`, or "Fit κ" in the GUI). The module's own
+README quotes its own defaults (R = 16 mm, θ = 60°, κ = 1). GUI: Simulate → Pump steering. Details:
+`docs/steering.md`.
+
+```python
+from ltemsim.steering import SteeringParams, calibrate_tilt_scale, steer, spot, travel_for_offset, plan_offsets
+sp = SteeringParams(bias_axis_deg=0.0)
+steer(sp, lower_um=4).X_um                         # -1.13 µm
+travel_for_offset(sp, 5.0)                         # both actuators, Y = 0: lower -14.61, upper +5.95 µm
+plan_offsets(sp, [-5, 0, 5], actuators="lower")    # travels, counts, landing point, predicted spot
+calibrate_tilt_scale(sp, "upper", 0.2, 0.055)      # 0.33336: κ from a measured step (travel, shift in µm)
+```
+
+Tests: `python -m pytest tests/test_steering.py -q`; the module's own suites (919 JS checks, 14 pytest):
+
+```bash
+node ltem-steering-module/js/test_golden.mjs
+.venv/bin/python -m pytest ltem-steering-module/python -q
+```
 
 ## Geometry and conventions
 
